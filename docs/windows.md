@@ -48,6 +48,7 @@ The **`:desktop:windows`** module (`com.nexustools.genericui.windows.*`) is the 
 | `WindowsSystemTrayNativeImpl` | Win32 Notification Area (`Shell_NotifyIconW` / `NOTIFYICONDATAW`) tray icon and context menu peer. |
 | `WindowsNotificationManagerNativeImpl` | Native Windows toast and balloon notification dispatcher. |
 | `WindowsNetworkMonitorNativeImpl` | Win32 Network List Manager / `WinInet` connectivity state observer. |
+| `WindowsPreferenceStoreImpl` | Native Windows `PreferenceStoreNativeImpl` storing per-key `.bson` binary JSON files (`BinaryJson`) inside `%APPDATA%\<appName>\<key>.bson`. |
 
 ---
 

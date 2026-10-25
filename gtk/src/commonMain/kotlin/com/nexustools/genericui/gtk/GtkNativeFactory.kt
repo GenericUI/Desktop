@@ -197,4 +197,7 @@ class GtkNativeFactory : NativeFactory {
         GtkNotificationManagerNativeImpl()
 
     override fun createNetworkMonitor(): NetworkMonitorNativeImpl = GtkNetworkMonitorNativeImpl()
+
+    override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
+        GtkPreferenceStoreImpl(appName)
 }

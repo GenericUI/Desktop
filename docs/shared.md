@@ -47,6 +47,7 @@ The **`:desktop:shared`** module (`com.nexustools.genericui.desktop.*`) is the s
 | `com.nexustools.genericui.desktop.dock` | `DesktopMultiWindowDockCoordinator` | Orchestrates `detachPanelToFloatingWindow`, `reattachPanelToWorkspace`, and `setStudioWindowMode` (`SINGLE_WINDOW_MODE` vs. `MULTI_WINDOW_MODE`). |
 | `com.nexustools.genericui.desktop.dock` | `DesktopDockWorkspaceNativeImpl` | Native peer for `DockWorkspace` integrating `DesktopMultiWindowDockCoordinator` with platform `DockWindowNativeImpl` factories. |
 | `com.nexustools.genericui.desktop.dialog` | `DesktopFileBrowserHelper` | Converts `FileBrowserRequest` filters into Win32, macOS, GTK4, and Qt6 native dialog formats and dispatches `SelectedFile` results. |
+| `com.nexustools.genericui.desktop.system` | `DesktopConfigDirectoryHelper` | Resolves OS preference directories (`%APPDATA%\<appName>` on Windows, `~/Library/Preferences/<appName>` on macOS, `$XDG_CONFIG_HOME/<appName>` on Linux) and provides POSIX binary file read/write/delete helpers for `PreferenceStore`. |
 | `com.nexustools.genericui.desktop.shell` | `DesktopWindowNativeImpl` | Shared base class for top-level desktop windows (`TitleBar` instruction application, menu bar synchronization, fullscreen/maximized state, VBlank scheduling). |
 
 ---

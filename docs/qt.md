@@ -49,6 +49,7 @@ The **`:desktop:qt`** module (`com.nexustools.genericui.qt.*`) is the native C++
 | `QtSystemTrayNativeImpl` | Native `QSystemTrayIcon` and `QMenu` system tray implementation. |
 | `QtNotificationManagerNativeImpl` | Desktop notification dispatcher via `QSystemTrayIcon::showMessage` and Freedesktop DBus notifications. |
 | `QtNetworkMonitorNativeImpl` | Qt6 `QNetworkInformation` reachability observer. |
+| `QtPreferenceStoreImpl` | Native Linux Qt `PreferenceStoreNativeImpl` storing per-key `.bson` binary JSON files (`BinaryJson`) inside `$XDG_CONFIG_HOME/<appName>/<key>.bson` (or `~/.config/<appName>/<key>.bson`). |
 
 ---
 

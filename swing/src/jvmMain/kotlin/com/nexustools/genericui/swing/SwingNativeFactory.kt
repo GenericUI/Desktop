@@ -109,4 +109,5 @@ class SwingNativeFactory : NativeFactory {
     override fun createSystemTray(): SystemTrayNativeImpl = SwingSystemTrayImpl()
     override fun createNotificationManager(): NotificationManagerNativeImpl = SwingNotificationManagerImpl()
     override fun createNetworkMonitor(): NetworkMonitorNativeImpl = SwingNetworkMonitorImpl()
+    override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl = SwingPreferenceStoreImpl(appName)
 }

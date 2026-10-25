@@ -25,6 +25,7 @@ open class DesktopNativeWidget(
     var disposed: Boolean = false
 
     val attributes: MutableMap<String, Any?> = linkedMapOf()
+    val styleProperties: MutableMap<String, String> = linkedMapOf()
     val children: MutableList<DesktopNativeWidget> = mutableListOf()
 
     fun addChildWidget(child: DesktopNativeWidget, index: Int = -1) {

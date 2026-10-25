@@ -197,4 +197,7 @@ class MacosNativeFactory : NativeFactory {
         MacosNotificationManagerNativeImpl()
 
     override fun createNetworkMonitor(): NetworkMonitorNativeImpl = MacosNetworkMonitorNativeImpl()
+
+    override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
+        MacosPreferenceStoreImpl(appName)
 }

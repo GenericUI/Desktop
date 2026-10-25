@@ -37,4 +37,8 @@ open class DesktopCheckboxNativeImpl<out W : DesktopNativeWidget>(
     override fun setOnCheckedChanged(listener: ((Boolean) -> Unit)?) {
         onCheckedChangedListener = listener
     }
+
+    fun dispatchToggle(checked: Boolean = checkedState) {
+        onCheckedChangedListener?.invoke(checked)
+    }
 }

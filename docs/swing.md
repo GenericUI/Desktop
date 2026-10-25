@@ -47,6 +47,7 @@ The **`:desktop:swing`** module (`com.nexustools.genericui.swing.*`) is the pure
 | `SwingLazyListImpl`, `SwingLazyGridImpl`, `SwingTreeViewImpl` | Viewport-windowed lazy list, grid, and tree components backed by `JScrollPane`. |
 | `SwingImageIoCodecImpl` | `javax.imageio.ImageIO` + `BufferedImage` implementation of `:common`'s `ImageCodecNativeImpl`. |
 | `SwingSystemTrayImpl` | `java.awt.SystemTray` and `TrayIcon` implementation. |
+| `SwingPreferenceStoreImpl` | JVM Swing `PreferenceStoreNativeImpl` storing per-key `.plist` (`BinaryPlist` `bplist00`) on macOS (`~/Library/Preferences/<appName>/<key>.plist`) and `.bson` (`BinaryJson`) on Windows/Linux (`%APPDATA%\<appName>\<key>.bson` or `$XDG_CONFIG_HOME/<appName>/<key>.bson`) with background `java.nio.file.WatchService` external file monitoring. |
 
 ---
 

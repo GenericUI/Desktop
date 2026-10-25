@@ -198,4 +198,7 @@ class WindowsNativeFactory : NativeFactory {
         WindowsNotificationManagerNativeImpl()
 
     override fun createNetworkMonitor(): NetworkMonitorNativeImpl = WindowsNetworkMonitorNativeImpl()
+
+    override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
+        WindowsPreferenceStoreImpl(appName)
 }

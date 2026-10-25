@@ -4,6 +4,7 @@ import com.nexustools.genericui.component.dock.DockHeaderAction
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.nativeimpl.dock.DockPanelNativeImpl
+import com.nexustools.genericui.window.TitleBar
 
 /**
  * Shared desktop base implementation of [DockPanelNativeImpl].
@@ -18,6 +19,7 @@ open class DesktopDockPanelNativeImpl<out W : DesktopNativeWidget>(
     protected var onCollapsedChangedListener: ((Boolean) -> Unit)? = null
     protected var floatingState: Boolean = false
     protected var headerActionsList: List<DockHeaderAction> = emptyList()
+    protected var titleBarInstructionsState: TitleBar? = null
 
     override fun setTitle(title: String) {
         titleText = title
@@ -61,4 +63,13 @@ open class DesktopDockPanelNativeImpl<out W : DesktopNativeWidget>(
         headerActionsList = actions
         nativeWidget.attributes["headerActions"] = actions
     }
+
+    override fun getHeaderActions(): List<DockHeaderAction> = headerActionsList
+
+    override fun applyTitleBarInstructions(titleBar: TitleBar?) {
+        titleBarInstructionsState = titleBar
+        nativeWidget.attributes["titleBar"] = titleBar
+    }
+
+    override fun getTitleBarInstructions(): TitleBar? = titleBarInstructionsState
 }

@@ -13,12 +13,27 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W
 ) : DesktopBaseContainerNativeImpl<W>(nativeWidget, "modal"), DialogWindowNativeImpl<W> {
 
+    companion object {
+        val activeDialogs = mutableListOf<DesktopDialogWindowNativeImpl<*>>()
+    }
+
     protected var titleText: String = ""
     protected var presentationStyleState: DialogPresentationStyle = DialogPresentationStyle.MODAL_WINDOW
     protected var modalState: Boolean = true
     protected var fullscreenState: Boolean = false
     protected var ownerWindowRef: WindowNativeImpl<*>? = null
     protected var onDialogClosedListener: (() -> Unit)? = null
+
+    override fun setVisible(visible: Boolean) {
+        super.setVisible(visible)
+        if (visible) {
+            if (!activeDialogs.contains(this)) {
+                activeDialogs.add(this)
+            }
+        } else {
+            activeDialogs.remove(this)
+        }
+    }
 
     override fun setTitle(title: String) {
         titleText = title
@@ -51,6 +66,7 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
 
     override fun closeDialog() {
         setVisible(false)
+        activeDialogs.remove(this)
         onDialogClosedListener?.invoke()
     }
 

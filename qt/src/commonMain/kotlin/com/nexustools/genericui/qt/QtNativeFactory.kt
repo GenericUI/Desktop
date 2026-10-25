@@ -197,4 +197,7 @@ class QtNativeFactory : NativeFactory {
         QtNotificationManagerNativeImpl()
 
     override fun createNetworkMonitor(): NetworkMonitorNativeImpl = QtNetworkMonitorNativeImpl()
+
+    override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
+        QtPreferenceStoreImpl(appName)
 }

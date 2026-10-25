@@ -48,6 +48,7 @@ The **`:desktop:gtk`** module (`com.nexustools.genericui.gtk.*`) is the native L
 | `GtkSystemTrayNativeImpl` | Linux `StatusNotifierItem` (SNI / AppIndicator DBus) system tray icon and menu peer. |
 | `GtkNotificationManagerNativeImpl` | GIO `GNotification` / `org.freedesktop.Notifications` desktop notification dispatcher. |
 | `GtkNetworkMonitorNativeImpl` | GIO `GNetworkMonitor` connectivity state observer. |
+| `GtkPreferenceStoreImpl` | Native Linux GTK `PreferenceStoreNativeImpl` storing per-key `.bson` binary JSON files (`BinaryJson`) inside `$XDG_CONFIG_HOME/<appName>/<key>.bson` (or `~/.config/<appName>/<key>.bson`). |
 
 ---
 

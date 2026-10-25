@@ -48,6 +48,7 @@ The **`:desktop:macos`** module (`com.nexustools.genericui.macos.*`) is the nati
 | `MacosSystemTrayNativeImpl` | macOS menu bar extra (`NSStatusBar.systemStatusBar` / `NSStatusItem`) with native `NSMenu`. |
 | `MacosNotificationManagerNativeImpl` | macOS `UNUserNotificationCenter` notification dispatcher. |
 | `MacosNetworkMonitorNativeImpl` | Apple `NWPathMonitor` (`Network.framework`) reachability observer. |
+| `MacosPreferenceStoreImpl` | Native macOS `PreferenceStoreNativeImpl` storing per-key `.plist` binary property list files (`BinaryPlist` `bplist00`) inside `~/Library/Preferences/<appName>/<key>.plist`. |
 
 ---
 
