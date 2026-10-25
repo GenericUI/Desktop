@@ -30,6 +30,13 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         nativeWidget.attributes["WM_NCHITTEST_CustomCaption"] = custom
     }
 
+    override fun setTitle(title: String) {
+        super.setTitle(title)
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
+            Win32NativeWindowHost.updateMainWindowTitle(this, title)
+        }
+    }
+
     override fun showWindow() {
         super.showWindow()
         if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {

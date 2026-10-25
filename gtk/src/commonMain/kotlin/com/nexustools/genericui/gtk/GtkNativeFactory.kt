@@ -27,6 +27,7 @@ import com.nexustools.genericui.nativeimpl.dialog.DialogWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.FileBrowserDialogNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.StandardDialogsNativeImpl
 import com.nexustools.genericui.nativeimpl.dock.*
+import com.nexustools.genericui.nativeimpl.document.BookContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.feedback.ProgressBarNativeImpl
 import com.nexustools.genericui.nativeimpl.feedback.SpinnerNativeImpl
 import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
@@ -106,6 +107,9 @@ class GtkNativeFactory : NativeFactory {
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
         DesktopContainerNativeImpl(GtkWidgetHandle("GtkBox"), classPrefix)
+
+    override fun createBookContainer(): BookContainerNativeImpl<*> =
+        DesktopBookContainerNativeImpl(GtkWidgetHandle("GtkBox_BookPrintPreview"))
 
     override fun createScrollView(): ScrollViewNativeImpl<*> =
         DesktopScrollViewNativeImpl(GtkWidgetHandle("GtkScrolledWindow"))

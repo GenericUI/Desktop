@@ -23,8 +23,8 @@ class SwingPreferenceStoreTest {
     fun `SwingPreferenceStoreImpl writes per-key binary files and reconstructs arbitrary Kotlin data classes`() {
         val tempDir = Files.createTempDirectory("genericui_swing_prefs_test").toFile()
         try {
-            val impl = SwingPreferenceStoreImpl(appName = "EpisodeCaster", customDirectory = tempDir)
-            val store = PreferenceStore(appName = "EpisodeCaster")
+            val impl = SwingPreferenceStoreImpl(appName = "SampleDesktopApp", customDirectory = tempDir)
+            val store = PreferenceStore(appName = "SampleDesktopApp")
 
             val config = AudioRoutingConfig(
                 outputDevice = "WASAPI Low-Latency Output",
@@ -46,7 +46,7 @@ class SwingPreferenceStoreTest {
             }
 
             // Re-open from the same directory to verify disk persistence and reflection reconstruction
-            val reopenedImpl = SwingPreferenceStoreImpl(appName = "EpisodeCaster", customDirectory = tempDir)
+            val reopenedImpl = SwingPreferenceStoreImpl(appName = "SampleDesktopApp", customDirectory = tempDir)
             val elem = reopenedImpl.readElement("audio_routing")
             val restored = com.nexustools.genericui.component.system.PreferenceObjectCodec.fromElement(
                 elem,

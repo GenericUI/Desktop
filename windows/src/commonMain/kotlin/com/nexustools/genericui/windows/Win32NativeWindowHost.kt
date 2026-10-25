@@ -491,7 +491,23 @@ object Win32NativeWindowHost {
         }
     }
 
+    fun updateMainWindowTitle(windowImpl: WindowsWindowNativeImpl, title: String) {
+        if (activeWindowImpl === windowImpl) {
+            activeHwnd?.let { hwnd ->
+                SetWindowTextW(hwnd, title.ifBlank { "GenericUI" })
+                InvalidateRect(hwnd, null, 0)
+            }
+        }
+    }
+
     fun createAndShowWin32Window(windowImpl: WindowsWindowNativeImpl) {
+        val existingHwnd = activeHwnd
+        if (existingHwnd != null && activeWindowImpl === windowImpl && IsWindow(existingHwnd) != 0) {
+            SetWindowTextW(existingHwnd, windowImpl.getTitle().ifBlank { "HAEditor" })
+            InvalidateRect(existingHwnd, null, 1)
+            UpdateWindow(existingHwnd)
+            return
+        }
         Win32WinMain.initializeFromProcessStartup()
         activeWindowImpl = windowImpl
         monitorRefreshRateHz = queryMonitorRefreshRateHz()
@@ -782,8 +798,14 @@ object Win32NativeWindowHost {
         var dispatched = false
         val vblankFn = widget.attributes["vblankDispatch"] as? ((Double?) -> Unit)
         if (vblankFn != null) {
+            val swapFn = widget.attributes["swapCount"] as? (() -> Long)
+            val prevSwap = swapFn?.invoke() ?: -1L
             runCatching { vblankFn.invoke(timestampMs) }
-            dispatched = true
+            val nextSwap = swapFn?.invoke() ?: -1L
+            if ((prevSwap != -1L && nextSwap != prevSwap) || widget.attributes["vblankDirtied"] == true) {
+                widget.attributes["vblankDirtied"] = false
+                dispatched = true
+            }
         }
         val childrenSnapshot = widget.children.toList()
         for (child in childrenSnapshot) {
@@ -897,16 +919,31 @@ object Win32NativeWindowHost {
         }
     }
 
+    private var dcAppScrollY: Int = 0
+    private var dcAppMaxScrollY: Int = 0
+    private var dcAppLastPageKey: String = ""
+
     fun handleMouseWheel(hwnd: HWND, wheelDelta: Int) {
-        val grid = activeLazyGridImpl ?: return
-        val totalDataRows = (grid.getTotalRowCount() - 1).coerceAtLeast(0)
-        if (totalDataRows <= 0) return
-        val step = if (wheelDelta > 0) -2 else 2
-        val maxFirst = (totalDataRows - 4).coerceAtLeast(0)
-        val next = (grid.firstVisibleDataRow + step).coerceIn(0, maxFirst)
-        if (next != grid.firstVisibleDataRow) {
-            grid.firstVisibleDataRow = next
-            InvalidateRect(hwnd, null, 0)
+        val grid = activeLazyGridImpl
+        if (grid != null) {
+            val totalDataRows = (grid.getTotalRowCount() - 1).coerceAtLeast(0)
+            if (totalDataRows <= 0) return
+            val step = if (wheelDelta > 0) -2 else 2
+            val maxFirst = (totalDataRows - 4).coerceAtLeast(0)
+            val next = (grid.firstVisibleDataRow + step).coerceIn(0, maxFirst)
+            if (next != grid.firstVisibleDataRow) {
+                grid.firstVisibleDataRow = next
+                InvalidateRect(hwnd, null, 0)
+            }
+            return
+        }
+        if (dcAppMaxScrollY > 0) {
+            val step = if (wheelDelta > 0) -72 else 72
+            val next = (dcAppScrollY + step).coerceIn(0, dcAppMaxScrollY)
+            if (next != dcAppScrollY) {
+                dcAppScrollY = next
+                InvalidateRect(hwnd, null, 0)
+            }
         }
     }
 
@@ -1565,6 +1602,45 @@ object Win32NativeWindowHost {
             return
         }
 
+        val dcAppRoot = findWidgetByClass(rootWidget, "dcapp-root")
+        if (dcAppRoot != null) {
+            renderDcAppLayout(
+                hwnd = hwnd,
+                hdc = hdc,
+                theme = theme,
+                fontSmall = fontSmall,
+                fontSmallBold = fontSmallBold,
+                fontNormal = fontNormal,
+                fontBold = fontBold,
+                fontTitle = fontTitle,
+                fontMetricBig = fontMetricBig,
+                dcAppRoot = dcAppRoot,
+                clientW = clientW,
+                clientH = clientH
+            )
+            return
+        }
+
+        val pageMenuNode = findWidgetByClass(rootWidget, "menu")
+        if (pageMenuNode != null || widgetHasClass(rootWidget, "page-host")) {
+            renderPageHostLayout(
+                hwnd = hwnd,
+                hdc = hdc,
+                theme = theme,
+                fontSmall = fontSmall,
+                fontSmallBold = fontSmallBold,
+                fontNormal = fontNormal,
+                fontBold = fontBold,
+                fontTitle = fontTitle,
+                fontMetricBig = fontMetricBig,
+                rootWidget = rootWidget,
+                menuWidget = pageMenuNode ?: rootWidget,
+                clientW = clientW,
+                clientH = clientH
+            )
+            return
+        }
+
         // Generic application fallback
         val buttons = mutableListOf<DesktopButtonNativeImpl<*>>()
         val checkboxes = mutableListOf<DesktopCheckboxNativeImpl<*>>()
@@ -1624,6 +1700,1475 @@ object Win32NativeWindowHost {
                 }
                 if (col == cols - 1 || idx == min(23, buttons.lastIndex)) {
                     y += 34
+                }
+            }
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun renderDcAppLayout(
+        hwnd: HWND,
+        hdc: HDC?,
+        theme: SystemThemePalette,
+        fontSmall: HFONT?,
+        fontSmallBold: HFONT?,
+        fontNormal: HFONT?,
+        fontBold: HFONT?,
+        fontTitle: HFONT?,
+        fontMetricBig: HFONT?,
+        dcAppRoot: DesktopNativeWidget,
+        clientW: Int,
+        clientH: Int
+    ) {
+        val pageHost = findWidgetByClass(dcAppRoot, "page-host") ?: dcAppRoot
+        val currentPage = pageHost.children.lastOrNull { it.visible && !it.disposed } ?: pageHost
+        val outerCard = currentPage.children.firstOrNull { widgetHasClass(it, "card") } ?: currentPage
+        val cardBody = outerCard.children.firstOrNull { widgetHasClass(it, "card-body") } ?: outerCard
+
+        val pageKey = (currentPage.attributes["bootstrapClass"] as? String).orEmpty()
+        if (pageKey != dcAppLastPageKey) {
+            dcAppLastPageKey = pageKey
+            dcAppScrollY = 0
+        }
+
+        // 1. Top Navigation Bar
+        val navBarH = 40
+        fillRectColor(hdc, 0, 0, clientW, navBarH, theme.bgPanel)
+        drawLineColor(hdc, 0, navBarH, clientW, navBarH, theme.borderSubtle)
+
+        var navX = 12
+        val navBtnTop = 6
+        val navBtnBottom = navBarH - 6
+        val navItems = buildList<Pair<String, (() -> Unit)?>> {
+            add("← Back" to (dcAppRoot.attributes["onNavigateBack"] as? (() -> Unit)))
+            add("Home" to (dcAppRoot.attributes["onNavigateHome"] as? (() -> Unit)))
+            add("Asset Manager" to (dcAppRoot.attributes["onNavigateAssets"] as? (() -> Unit)))
+            add("Database" to (dcAppRoot.attributes["onNavigateDb"] as? (() -> Unit)))
+        }
+        for ((label, action) in navItems) {
+            if (action == null) continue
+            val btnW = max(76, label.length * 8 + 20)
+            drawRoundedButton(
+                hdc = hdc,
+                font = fontSmallBold,
+                label = label,
+                left = navX,
+                top = navBtnTop,
+                right = navX + btnW,
+                bottom = navBtnBottom,
+                bg = theme.bgCard,
+                border = theme.borderSubtle,
+                fg = theme.textPrimary,
+                radius = 5
+            )
+            val capLeft = navX
+            val capRight = navX + btnW
+            hitRegions.add(
+                HitRegion(
+                    left = capLeft,
+                    top = navBtnTop,
+                    right = capRight,
+                    bottom = navBtnBottom,
+                    onClick = { _, _ -> action.invoke() }
+                )
+            )
+            navX += btnW + 8
+        }
+
+        val winTitle = activeWindowImpl?.getTitle()?.ifBlank { "DC App" } ?: "DC App"
+        SelectObject(hdc, fontBold)
+        drawTextInRect(
+            hdc = hdc,
+            text = winTitle,
+            left = navX + 12,
+            top = 10,
+            right = clientW - 16,
+            bottom = navBarH - 8,
+            colorRef = theme.accentBlueText
+        )
+
+        // 2. Outer Card Container
+        val outerMarginX = max(16, (clientW - 1220) / 2)
+        val outerLeft = outerMarginX
+        val outerRight = clientW - outerMarginX
+        val outerTop = navBarH + 12
+        val outerBottom = clientH - 12
+
+        drawRoundedRect(
+            hdc = hdc,
+            left = outerLeft,
+            top = outerTop,
+            right = outerRight,
+            bottom = outerBottom,
+            radius = 8,
+            fillColor = theme.bgPanel,
+            borderColor = theme.borderSubtle
+        )
+
+        val innerLeft = outerLeft + 20
+        val scrollRailW = 16
+        val innerRight = outerRight - 20 - scrollRailW
+        val innerW = max(240, innerRight - innerLeft)
+        var headerBottom = outerTop + 14
+
+        // Extract direct header texts (h1, h5) from cardBody
+        val directHeaderTexts = cardBody.children.mapNotNull {
+            (it.attributes["nativeImpl"] as? DesktopTextNativeImpl<*>)?.getText()?.trim()
+        }.filter { it.isNotEmpty() }
+
+        val mainHeading = directHeaderTexts.getOrNull(0)
+        val subHeading = directHeaderTexts.getOrNull(1)
+        if (!mainHeading.isNullOrEmpty()) {
+            SelectObject(hdc, fontMetricBig)
+            drawTextInRect(
+                hdc = hdc,
+                text = mainHeading,
+                left = innerLeft,
+                top = headerBottom,
+                right = innerRight,
+                bottom = headerBottom + 32,
+                colorRef = theme.textPrimary,
+                center = true
+            )
+            headerBottom += 34
+        }
+        if (!subHeading.isNullOrEmpty()) {
+            SelectObject(hdc, fontNormal)
+            drawTextInRect(
+                hdc = hdc,
+                text = subHeading,
+                left = innerLeft,
+                top = headerBottom,
+                right = innerRight,
+                bottom = headerBottom + 22,
+                colorRef = theme.textSecondary,
+                center = true
+            )
+            headerBottom += 26
+        }
+        drawLineColor(hdc, innerLeft, headerBottom, innerRight, headerBottom, theme.borderSubtle)
+        val viewportTop = headerBottom + 10
+        val viewportBottom = outerBottom - 12
+        val viewportH = max(80, viewportBottom - viewportTop)
+
+        val savedDc = SaveDC(hdc)
+        IntersectClipRect(hdc, innerLeft - 4, viewportTop, innerRight + 4, viewportBottom)
+
+        var contentY = viewportTop - dcAppScrollY
+        val renderedWidgets = mutableSetOf<DesktopNativeWidget>()
+
+        fun addClippedHitRegion(
+            left: Int,
+            top: Int,
+            right: Int,
+            bottom: Int,
+            widget: DesktopNativeWidget? = null,
+            isTextInput: Boolean = false,
+            onClick: ((Int, Int) -> Unit)? = null
+        ) {
+            val cTop = max(top, viewportTop)
+            val cBottom = min(bottom, viewportBottom)
+            if (cBottom > cTop) {
+                hitRegions.add(
+                    HitRegion(
+                        left = left,
+                        top = cTop,
+                        right = right,
+                        bottom = cBottom,
+                        widget = widget,
+                        isTextInput = isTextInput,
+                        onClick = onClick
+                    )
+                )
+            }
+        }
+
+        // Case A: Inner Cards Grid (Index, AssetManager, ItemMenu, DBMenu, Templates)
+        val innerCards = mutableListOf<DesktopNativeWidget>()
+        fun findInnerCards(node: DesktopNativeWidget) {
+            if (!node.visible || node.disposed) return
+            if (node !== outerCard && widgetHasClass(node, "card")) {
+                innerCards.add(node)
+                return
+            }
+            for (c in node.children) findInnerCards(c)
+        }
+        findInnerCards(cardBody)
+
+        if (innerCards.isNotEmpty()) {
+            val cols = when {
+                innerW >= 780 -> 3
+                innerW >= 500 -> 2
+                else -> 1
+            }
+            val gap = 12
+            val cardW = (innerW - gap * (cols - 1)) / cols
+            val cardH = 128
+
+            innerCards.forEachIndexed { idx, cardWidget ->
+                renderedWidgets.add(cardWidget)
+                val col = idx % cols
+                val row = idx / cols
+                val cx = innerLeft + col * (cardW + gap)
+                val cy = contentY + row * (cardH + gap)
+
+                if (cy + cardH >= viewportTop - 20 && cy <= viewportBottom + 20) {
+                    drawRoundedRect(
+                        hdc = hdc,
+                        left = cx,
+                        top = cy,
+                        right = cx + cardW,
+                        bottom = cy + cardH,
+                        radius = 6,
+                        fillColor = theme.bgCard,
+                        borderColor = theme.borderSubtle
+                    )
+                    val cardTexts = collectDirectOrNestedTexts(cardWidget)
+                        .map { it.getText().trim() }
+                        .filter { it.isNotEmpty() }
+                    val cTitle = cardTexts.getOrNull(0) ?: ""
+                    val cDesc = cardTexts.getOrNull(1) ?: ""
+                    if (cTitle.isNotEmpty()) {
+                        SelectObject(hdc, fontBold)
+                        drawTextInRect(
+                            hdc = hdc,
+                            text = cTitle,
+                            left = cx + 10,
+                            top = cy + 10,
+                            right = cx + cardW - 10,
+                            bottom = cy + 32,
+                            colorRef = theme.textPrimary,
+                            center = true
+                        )
+                    }
+                    if (cDesc.isNotEmpty()) {
+                        SelectObject(hdc, fontSmall)
+                        drawTextInRect(
+                            hdc = hdc,
+                            text = cDesc,
+                            left = cx + 10,
+                            top = cy + 36,
+                            right = cx + cardW - 10,
+                            bottom = cy + 78,
+                            colorRef = theme.textSecondary,
+                            center = true
+                        )
+                    }
+                    val cardBtn = collectDirectOrNestedButtons(cardWidget).firstOrNull()
+                    if (cardBtn != null) {
+                        val btnTop = cy + cardH - 38
+                        val btnBottom = cy + cardH - 10
+                        drawRoundedButton(
+                            hdc = hdc,
+                            font = fontSmallBold,
+                            label = cardBtn.getText().ifBlank { "Open" },
+                            left = cx + 12,
+                            top = btnTop,
+                            right = cx + cardW - 12,
+                            bottom = btnBottom,
+                            bg = theme.accentBlue,
+                            border = theme.accentBlueBorder,
+                            fg = rgb(255, 255, 255),
+                            radius = 5,
+                            widget = cardBtn.nativeWidget,
+                            hwndForHover = hwnd
+                        )
+                        addClippedHitRegion(
+                            left = cx + 12,
+                            top = btnTop,
+                            right = cx + cardW - 12,
+                            bottom = btnBottom,
+                            widget = cardBtn.nativeWidget,
+                            onClick = { _, _ -> cardBtn.dispatchClick() }
+                        )
+                    }
+                }
+            }
+            val totalRows = (innerCards.size + cols - 1) / cols
+            contentY += totalRows * (cardH + gap)
+        }
+
+        // Case B: DataSheet Table (.data-sheet)
+        val dataSheetNode = findWidgetByClass(cardBody, "data-sheet")
+        if (dataSheetNode != null) {
+            renderedWidgets.add(dataSheetNode)
+            for (child in cardBody.children) {
+                if (child === dataSheetNode) break
+                val btns = collectDirectOrNestedButtons(child)
+                if (btns.isNotEmpty()) {
+                    renderedWidgets.add(child)
+                    var bx = innerLeft
+                    for (btn in btns) {
+                        val label = btn.getText().trim()
+                        if (label.isEmpty()) continue
+                        val btnW = max(110, label.length * 8 + 24)
+                        val isCreate = label.startsWith("Create", ignoreCase = true)
+                        val drawLeft = if (isCreate && btns.size <= 2) max(bx, innerRight - btnW) else bx
+                        drawRoundedButton(
+                            hdc = hdc,
+                            font = fontSmallBold,
+                            label = label,
+                            left = drawLeft,
+                            top = contentY,
+                            right = drawLeft + btnW,
+                            bottom = contentY + 30,
+                            bg = if (isCreate) theme.accentBlue else theme.bgCard,
+                            border = if (isCreate) theme.accentBlueBorder else theme.borderSubtle,
+                            fg = if (isCreate) rgb(255, 255, 255) else theme.textPrimary,
+                            radius = 5,
+                            widget = btn.nativeWidget,
+                            hwndForHover = hwnd
+                        )
+                        addClippedHitRegion(
+                            left = drawLeft,
+                            top = contentY,
+                            right = drawLeft + btnW,
+                            bottom = contentY + 30,
+                            widget = btn.nativeWidget,
+                            onClick = { _, _ -> btn.dispatchClick() }
+                        )
+                        bx += btnW + 8
+                    }
+                    contentY += 38
+                }
+            }
+
+            val headerNode = dataSheetNode.children.firstOrNull { widgetHasClass(it, "header") }
+            val contentNode = dataSheetNode.children.firstOrNull { widgetHasClass(it, "content") }
+            val headCells = headerNode?.children.orEmpty()
+            val colCount = max(1, headCells.size)
+            val colW = innerW / colCount
+            val rowH = 34
+
+            if (headCells.isNotEmpty()) {
+                fillRectColor(hdc, innerLeft, contentY, innerRight, contentY + rowH, theme.bgElevated)
+                drawRectBorder(hdc, innerLeft, contentY, innerRight, contentY + rowH, theme.borderSubtle)
+                headCells.forEachIndexed { cIdx, cellWidget ->
+                    val cLeft = innerLeft + cIdx * colW
+                    val cRight = if (cIdx == colCount - 1) innerRight else cLeft + colW
+                    val sortBtn = collectDirectOrNestedButtons(cellWidget).firstOrNull()
+                    val titleStr = sortBtn?.getText()?.ifBlank { extractWidgetText(cellWidget) }
+                        ?: extractWidgetText(cellWidget)
+                    SelectObject(hdc, fontSmallBold)
+                    drawTextInRect(
+                        hdc = hdc,
+                        text = titleStr,
+                        left = cLeft + 8,
+                        top = contentY + 6,
+                        right = cRight - 6,
+                        bottom = contentY + rowH - 6,
+                        colorRef = theme.textPrimary
+                    )
+                    if (sortBtn != null) {
+                        addClippedHitRegion(
+                            left = cLeft,
+                            top = contentY,
+                            right = cRight,
+                            bottom = contentY + rowH,
+                            widget = sortBtn.nativeWidget,
+                            onClick = { _, _ -> sortBtn.dispatchClick() }
+                        )
+                    }
+                }
+                contentY += rowH
+            }
+
+            val dataRows = contentNode?.children.orEmpty()
+            dataRows.forEachIndexed { rIdx, rowWidget ->
+                val ry = contentY + rIdx * rowH
+                if (ry + rowH >= viewportTop - 20 && ry <= viewportBottom + 20) {
+                    val rowBg = if (rIdx % 2 == 0) theme.bgCard else theme.bgBase
+                    fillRectColor(hdc, innerLeft, ry, innerRight, ry + rowH, rowBg)
+                    drawLineColor(hdc, innerLeft, ry + rowH, innerRight, ry + rowH, theme.borderSubtle)
+
+                    val rowCells = rowWidget.children
+                    rowCells.forEachIndexed { cIdx, cellWidget ->
+                        val cLeft = if (rowCells.size == 1) innerLeft else innerLeft + cIdx * colW
+                        val cRight = if (rowCells.size == 1 || cIdx == colCount - 1) innerRight else cLeft + colW
+                        val cellBtn = collectDirectOrNestedButtons(cellWidget).firstOrNull()
+                        if (cellBtn != null) {
+                            drawRoundedButton(
+                                hdc = hdc,
+                                font = fontSmallBold,
+                                label = cellBtn.getText().ifBlank { "View / Edit" },
+                                left = cLeft + 6,
+                                top = ry + 4,
+                                right = cRight - 6,
+                                bottom = ry + rowH - 4,
+                                bg = theme.accentBlue,
+                                border = theme.accentBlueBorder,
+                                fg = rgb(255, 255, 255),
+                                radius = 4,
+                                widget = cellBtn.nativeWidget,
+                                hwndForHover = hwnd
+                            )
+                            addClippedHitRegion(
+                                left = cLeft + 6,
+                                top = ry + 4,
+                                right = cRight - 6,
+                                bottom = ry + rowH - 4,
+                                widget = cellBtn.nativeWidget,
+                                onClick = { _, _ -> cellBtn.dispatchClick() }
+                            )
+                        } else {
+                            val cellText = extractWidgetText(cellWidget)
+                            SelectObject(hdc, fontSmall)
+                            drawTextInRect(
+                                hdc = hdc,
+                                text = cellText,
+                                left = cLeft + 8,
+                                top = ry + 6,
+                                right = cRight - 6,
+                                bottom = ry + rowH - 6,
+                                colorRef = theme.textPrimary
+                            )
+                        }
+                    }
+                }
+            }
+            contentY += dataRows.size * rowH + 12
+
+            for (child in cardBody.children) {
+                if (child in renderedWidgets || child === dataSheetNode) continue
+                val pagerBtns = collectDirectOrNestedButtons(child)
+                if (pagerBtns.isNotEmpty()) {
+                    renderedWidgets.add(child)
+                    var px = innerLeft
+                    for (pBtn in pagerBtns) {
+                        val pLabel = pBtn.getText().trim()
+                        val pW = max(36, pLabel.length * 8 + 18)
+                        val enabled = pBtn.isEnabled()
+                        drawRoundedButton(
+                            hdc = hdc,
+                            font = fontSmallBold,
+                            label = pLabel,
+                            left = px,
+                            top = contentY,
+                            right = px + pW,
+                            bottom = contentY + 28,
+                            bg = if (!enabled) theme.accentBlue else theme.bgCard,
+                            border = if (!enabled) theme.accentBlueBorder else theme.borderSubtle,
+                            fg = if (!enabled) rgb(255, 255, 255) else theme.textPrimary,
+                            radius = 4,
+                            widget = if (enabled) pBtn.nativeWidget else null,
+                            hwndForHover = if (enabled) hwnd else null
+                        )
+                        if (enabled) {
+                            addClippedHitRegion(
+                                left = px,
+                                top = contentY,
+                                right = px + pW,
+                                bottom = contentY + 28,
+                                widget = pBtn.nativeWidget,
+                                onClick = { _, _ -> pBtn.dispatchClick() }
+                            )
+                        }
+                        px += pW + 6
+                    }
+                    contentY += 36
+                }
+            }
+        }
+
+        // Case C: Form Editor / Remaining Controls (MetaEditor, Alignment, etc.)
+        if (innerCards.isEmpty() && dataSheetNode == null) {
+            val alertNode = findWidgetByClass(cardBody, "alert")
+            if (alertNode != null && alertNode.visible) {
+                val alertMsg = extractWidgetText(alertNode).trim()
+                if (alertMsg.isNotEmpty()) {
+                    val isDanger = widgetHasClass(alertNode, "alert-danger")
+                    drawRoundedRect(
+                        hdc = hdc,
+                        left = innerLeft,
+                        top = contentY,
+                        right = innerRight,
+                        bottom = contentY + 34,
+                        radius = 5,
+                        fillColor = if (isDanger) theme.dangerBg else theme.accentBlueSoftBg,
+                        borderColor = if (isDanger) theme.dangerBorder else theme.accentBlueBorder
+                    )
+                    SelectObject(hdc, fontSmallBold)
+                    drawTextInRect(
+                        hdc = hdc,
+                        text = alertMsg,
+                        left = innerLeft + 12,
+                        top = contentY + 7,
+                        right = innerRight - 12,
+                        bottom = contentY + 28,
+                        colorRef = if (isDanger) theme.dangerText else theme.accentBlueText
+                    )
+                    contentY += 42
+                }
+            }
+
+            class DcFormFieldRenderItem(
+                val label: String,
+                val textInput: DesktopTextInputNativeImpl<*>?,
+                val select: DesktopSelectNativeImpl<*>?,
+                val checkbox: DesktopCheckboxNativeImpl<*>?,
+                val buttons: List<DesktopButtonNativeImpl<*>>
+            )
+
+            val fieldItems = mutableListOf<DcFormFieldRenderItem>()
+            val actionButtons = mutableListOf<DesktopButtonNativeImpl<*>>()
+
+            fun collectFormNodes(node: DesktopNativeWidget) {
+                if (!node.visible || node.disposed || widgetHasClass(node, "alert")) return
+                val isFieldCol = widgetHasClass(node, "col-lg-4") ||
+                    widgetHasClass(node, "col-lg-6") ||
+                    widgetHasClass(node, "form-group")
+                if (isFieldCol) {
+                    val tInput = findFirstTextInput(node)
+                    val sel = findFirstSelect(node)
+                    val chk = findFirstCheckbox(node)
+                    val btns = collectDirectOrNestedButtons(node)
+                    val lbl = collectDirectOrNestedTexts(node)
+                        .map { it.getText().trim() }
+                        .firstOrNull { it.isNotEmpty() } ?: ""
+                    if (tInput != null || sel != null || chk != null || btns.isNotEmpty()) {
+                        fieldItems.add(
+                            DcFormFieldRenderItem(
+                                label = lbl,
+                                textInput = tInput,
+                                select = sel,
+                                checkbox = chk,
+                                buttons = btns
+                            )
+                        )
+                        return
+                    }
+                }
+                val directBtn = node.attributes["nativeImpl"] as? DesktopButtonNativeImpl<*>
+                if (directBtn != null) {
+                    actionButtons.add(directBtn)
+                    return
+                }
+                for (c in node.children) collectFormNodes(c)
+            }
+            collectFormNodes(cardBody)
+
+            if (fieldItems.isNotEmpty()) {
+                val cols = if (innerW >= 760) 3 else 2
+                val gap = 12
+                val colW = (innerW - gap * (cols - 1)) / cols
+                val fieldH = 58
+
+                fieldItems.forEachIndexed { idx, item ->
+                    val col = idx % cols
+                    val row = idx / cols
+                    val fx = innerLeft + col * (colW + gap)
+                    val fy = contentY + row * (fieldH + 8)
+
+                    if (fy + fieldH >= viewportTop - 20 && fy <= viewportBottom + 20) {
+                        SelectObject(hdc, fontSmallBold)
+                        drawTextInRect(
+                            hdc = hdc,
+                            text = item.label,
+                            left = fx,
+                            top = fy,
+                            right = fx + colW,
+                            bottom = fy + 18,
+                            colorRef = theme.textSecondary
+                        )
+                        val ctrlTop = fy + 22
+                        val ctrlBottom = fy + 52
+                        when {
+                            item.textInput != null -> {
+                                val tIn = item.textInput
+                                val isFocused = focusedTextInput === tIn
+                                val valStr = tIn.getValue()
+                                val disp = if (isFocused) "$valStr|" else valStr
+                                drawRoundedRect(
+                                    hdc = hdc,
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    radius = 4,
+                                    fillColor = theme.bgBase,
+                                    borderColor = if (isFocused) theme.accentBlueBorder else theme.borderSubtle
+                                )
+                                SelectObject(hdc, fontSmall)
+                                drawTextInRect(
+                                    hdc = hdc,
+                                    text = disp,
+                                    left = fx + 8,
+                                    top = ctrlTop + 5,
+                                    right = fx + colW - 8,
+                                    bottom = ctrlBottom - 4,
+                                    colorRef = theme.textPrimary
+                                )
+                                addClippedHitRegion(
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    widget = tIn.nativeWidget,
+                                    isTextInput = true
+                                )
+                            }
+                            item.select != null -> {
+                                val sel = item.select
+                                val selectedVal = sel.getSelectedValue() ?: ""
+                                val selectedLabel = sel.getOptions()
+                                    .firstOrNull { it.first == selectedVal }?.second
+                                    ?: selectedVal.ifBlank { "Select..." }
+                                drawRoundedButton(
+                                    hdc = hdc,
+                                    font = fontSmall,
+                                    label = "$selectedLabel  ▾",
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    bg = theme.bgCard,
+                                    border = theme.borderSubtle,
+                                    fg = theme.textPrimary,
+                                    radius = 4,
+                                    widget = sel.nativeWidget,
+                                    hwndForHover = hwnd
+                                )
+                                addClippedHitRegion(
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    widget = sel.nativeWidget,
+                                    onClick = { mx, my -> openSelectPopupMenu(hwnd, sel, mx, my) }
+                                )
+                            }
+                            item.checkbox != null -> {
+                                val chk = item.checkbox
+                                val checked = chk.isChecked()
+                                drawRoundedButton(
+                                    hdc = hdc,
+                                    font = fontSmallBold,
+                                    label = if (checked) "☑ Enabled" else "☐ Disabled",
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    bg = if (checked) theme.accentBlueSoftBg else theme.bgCard,
+                                    border = if (checked) theme.accentBlueBorder else theme.borderSubtle,
+                                    fg = theme.textPrimary,
+                                    radius = 4,
+                                    widget = chk.nativeWidget,
+                                    hwndForHover = hwnd
+                                )
+                                addClippedHitRegion(
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    widget = chk.nativeWidget,
+                                    onClick = { _, _ -> chk.setChecked(!chk.isChecked()) }
+                                )
+                            }
+                            item.buttons.isNotEmpty() -> {
+                                val btn = item.buttons.first()
+                                drawRoundedButton(
+                                    hdc = hdc,
+                                    font = fontSmallBold,
+                                    label = btn.getText().ifBlank { item.label },
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    bg = theme.bgCard,
+                                    border = theme.borderSubtle,
+                                    fg = theme.textPrimary,
+                                    radius = 4,
+                                    widget = btn.nativeWidget,
+                                    hwndForHover = hwnd
+                                )
+                                addClippedHitRegion(
+                                    left = fx,
+                                    top = ctrlTop,
+                                    right = fx + colW,
+                                    bottom = ctrlBottom,
+                                    widget = btn.nativeWidget,
+                                    onClick = { _, _ -> btn.dispatchClick() }
+                                )
+                            }
+                        }
+                    }
+                }
+                val totalRows = (fieldItems.size + cols - 1) / cols
+                contentY += totalRows * (fieldH + 8) + 8
+            }
+
+            if (actionButtons.isNotEmpty()) {
+                val cols = if (actionButtons.size == 9) 3 else min(4, max(1, actionButtons.size))
+                val gap = 10
+                val btnW = min(220, (innerW - gap * (cols - 1)) / cols)
+                actionButtons.forEachIndexed { idx, btn ->
+                    val col = idx % cols
+                    val row = idx / cols
+                    val bx = innerLeft + col * (btnW + gap)
+                    val by = contentY + row * 38
+                    val label = btn.getText().ifBlank { "Action ${idx + 1}" }
+                    val isPrimary = label.equals("Save", ignoreCase = true) ||
+                        label.equals("Create", ignoreCase = true) ||
+                        widgetHasClass(btn.nativeWidget, "btn-primary")
+                    drawRoundedButton(
+                        hdc = hdc,
+                        font = fontSmallBold,
+                        label = label,
+                        left = bx,
+                        top = by,
+                        right = bx + btnW,
+                        bottom = by + 30,
+                        bg = if (isPrimary) theme.accentBlue else theme.bgCard,
+                        border = if (isPrimary) theme.accentBlueBorder else theme.borderSubtle,
+                        fg = if (isPrimary) rgb(255, 255, 255) else theme.textPrimary,
+                        radius = 5,
+                        widget = btn.nativeWidget,
+                        hwndForHover = hwnd
+                    )
+                    addClippedHitRegion(
+                        left = bx,
+                        top = by,
+                        right = bx + btnW,
+                        bottom = by + 30,
+                        widget = btn.nativeWidget,
+                        onClick = { _, _ -> btn.dispatchClick() }
+                    )
+                }
+                val totalBtnRows = (actionButtons.size + cols - 1) / cols
+                contentY += totalBtnRows * 38 + 8
+            }
+        }
+
+        val totalContentH = (contentY + dcAppScrollY) - viewportTop
+        dcAppMaxScrollY = max(0, totalContentH - viewportH)
+        if (dcAppScrollY > dcAppMaxScrollY) {
+            dcAppScrollY = dcAppMaxScrollY
+        }
+
+        RestoreDC(hdc, savedDc)
+
+        // Vertical Scrollbar Rail
+        if (dcAppMaxScrollY > 0) {
+            val railLeft = outerRight - 18
+            val railRight = outerRight - 6
+            fillRectColor(hdc, railLeft, viewportTop, railRight, viewportBottom, theme.bgBase)
+            val thumbH = max(32, (viewportH.toFloat() * (viewportH.toFloat() / max(1, totalContentH).toFloat())).roundToInt())
+            val trackRange = max(1, viewportH - thumbH)
+            val thumbTop = viewportTop + ((dcAppScrollY.toFloat() / dcAppMaxScrollY.toFloat()) * trackRange.toFloat()).roundToInt()
+            drawRoundedRect(
+                hdc = hdc,
+                left = railLeft + 1,
+                top = thumbTop,
+                right = railRight - 1,
+                bottom = thumbTop + thumbH,
+                radius = 4,
+                fillColor = theme.accentBlue,
+                borderColor = theme.accentBlueBorder
+            )
+        }
+
+        // Modal Overlay (#alert-modal)
+        val alertModal = dcAppRoot.children.firstOrNull { widgetHasClass(it, "modal") && it.visible }
+        if (alertModal != null) {
+            val modalW = min(460, clientW - 60)
+            val modalH = 200
+            val mLeft = (clientW - modalW) / 2
+            val mTop = (clientH - modalH) / 2
+            val mRight = mLeft + modalW
+            val mBottom = mTop + modalH
+            drawRoundedRect(
+                hdc = hdc,
+                left = mLeft,
+                top = mTop,
+                right = mRight,
+                bottom = mBottom,
+                radius = 8,
+                fillColor = theme.bgElevated,
+                borderColor = theme.accentBlueBorder
+            )
+            val modalTexts = collectDirectOrNestedTexts(alertModal).map { it.getText().trim() }.filter { it.isNotEmpty() }
+            val mTitle = modalTexts.getOrNull(0) ?: "Alert"
+            val mBody = modalTexts.drop(1).joinToString("\n")
+            SelectObject(hdc, fontTitle)
+            drawTextInRect(hdc, mTitle, mLeft + 16, mTop + 14, mRight - 16, mTop + 40, theme.textPrimary)
+            SelectObject(hdc, fontNormal)
+            drawTextInRect(hdc, mBody, mLeft + 16, mTop + 48, mRight - 16, mBottom - 52, theme.textSecondary)
+
+            val modalBtns = collectDirectOrNestedButtons(alertModal)
+            var mbX = mRight - 16
+            for (mBtn in modalBtns.reversed()) {
+                val lbl = mBtn.getText().ifBlank { "Okay" }
+                val bw = max(80, lbl.length * 8 + 20)
+                mbX -= bw
+                drawRoundedButton(
+                    hdc = hdc,
+                    font = fontSmallBold,
+                    label = lbl,
+                    left = mbX,
+                    top = mBottom - 42,
+                    right = mbX + bw,
+                    bottom = mBottom - 12,
+                    bg = theme.accentBlue,
+                    border = theme.accentBlueBorder,
+                    fg = rgb(255, 255, 255),
+                    radius = 5,
+                    widget = mBtn.nativeWidget,
+                    hwndForHover = hwnd
+                )
+                val capL = mbX
+                val capR = mbX + bw
+                hitRegions.add(
+                    HitRegion(
+                        left = capL,
+                        top = mBottom - 42,
+                        right = capR,
+                        bottom = mBottom - 12,
+                        widget = mBtn.nativeWidget,
+                        onClick = { _, _ -> mBtn.dispatchClick() }
+                    )
+                )
+                mbX -= 8
+            }
+        }
+    }
+
+    private class PageActionItem(
+        val label: String,
+        val widget: DesktopNativeWidget,
+        val impl: DesktopBaseNativeImpl<*>,
+        val isActive: Boolean,
+        val isDisabled: Boolean,
+        val isPrimary: Boolean
+    )
+
+    private fun collectPageActionItems(
+        root: DesktopNativeWidget?,
+        out: MutableList<PageActionItem> = mutableListOf()
+    ): List<PageActionItem> {
+        if (root == null || !root.visible || root.disposed) return out
+        val impl = root.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+        if (impl != null) {
+            val isBtnClass = widgetHasClass(root, "btn") ||
+                widgetHasClass(root, "list-group-item") ||
+                widgetHasClass(root, "bloodline-item")
+            val isClickable = impl is DesktopButtonNativeImpl<*> || impl.hasClickListener() || isBtnClass
+            if (isClickable && !widgetHasClass(root, "bloodline-item")) {
+                val label = extractWidgetText(root).trim()
+                if (label.isNotEmpty()) {
+                    val active = widgetHasClass(root, "btn-active") || widgetHasClass(root, "active")
+                    val disabled = !impl.isEnabled() || widgetHasClass(root, "disabled")
+                    val primary = widgetHasClass(root, "btn-primary") ||
+                        widgetHasClass(root, "continue") ||
+                        widgetHasClass(root, "create")
+                    out.add(
+                        PageActionItem(
+                            label = label,
+                            widget = root,
+                            impl = impl,
+                            isActive = active,
+                            isDisabled = disabled,
+                            isPrimary = primary
+                        )
+                    )
+                    return out
+                }
+            }
+        }
+        for (child in root.children) {
+            collectPageActionItems(child, out)
+        }
+        return out
+    }
+
+    private fun renderPageHostLayout(
+        hwnd: HWND,
+        hdc: HDC?,
+        theme: SystemThemePalette,
+        fontSmall: HFONT?,
+        fontSmallBold: HFONT?,
+        fontNormal: HFONT?,
+        fontBold: HFONT?,
+        fontTitle: HFONT?,
+        fontMetricBig: HFONT?,
+        rootWidget: DesktopNativeWidget?,
+        menuWidget: DesktopNativeWidget?,
+        clientW: Int,
+        clientH: Int
+    ) {
+        val activePageWidget = rootWidget?.children?.lastOrNull {
+            it.visible && !it.disposed && !widgetHasClass(it, "loader")
+        } ?: menuWidget
+        val activeMenu = findWidgetByClass(activePageWidget, "menu") ?: menuWidget ?: rootWidget ?: return
+
+        val isCharGen = widgetHasClass(activeMenu, "chargen") ||
+            findWidgetByClass(activeMenu, "chargennav") != null
+        val cardW = if (isCharGen) {
+            (clientW - 64).coerceIn(720, 1180)
+        } else {
+            (clientW - 120).coerceIn(420, 560)
+        }
+        val cardH = if (isCharGen) {
+            (clientH - 56).coerceIn(480, 760)
+        } else {
+            (clientH - 120).coerceIn(340, 460)
+        }
+        val cardLeft = (clientW - cardW) / 2
+        val cardTop = (clientH - cardH) / 2
+        val cardRight = cardLeft + cardW
+        val cardBottom = cardTop + cardH
+
+        drawRoundedRect(
+            hdc = hdc,
+            left = cardLeft,
+            top = cardTop,
+            right = cardRight,
+            bottom = cardBottom,
+            radius = 10,
+            fillColor = theme.bgPanel,
+            borderColor = theme.borderSubtle
+        )
+
+        var curY = cardTop + 18
+        val innerLeft = cardLeft + 24
+        val innerRight = cardRight - 24
+        val innerW = innerRight - innerLeft
+
+        val stepNavNode = findWidgetByClass(activeMenu, "chargennav")
+        if (stepNavNode != null) {
+            SelectObject(hdc, fontTitle)
+            drawTextInRect(
+                hdc = hdc,
+                text = "Character Creator",
+                left = innerLeft,
+                top = curY,
+                right = innerRight,
+                bottom = curY + 28,
+                colorRef = theme.textPrimary,
+                center = true
+            )
+            curY += 34
+
+            val stepBtns = collectPageActionItems(stepNavNode)
+            if (stepBtns.isNotEmpty()) {
+                val gap = 4
+                val btnW = ((innerW - gap * (stepBtns.size - 1)) / stepBtns.size).coerceAtLeast(52)
+                var sx = innerLeft + (innerW - (btnW * stepBtns.size + gap * (stepBtns.size - 1))) / 2
+                val stepBarH = 26
+                for (stepBtn in stepBtns) {
+                    val bg = when {
+                        stepBtn.isActive -> theme.accentBlue
+                        stepBtn.isDisabled -> theme.bgBase
+                        else -> theme.bgCard
+                    }
+                    val border = when {
+                        stepBtn.isActive -> theme.accentBlueBorder
+                        stepBtn.isDisabled -> theme.borderSubtle
+                        else -> theme.accentBlueBorder
+                    }
+                    val fg = when {
+                        stepBtn.isActive -> rgb(255, 255, 255)
+                        stepBtn.isDisabled -> theme.textMuted
+                        else -> theme.textPrimary
+                    }
+                    drawRoundedButton(
+                        hdc = hdc,
+                        font = if (stepBtn.isActive) fontSmallBold else fontSmall,
+                        label = stepBtn.label,
+                        left = sx,
+                        top = curY,
+                        right = sx + btnW,
+                        bottom = curY + stepBarH,
+                        bg = bg,
+                        border = border,
+                        fg = fg,
+                        radius = 4,
+                        widget = if (stepBtn.isDisabled) null else stepBtn.widget,
+                        hwndForHover = if (stepBtn.isDisabled) null else hwnd
+                    )
+                    if (!stepBtn.isDisabled) {
+                        val capLeft = sx
+                        val capRight = sx + btnW
+                        val capTop = curY
+                        val capBottom = curY + stepBarH
+                        hitRegions.add(
+                            HitRegion(
+                                left = capLeft,
+                                top = capTop,
+                                right = capRight,
+                                bottom = capBottom,
+                                widget = stepBtn.widget,
+                                onClick = { _, _ -> stepBtn.impl.dispatchClick() }
+                            )
+                        )
+                    }
+                    sx += btnW + gap
+                }
+                curY += stepBarH + 16
+            }
+        } else {
+            val winTitle = activeWindowImpl?.getTitle()?.ifBlank { "DC RPG" } ?: "DC RPG"
+            SelectObject(hdc, fontMetricBig)
+            drawTextInRect(
+                hdc = hdc,
+                text = winTitle,
+                left = innerLeft,
+                top = curY,
+                right = innerRight,
+                bottom = curY + 36,
+                colorRef = theme.accentBlueText,
+                center = true
+            )
+            curY += 48
+        }
+
+        val contentRoot = findWidgetByClass(activeMenu, "step-content") ?: activeMenu
+
+        // Case 1: CharGenStep2 Bloodline Carousel (.blprev / .blnext / .bloodline-item)
+        val blPrevNode = findWidgetByClass(contentRoot, "blprev")
+        val blNextNode = findWidgetByClass(contentRoot, "blnext")
+        val blItems = findWidgetsByClass(contentRoot, "bloodline-item")
+        if (blPrevNode != null && blNextNode != null && blItems.isNotEmpty()) {
+            val footerH = 44
+            val carouselBottom = cardBottom - 18 - footerH - 12
+            val carouselTop = curY
+            val navBtnW = 44
+
+            val prevImpl = blPrevNode.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+            drawRoundedButton(
+                hdc = hdc,
+                font = fontTitle,
+                label = "«",
+                left = innerLeft,
+                top = carouselTop,
+                right = innerLeft + navBtnW,
+                bottom = carouselBottom,
+                bg = theme.accentBlue,
+                border = theme.accentBlueBorder,
+                fg = rgb(255, 255, 255),
+                radius = 6,
+                widget = blPrevNode,
+                hwndForHover = hwnd
+            )
+            if (prevImpl != null) {
+                hitRegions.add(
+                    HitRegion(
+                        left = innerLeft,
+                        top = carouselTop,
+                        right = innerLeft + navBtnW,
+                        bottom = carouselBottom,
+                        widget = blPrevNode,
+                        onClick = { _, _ -> prevImpl.dispatchClick() }
+                    )
+                )
+            }
+
+            val nextImpl = blNextNode.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+            drawRoundedButton(
+                hdc = hdc,
+                font = fontTitle,
+                label = "»",
+                left = innerRight - navBtnW,
+                top = carouselTop,
+                right = innerRight,
+                bottom = carouselBottom,
+                bg = theme.accentBlue,
+                border = theme.accentBlueBorder,
+                fg = rgb(255, 255, 255),
+                radius = 6,
+                widget = blNextNode,
+                hwndForHover = hwnd
+            )
+            if (nextImpl != null) {
+                hitRegions.add(
+                    HitRegion(
+                        left = innerRight - navBtnW,
+                        top = carouselTop,
+                        right = innerRight,
+                        bottom = carouselBottom,
+                        widget = blNextNode,
+                        onClick = { _, _ -> nextImpl.dispatchClick() }
+                    )
+                )
+            }
+
+            val activeIdx = blItems.indexOfFirst { it.opacity >= 0.9f }.let { if (it >= 0) it else 0 }
+            val viewportLeft = innerLeft + navBtnW + 10
+            val viewportRight = innerRight - navBtnW - 10
+            val viewportW = (viewportRight - viewportLeft).coerceAtLeast(240)
+
+            val visibleIndices = listOf(activeIdx - 1, activeIdx, activeIdx + 1)
+                .filter { it in blItems.indices }
+            val slotW = (viewportW - 16) / 3
+            for (idx in visibleIndices) {
+                val blWidget = blItems[idx]
+                val blImpl = blWidget.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                val isSelected = idx == activeIdx
+                val relSlot = idx - activeIdx + 1
+                val itemLeft = if (visibleIndices.size == 1) {
+                    viewportLeft + (viewportW - slotW * 2) / 2
+                } else {
+                    viewportLeft + relSlot * (slotW + 8)
+                }
+                val itemRight = if (visibleIndices.size == 1) {
+                    itemLeft + slotW * 2
+                } else {
+                    itemLeft + slotW
+                }
+                val cardBg = if (isSelected) theme.bgCard else theme.bgBase
+                val cardBorder = if (isSelected) theme.accentBlueBorder else theme.borderSubtle
+                drawRoundedRect(
+                    hdc = hdc,
+                    left = itemLeft,
+                    top = carouselTop,
+                    right = itemRight,
+                    bottom = carouselBottom,
+                    radius = 8,
+                    fillColor = cardBg,
+                    borderColor = cardBorder
+                )
+                val texts = collectDirectOrNestedTexts(blWidget)
+                    .map { it.getText().trim() }
+                    .filter { it.isNotEmpty() }
+                var ty = carouselTop + 12
+                val titleStr = texts.firstOrNull() ?: "Bloodline #${idx + 1}"
+                SelectObject(hdc, if (isSelected) fontTitle else fontBold)
+                drawTextInRect(
+                    hdc = hdc,
+                    text = titleStr,
+                    left = itemLeft + 10,
+                    top = ty,
+                    right = itemRight - 10,
+                    bottom = ty + 24,
+                    colorRef = if (isSelected) theme.accentBlueText else theme.textSecondary,
+                    center = true
+                )
+                ty += 28
+
+                // Silhouette preview box
+                val silHeight = (carouselBottom - carouselTop - 160).coerceIn(70, 150)
+                val silTop = ty
+                val silBottom = silTop + silHeight
+                drawRoundedRect(
+                    hdc = hdc,
+                    left = itemLeft + 16,
+                    top = silTop,
+                    right = itemRight - 16,
+                    bottom = silBottom,
+                    radius = 6,
+                    fillColor = theme.bgElevated,
+                    borderColor = theme.borderSubtle
+                )
+                val midX = (itemLeft + itemRight) / 2
+                // Male & Female stylized silhouette figures
+                val figColor = if (isSelected) theme.accentBlueText else theme.textMuted
+                fillRectColor(hdc, midX - 28, silTop + 14, midX - 16, silTop + 26, figColor)
+                fillRectColor(hdc, midX - 32, silTop + 28, midX - 12, silBottom - 12, figColor)
+                fillRectColor(hdc, midX + 16, silTop + 20, midX + 28, silTop + 32, figColor)
+                fillRectColor(hdc, midX + 12, silTop + 34, midX + 32, silBottom - 12, figColor)
+                ty = silBottom + 8
+
+                for (line in texts.drop(1)) {
+                    if (ty + 18 > carouselBottom - 8) break
+                    val isTraitHeader = !line.contains(".") && line != "Traits" && line.length < 28
+                    SelectObject(hdc, if (isTraitHeader) fontSmallBold else fontSmall)
+                    drawTextInRect(
+                        hdc = hdc,
+                        text = line,
+                        left = itemLeft + 10,
+                        top = ty,
+                        right = itemRight - 10,
+                        bottom = ty + 18,
+                        colorRef = if (isSelected) {
+                            if (isTraitHeader) theme.textPrimary else theme.textSecondary
+                        } else {
+                            theme.textMuted
+                        },
+                        center = true
+                    )
+                    ty += 18
+                }
+
+                if (!isSelected && blImpl != null) {
+                    hitRegions.add(
+                        HitRegion(
+                            left = itemLeft,
+                            top = carouselTop,
+                            right = itemRight,
+                            bottom = carouselBottom,
+                            widget = blWidget,
+                            onClick = { _, _ -> blImpl.dispatchClick() }
+                        )
+                    )
+                }
+            }
+
+            // Footer Continue + Save buttons
+            val footerTop = carouselBottom + 10
+            val footerBottom = cardBottom - 16
+            val continueNode = findWidgetByClass(contentRoot, "continue")
+            val saveNode = findWidgetByClass(contentRoot, "save")
+            val saveW = 100
+            val contRight = if (saveNode != null) innerRight - saveW - 8 else innerRight
+            if (continueNode != null) {
+                val contImpl = continueNode.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                drawRoundedButton(
+                    hdc = hdc,
+                    font = fontBold,
+                    label = "Continue",
+                    left = innerLeft,
+                    top = footerTop,
+                    right = contRight,
+                    bottom = footerBottom,
+                    bg = theme.accentBlue,
+                    border = theme.accentBlueBorder,
+                    fg = rgb(255, 255, 255),
+                    radius = 6,
+                    widget = continueNode,
+                    hwndForHover = hwnd
+                )
+                if (contImpl != null) {
+                    hitRegions.add(
+                        HitRegion(
+                            left = innerLeft,
+                            top = footerTop,
+                            right = contRight,
+                            bottom = footerBottom,
+                            widget = continueNode,
+                            onClick = { _, _ -> contImpl.dispatchClick() }
+                        )
+                    )
+                }
+            }
+            if (saveNode != null) {
+                val saveImpl = saveNode.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                drawRoundedButton(
+                    hdc = hdc,
+                    font = fontBold,
+                    label = "Save",
+                    left = innerRight - saveW,
+                    top = footerTop,
+                    right = innerRight,
+                    bottom = footerBottom,
+                    bg = theme.bgCard,
+                    border = theme.accentBlueBorder,
+                    fg = theme.accentBlueText,
+                    radius = 6,
+                    widget = saveNode,
+                    hwndForHover = hwnd
+                )
+                if (saveImpl != null) {
+                    hitRegions.add(
+                        HitRegion(
+                            left = innerRight - saveW,
+                            top = footerTop,
+                            right = innerRight,
+                            bottom = footerBottom,
+                            widget = saveNode,
+                            onClick = { _, _ -> saveImpl.dispatchClick() }
+                        )
+                    )
+                }
+            }
+            return
+        }
+
+        // Case 2: CharGenStep1 Level Grid (.level-select)
+        val levelSelectNodes = findWidgetsByClass(contentRoot, "level-select")
+        if (levelSelectNodes.isNotEmpty()) {
+            SelectObject(hdc, fontTitle)
+            drawTextInRect(
+                hdc = hdc,
+                text = "Select Starting Level",
+                left = innerLeft,
+                top = curY,
+                right = innerRight,
+                bottom = curY + 28,
+                colorRef = theme.textPrimary,
+                center = true
+            )
+            curY += 42
+
+            val cols = 10
+            val gap = 10
+            val btnW = ((innerW - gap * (cols - 1)) / cols).coerceIn(44, 76)
+            val btnH = 44
+            val rowW = btnW * cols + gap * (cols - 1)
+            val startX = innerLeft + (innerW - rowW) / 2
+
+            levelSelectNodes.forEachIndexed { idx, lvlWidget ->
+                val impl = lvlWidget.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*> ?: return@forEachIndexed
+                val row = idx / cols
+                val col = idx % cols
+                val bx = startX + col * (btnW + gap)
+                val by = curY + row * (btnH + 14)
+                val label = extractWidgetText(lvlWidget).ifBlank { "${idx + 1}" }
+                val isSelected = widgetHasClass(lvlWidget, "btn-active")
+                drawRoundedButton(
+                    hdc = hdc,
+                    font = fontBold,
+                    label = label,
+                    left = bx,
+                    top = by,
+                    right = bx + btnW,
+                    bottom = by + btnH,
+                    bg = if (isSelected) theme.accentBlue else theme.bgCard,
+                    border = if (isSelected) theme.accentBlueBorder else theme.borderSubtle,
+                    fg = if (isSelected) rgb(255, 255, 255) else theme.textPrimary,
+                    radius = 6,
+                    widget = lvlWidget,
+                    hwndForHover = hwnd
+                )
+                hitRegions.add(
+                    HitRegion(
+                        left = bx,
+                        top = by,
+                        right = bx + btnW,
+                        bottom = by + btnH,
+                        widget = lvlWidget,
+                        onClick = { _, _ -> impl.dispatchClick() }
+                    )
+                )
+            }
+            return
+        }
+
+        // Case 3: General Page / Menu / Step View (Index, CharGenCreate, CharGenStep3..12, CharGenCreated)
+        val actions = collectPageActionItems(contentRoot)
+        val actionWidgets = actions.map { it.widget }.toSet()
+        val nonButtonTexts = mutableListOf<String>()
+        fun collectPlainTexts(w: DesktopNativeWidget?) {
+            if (w == null || !w.visible || w.disposed || w in actionWidgets) return
+            val impl = w.attributes["nativeImpl"]
+            if (impl is DesktopTextNativeImpl<*>) {
+                val t = impl.getText().trim()
+                if (t.isNotEmpty()) nonButtonTexts.add(t)
+            }
+            for (c in w.children) collectPlainTexts(c)
+        }
+        collectPlainTexts(contentRoot)
+
+        for (txt in nonButtonTexts.distinct().take(8)) {
+            if (curY + 24 > cardBottom - 60) break
+            SelectObject(hdc, fontNormal)
+            drawTextInRect(
+                hdc = hdc,
+                text = txt,
+                left = innerLeft,
+                top = curY,
+                right = innerRight,
+                bottom = curY + 22,
+                colorRef = theme.textPrimary,
+                center = !isCharGen
+            )
+            curY += 24
+        }
+        if (nonButtonTexts.isNotEmpty()) {
+            curY += 8
+        }
+
+        val textInputs = mutableListOf<DesktopTextInputNativeImpl<*>>()
+        fun collectInputs(w: DesktopNativeWidget?) {
+            if (w == null || !w.visible || w.disposed) return
+            val impl = w.attributes["nativeImpl"]
+            if (impl is DesktopTextInputNativeImpl<*>) textInputs.add(impl)
+            for (c in w.children) collectInputs(c)
+        }
+        collectInputs(contentRoot)
+        for (input in textInputs.take(4)) {
+            if (curY + 36 > cardBottom - 50) break
+            val isFocused = focusedTextInput === input
+            val valStr = input.getValue()
+            val displayStr = when {
+                isFocused -> "$valStr|"
+                valStr.isNotEmpty() -> valStr
+                else -> input.getPlaceholder().ifBlank { "Enter value..." }
+            }
+            val inputLeft = innerLeft + (innerW - min(innerW, 380)) / 2
+            val inputRight = inputLeft + min(innerW, 380)
+            drawRoundedRect(
+                hdc = hdc,
+                left = inputLeft,
+                top = curY,
+                right = inputRight,
+                bottom = curY + 32,
+                radius = 5,
+                fillColor = theme.bgBase,
+                borderColor = if (isFocused) theme.accentBlueBorder else theme.borderSubtle
+            )
+            SelectObject(hdc, fontNormal)
+            drawTextInRect(
+                hdc = hdc,
+                text = displayStr,
+                left = inputLeft + 10,
+                top = curY + 4,
+                right = inputRight - 10,
+                bottom = curY + 28,
+                colorRef = if (valStr.isEmpty() && !isFocused) theme.textMuted else theme.textPrimary
+            )
+            val capTop = curY
+            hitRegions.add(
+                HitRegion(
+                    left = inputLeft,
+                    top = capTop,
+                    right = inputRight,
+                    bottom = capTop + 32,
+                    widget = input.nativeWidget,
+                    isTextInput = true
+                )
+            )
+            curY += 40
+        }
+
+        if (actions.isNotEmpty()) {
+            val cols = if (!isCharGen || actions.size <= 4) 1 else 3
+            val btnH = if (cols == 1) 38 else 32
+            val gap = 10
+            val maxRowW = if (cols == 1) min(innerW, 340) else innerW
+            val startX = innerLeft + (innerW - maxRowW) / 2
+            val btnW = (maxRowW - gap * (cols - 1)) / cols
+            actions.take(24).forEachIndexed { idx, act ->
+                val row = idx / cols
+                val col = idx % cols
+                val bx = startX + col * (btnW + gap)
+                val by = curY + row * (btnH + gap)
+                if (by + btnH <= cardBottom - 14) {
+                    val bg = when {
+                        act.isActive || act.isPrimary -> theme.accentBlue
+                        else -> theme.bgCard
+                    }
+                    val border = when {
+                        act.isActive || act.isPrimary -> theme.accentBlueBorder
+                        else -> theme.borderSubtle
+                    }
+                    val fg = when {
+                        act.isActive || act.isPrimary -> rgb(255, 255, 255)
+                        else -> theme.textPrimary
+                    }
+                    drawRoundedButton(
+                        hdc = hdc,
+                        font = fontBold,
+                        label = act.label,
+                        left = bx,
+                        top = by,
+                        right = bx + btnW,
+                        bottom = by + btnH,
+                        bg = bg,
+                        border = border,
+                        fg = fg,
+                        radius = 6,
+                        widget = act.widget,
+                        hwndForHover = hwnd
+                    )
+                    hitRegions.add(
+                        HitRegion(
+                            left = bx,
+                            top = by,
+                            right = bx + btnW,
+                            bottom = by + btnH,
+                            widget = act.widget,
+                            onClick = { _, _ -> act.impl.dispatchClick() }
+                        )
+                    )
                 }
             }
         }
@@ -3385,6 +4930,30 @@ object Win32NativeWindowHost {
             y += 28
         }
 
+        // Context-sensitive Layer Mode Badge (Vector Tools vs. Raster Tools)
+        if (toolboxDockPanel != null) {
+            val badgeTexts = mutableListOf<DesktopTextNativeImpl<*>>()
+            collectPanelControls(
+                toolboxDockPanel.nativeWidget,
+                mutableListOf(),
+                mutableListOf(),
+                mutableListOf(),
+                mutableListOf(),
+                badgeTexts
+            )
+            val contextBadgeText = badgeTexts.firstOrNull()?.getText()?.trim().orEmpty()
+            if (contextBadgeText.isNotEmpty() && y + 24 < bottom) {
+                val isRasterMode = contextBadgeText.contains("RASTER", ignoreCase = true)
+                val badgeBg = if (isRasterMode) theme.bgCard else theme.accentBlueSoftBg
+                val badgeBorder = if (isRasterMode) theme.borderStrong else theme.accentBlueBorder
+                val badgeFg = if (isRasterMode) theme.textPrimary else theme.accentBlueText
+                drawRoundedRect(hdc, 6, y, width - 6, y + 22, 4, badgeBg, badgeBorder)
+                SelectObject(hdc, fontBold)
+                drawTextInRect(hdc, contextBadgeText, 10, y + 2, width - 10, y + 20, badgeFg, center = true)
+                y += 26
+            }
+        }
+
         // ToolPalette tools ALWAYS render as icon-only buttons with a tooltip for what they do!
         SelectObject(hdc, fontNormal)
         val tools = toolPalette?.getTools().orEmpty()
@@ -3597,9 +5166,10 @@ object Win32NativeWindowHost {
     ) {
         val availW = max(64, right - left)
         val availH = max(64, bottom - top)
+        val tabContainer = findTabContainer(rootWidget)
         val hasOpenCanvasFn = canvasWidget?.attributes?.get("hasOpenCanvas") as? (() -> Boolean)
         val hasOpenCanvas = hasOpenCanvasFn?.invoke()
-            ?: (canvasWidget != null && !canvasWidget.attributes.containsKey("hasOpenCanvas"))
+            ?: (tabContainer != null && tabContainer.getTabTitles().isNotEmpty())
 
         if (!hasOpenCanvas || canvasWidget == null) {
             canvasViewportRect = intArrayOf(-1, -1, -1, -1)
@@ -3612,6 +5182,7 @@ object Win32NativeWindowHost {
                 fontNormal = fontNormal,
                 fontBold = fontBold,
                 fontTitle = fontTitle,
+                rootWidget = rootWidget,
                 canvasWidget = canvasWidget,
                 left = left,
                 top = top,
@@ -3669,6 +5240,7 @@ object Win32NativeWindowHost {
                 bmi.bmiHeader.biBitCount = 32u
                 bmi.bmiHeader.biCompression = BI_RGB.toUInt()
 
+                SetStretchBltMode(hdc, HALFTONE)
                 bgra.usePinned { pinned ->
                     StretchDIBits(
                         hdc,
@@ -3841,6 +5413,25 @@ object Win32NativeWindowHost {
         return null
     }
 
+    private fun findButtonByLabelOrClass(
+        root: DesktopNativeWidget?,
+        cssClass: String,
+        labelSubstring: String
+    ): DesktopButtonNativeImpl<*>? {
+        if (root == null || root.disposed) return null
+        val impl = root.attributes["nativeImpl"]
+        if (impl is DesktopButtonNativeImpl<*>) {
+            if (widgetHasClass(root, cssClass) || impl.getText().contains(labelSubstring, ignoreCase = true)) {
+                return impl
+            }
+        }
+        for (child in root.children) {
+            val found = findButtonByLabelOrClass(child, cssClass, labelSubstring)
+            if (found != null) return found
+        }
+        return null
+    }
+
     /**
      * Renders the HAEditor Welcome Splash Screen inside the canvas viewport when no `.hacanvas`
      * document is open (`hasOpenCanvas == false`), matching the original NW.js `#ha-splash-screen`
@@ -3856,6 +5447,7 @@ object Win32NativeWindowHost {
         fontNormal: HFONT?,
         fontBold: HFONT?,
         fontTitle: HFONT?,
+        rootWidget: DesktopNativeWidget?,
         canvasWidget: DesktopNativeWidget?,
         left: Int,
         top: Int,
@@ -3922,8 +5514,10 @@ object Win32NativeWindowHost {
         val newBtnLeft = cardLeft + (cardW - totalBtnsW) / 2
         val openBtnLeft = newBtnLeft + btnW + btnGap
 
-        val onNewFn = canvasWidget?.attributes?.get("onSplashNewCanvas") as? (() -> Unit)
-        val onOpenFn = canvasWidget?.attributes?.get("onSplashOpenFile") as? (() -> Unit)
+        val onNewFn = (canvasWidget?.attributes?.get("onSplashNewCanvas") as? (() -> Unit))
+            ?: findButtonByLabelOrClass(rootWidget, "splash-new-btn", "New")?.let { btn -> { btn.dispatchClick() } }
+        val onOpenFn = (canvasWidget?.attributes?.get("onSplashOpenFile") as? (() -> Unit))
+            ?: findButtonByLabelOrClass(rootWidget, "splash-open-btn", "Open")?.let { btn -> { btn.dispatchClick() } }
 
         SelectObject(hdc, fontBold)
         drawButtonControl(
@@ -4504,6 +6098,60 @@ object Win32NativeWindowHost {
         fun renderHStackRow(rowWidget: DesktopNativeWidget) {
             val visibleChildren = rowWidget.children.filter { it.visible && !it.disposed }
             if (visibleChildren.isEmpty() || y + 22 > bottomLimit) return
+
+            // Dedicated layout for LayersPanel layer selector rows (.ha-layer-row)
+            if (widgetHasClass(rowWidget, "ha-layer-row")) {
+                val rowH = 24
+                if (y + rowH > bottomLimit) return
+                val gap = 4
+                var cx = left
+                for ((idx, child) in visibleChildren.withIndex()) {
+                    val cImpl = child.attributes["nativeImpl"] as? DesktopButtonNativeImpl<*> ?: continue
+                    val itemW = when {
+                        idx == 0 && visibleChildren.size >= 2 -> 26
+                        idx == visibleChildren.lastIndex && visibleChildren.size >= 3 -> 52
+                        visibleChildren.size >= 3 -> max(60, (right - cx) - 52 - gap)
+                        else -> max(60, right - cx)
+                    }
+                    val cRight = if (idx == visibleChildren.lastIndex) right else min(right, cx + itemW)
+                    val isActiveLayerBtn = widgetHasClass(child, "active-layer-btn") || widgetHasClass(child, "btn-primary")
+                    SelectObject(hdc, if (isActiveLayerBtn) fontBold else fontSmall)
+                    drawButtonControl(
+                        hdc = hdc,
+                        theme = theme,
+                        label = if (cImpl.isIconOnly()) "" else cImpl.getText(),
+                        icon = cImpl.getIcon(),
+                        left = cx,
+                        top = y,
+                        right = cRight,
+                        bottom = y + rowH,
+                        primary = isActiveLayerBtn,
+                        widget = child,
+                        hwndForHover = hwnd
+                    )
+                    val bL = cx
+                    val bR = cRight
+                    val ry = y
+                    hitRegions.add(
+                        HitRegion(
+                            left = bL,
+                            top = ry,
+                            right = bR,
+                            bottom = ry + rowH,
+                            tooltip = cImpl.getTooltipText() ?: cImpl.getText(),
+                            widget = child,
+                            onClick = { _, _ ->
+                                cImpl.dispatchClick()
+                                InvalidateRect(hwnd, null, 0)
+                            }
+                        )
+                    )
+                    cx = cRight + gap
+                }
+                y += rowH + 3
+                return
+            }
+
             val rowH = 22
             val gap = 4
             val count = visibleChildren.size
@@ -4513,7 +6161,8 @@ object Win32NativeWindowHost {
                 val cRight = if (idx == count - 1) right else min(right, cx + itemW)
                 when (val cImpl = child.attributes["nativeImpl"]) {
                     is DesktopButtonNativeImpl<*> -> {
-                        SelectObject(hdc, fontSmall)
+                        val isPrimary = widgetHasClass(child, "btn-primary") || widgetHasClass(child, "active-layer-btn")
+                        SelectObject(hdc, if (isPrimary) fontBold else fontSmall)
                         drawButtonControl(
                             hdc = hdc,
                             theme = theme,
@@ -4523,7 +6172,7 @@ object Win32NativeWindowHost {
                             top = y,
                             right = cRight,
                             bottom = y + rowH,
-                            primary = false,
+                            primary = isPrimary,
                             widget = child,
                             hwndForHover = hwnd
                         )
@@ -5882,22 +7531,59 @@ object Win32NativeWindowHost {
                 MoveToEx(hdc, left + 2, bottom - 2, null); LineTo(hdc, right - 3, top + 3)
                 Ellipse(hdc, right - 6, top + 1, right - 1, top + 6)
             }
-            key == "text" || key == "type" -> {
+            key == "text" || key == "type" || key == "vector-text" -> {
                 MoveToEx(hdc, left + 3, top + 3, null); LineTo(hdc, right - 3, top + 3)
                 MoveToEx(hdc, cx, top + 3, null); LineTo(hdc, cx, bottom - 2)
                 MoveToEx(hdc, cx - 3, bottom - 2, null); LineTo(hdc, cx + 4, bottom - 2)
+            }
+            key == "vector-rect" || key == "rect-shape" || key == "▭" -> {
+                Rectangle(hdc, left + 2, top + 3, right - 2, bottom - 3)
+            }
+            key == "vector-circle" || key == "circle-shape" || key == "⚪" -> {
+                Ellipse(hdc, left + 2, top + 2, right - 2, bottom - 2)
+            }
+            key == "vector-ellipse" || key == "ellipse-shape" || key == "⬭" -> {
+                Ellipse(hdc, left + 1, top + 4, right - 1, bottom - 4)
+            }
+            key == "vector-polygon" || key == "polygon-shape" || key == "⬡" -> {
+                MoveToEx(hdc, cx, top + 1, null)
+                LineTo(hdc, right - 2, top + 5)
+                LineTo(hdc, right - 2, bottom - 5)
+                LineTo(hdc, cx, bottom - 1)
+                LineTo(hdc, left + 2, bottom - 5)
+                LineTo(hdc, left + 2, top + 5)
+                LineTo(hdc, cx, top + 1)
+            }
+            key == "vector-star" || key == "star-shape" || key == "⭐" -> {
+                MoveToEx(hdc, cx, top + 1, null)
+                LineTo(hdc, cx + 3, cy - 2)
+                LineTo(hdc, right - 1, cy - 2)
+                LineTo(hdc, cx + 4, cy + 2)
+                LineTo(hdc, right - 3, bottom - 1)
+                LineTo(hdc, cx, cy + 5)
+                LineTo(hdc, left + 3, bottom - 1)
+                LineTo(hdc, cx - 4, cy + 2)
+                LineTo(hdc, left + 1, cy - 2)
+                LineTo(hdc, cx - 3, cy - 2)
+                LineTo(hdc, cx, top + 1)
+            }
+            key == "vector-line" || key == "line-shape" || key == "╱" -> {
+                MoveToEx(hdc, left + 3, bottom - 3, null)
+                LineTo(hdc, right - 3, top + 3)
+                Rectangle(hdc, left + 1, bottom - 5, left + 5, bottom - 1)
+                Rectangle(hdc, right - 5, top + 1, right - 1, top + 5)
             }
             key == "shape" || key.contains("shape") || key.contains("polygon") -> {
                 Rectangle(hdc, left + 2, top + 2, cx + 2, cy + 2)
                 Ellipse(hdc, cx - 2, cy - 2, right - 1, bottom - 1)
             }
-            key == "bezier-pen" || key.contains("bezier") || key.contains("pen") -> {
+            key == "bezier-pen" || key == "vector-path" || key.contains("bezier") || key.contains("pen") -> {
                 MoveToEx(hdc, left + 2, bottom - 2, null)
                 LineTo(hdc, cx, top + 2)
                 LineTo(hdc, right - 2, bottom - 2)
                 Ellipse(hdc, cx - 2, cy - 1, cx + 2, cy + 3)
             }
-            key == "node-edit" || key.contains("node") || key.contains("vertex") -> {
+            key == "node-edit" || key == "vector-deform" || key.contains("node") || key.contains("vertex") || key.contains("deform") -> {
                 MoveToEx(hdc, left + 2, bottom - 3, null)
                 LineTo(hdc, cx, top + 4)
                 LineTo(hdc, right - 2, bottom - 3)

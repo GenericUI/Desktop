@@ -27,6 +27,7 @@ import com.nexustools.genericui.nativeimpl.dialog.DialogWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.FileBrowserDialogNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.StandardDialogsNativeImpl
 import com.nexustools.genericui.nativeimpl.dock.*
+import com.nexustools.genericui.nativeimpl.document.BookContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.feedback.ProgressBarNativeImpl
 import com.nexustools.genericui.nativeimpl.feedback.SpinnerNativeImpl
 import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
@@ -106,6 +107,9 @@ class QtNativeFactory : NativeFactory {
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
         DesktopContainerNativeImpl(QtWidgetHandle("QWidget_QBoxLayout"), classPrefix)
+
+    override fun createBookContainer(): BookContainerNativeImpl<*> =
+        DesktopBookContainerNativeImpl(QtWidgetHandle("QPrintPreviewWidget"))
 
     override fun createScrollView(): ScrollViewNativeImpl<*> =
         DesktopScrollViewNativeImpl(QtWidgetHandle("QScrollArea"))

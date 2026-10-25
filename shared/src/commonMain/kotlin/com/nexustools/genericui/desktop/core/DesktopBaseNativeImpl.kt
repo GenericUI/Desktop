@@ -69,8 +69,18 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["nativeImpl"] = this
     }
 
+    fun hasClickListener(): Boolean = onClickListener != null
+
     fun dispatchClick() {
         onClickListener?.invoke()
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        if (value == null) {
+            nativeWidget.attributes.remove(name)
+        } else {
+            nativeWidget.attributes[name] = value
+        }
     }
 
     fun dispatchPointerDown(event: PointerEvent) {

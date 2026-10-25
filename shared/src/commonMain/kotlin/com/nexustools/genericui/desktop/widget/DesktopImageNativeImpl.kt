@@ -15,10 +15,15 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
     protected var sourceUrlState: String? = null
     protected var fallbackTextState: String? = null
     protected var objectFitState: ObjectFit = ObjectFit.CONTAIN
+    protected var onLoadListener: (() -> Unit)? = null
+    protected var onErrorListener: (() -> Unit)? = null
 
     override fun setSourceUrl(url: String?) {
         sourceUrlState = url
         nativeWidget.attributes["sourceUrl"] = url
+        if (!url.isNullOrBlank()) {
+            onLoadListener?.invoke()
+        }
     }
 
     override fun getSourceUrl(): String? = sourceUrlState
@@ -34,4 +39,22 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun getObjectFit(): ObjectFit = objectFitState
+
+    override fun setOnLoad(listener: (() -> Unit)?) {
+        onLoadListener = listener
+        if (listener != null && !sourceUrlState.isNullOrBlank()) {
+            listener.invoke()
+        }
+    }
+
+    override fun setOnError(listener: (() -> Unit)?) {
+        onErrorListener = listener
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        super<DesktopBaseNativeImpl>.setAttribute(name, value)
+        if (name == "src") {
+            setSourceUrl(value)
+        }
+    }
 }
