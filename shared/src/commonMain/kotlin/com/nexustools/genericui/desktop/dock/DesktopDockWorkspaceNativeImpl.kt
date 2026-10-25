@@ -33,7 +33,6 @@ open class DesktopDockWorkspaceNativeImpl<out W : DesktopNativeWidget>(
     override fun setWindowModeNative(modeName: String) {
         currentWindowMode = modeName
         nativeWidget.attributes["windowMode"] = modeName
-        requestRepaintNative()
     }
 
     fun getWindowMode(): String = currentWindowMode
