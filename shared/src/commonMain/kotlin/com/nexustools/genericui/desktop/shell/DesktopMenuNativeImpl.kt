@@ -12,6 +12,7 @@ open class DesktopMenuNativeImpl<out W : DesktopNativeWidget>(
 ) : DesktopBaseContainerNativeImpl<W>(nativeWidget, "menu"), MenuNativeImpl<W> {
 
     protected var labelText: String = ""
+    protected var iconName: String? = null
 
     override fun setLabel(label: String) {
         labelText = label
@@ -19,4 +20,11 @@ open class DesktopMenuNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun getLabel(): String = labelText
+
+    override fun setIcon(icon: String?) {
+        iconName = icon
+        nativeWidget.attributes["icon"] = icon
+    }
+
+    override fun getIcon(): String? = iconName
 }

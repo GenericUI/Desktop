@@ -15,6 +15,7 @@ open class DesktopDockPanelNativeImpl<out W : DesktopNativeWidget>(
     protected var titleText: String = ""
     protected var iconName: String? = null
     protected var collapsedState: Boolean = false
+    protected var onCollapsedChangedListener: ((Boolean) -> Unit)? = null
     protected var floatingState: Boolean = false
     protected var headerActionsList: List<DockHeaderAction> = emptyList()
 
@@ -31,11 +32,23 @@ open class DesktopDockPanelNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun setCollapsed(collapsed: Boolean) {
-        collapsedState = collapsed
-        nativeWidget.attributes["collapsed"] = collapsed
+        if (collapsedState != collapsed) {
+            collapsedState = collapsed
+            nativeWidget.attributes["collapsed"] = collapsed
+            onCollapsedChangedListener?.invoke(collapsed)
+        }
     }
 
     override fun isCollapsed(): Boolean = collapsedState
+
+    override fun setOnCollapsedChanged(listener: ((Boolean) -> Unit)?) {
+        onCollapsedChangedListener = listener
+    }
+
+    fun toggleCollapsed(): Boolean {
+        setCollapsed(!collapsedState)
+        return collapsedState
+    }
 
     override fun setFloating(floating: Boolean) {
         floatingState = floating

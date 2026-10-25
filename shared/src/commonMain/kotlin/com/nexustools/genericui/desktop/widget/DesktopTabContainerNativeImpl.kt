@@ -115,4 +115,20 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
     override fun setOnTabCloseRequested(listener: ((Int) -> Boolean)?) {
         onTabCloseRequestedListener = listener
     }
+
+    fun getTabTitles(): List<String> = tabTitles.toList()
+
+    fun requestSelectTab(index: Int) {
+        if (index in tabTitles.indices) {
+            selectedIndexVal = index
+            nativeWidget.attributes["selectedTabIndex"] = index
+            onTabSelectedListener?.invoke(index)
+        }
+    }
+
+    fun requestCloseTab(index: Int) {
+        if (index in tabTitles.indices) {
+            onTabCloseRequestedListener?.invoke(index)
+        }
+    }
 }

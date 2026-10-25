@@ -38,4 +38,6 @@ open class DesktopSelectNativeImpl<out W : DesktopNativeWidget>(
     override fun setOnSelectionChanged(listener: ((String) -> Unit)?) {
         onSelectionChangedListener = listener
     }
+
+    fun getOptions(): List<Pair<String, String>> = optionsList
 }

@@ -59,4 +59,8 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
     override fun setOnSubmit(listener: ((String) -> Unit)?) {
         onSubmitListener = listener
     }
+
+    fun submitValue() {
+        onSubmitListener?.invoke(textValue)
+    }
 }

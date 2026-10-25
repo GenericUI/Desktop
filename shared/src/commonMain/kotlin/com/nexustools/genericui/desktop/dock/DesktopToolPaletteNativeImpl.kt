@@ -33,9 +33,12 @@ open class DesktopToolPaletteNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun setActiveToolId(toolId: String?) {
-        currentToolId = toolId
-        if (toolId != null) {
-            onToolSelectedListener?.invoke(toolId)
+        if (currentToolId != toolId) {
+            currentToolId = toolId
+            nativeWidget.attributes["activeToolId"] = toolId
+            if (toolId != null) {
+                onToolSelectedListener?.invoke(toolId)
+            }
         }
     }
 
@@ -53,5 +56,20 @@ open class DesktopToolPaletteNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setOnColorsSwapped(listener: ((RgbaColor, RgbaColor) -> Unit)?) {
         onColorsSwappedListener = listener
+    }
+
+    fun getTools(): List<ToolPaletteItem> = toolsList
+
+    fun getActiveToolId(): String? = currentToolId
+
+    fun getForegroundColor(): RgbaColor = fgColor
+
+    fun getBackgroundColor(): RgbaColor = bgColor
+
+    fun dispatchSwapColors() {
+        val tmp = fgColor
+        fgColor = bgColor
+        bgColor = tmp
+        onColorsSwappedListener?.invoke(fgColor, bgColor)
     }
 }

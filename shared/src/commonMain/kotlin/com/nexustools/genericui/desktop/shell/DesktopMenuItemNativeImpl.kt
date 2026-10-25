@@ -31,10 +31,14 @@ open class DesktopMenuItemNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["icon"] = icon
     }
 
+    override fun getIcon(): String? = iconName
+
     override fun setShortcut(shortcut: KeyShortcut?) {
         shortcutVal = shortcut
         nativeWidget.attributes["shortcut"] = shortcut
     }
+
+    override fun getShortcut(): KeyShortcut? = shortcutVal
 
     override fun setChecked(checked: Boolean) {
         checkedState = checked

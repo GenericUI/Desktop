@@ -8,7 +8,9 @@ import com.nexustools.genericui.event.WheelEvent
 import com.nexustools.genericui.geometry.EdgeInsets
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.style.gradient.Gradient
 import com.nexustools.genericui.style.mapper.BootstrapClassMapper
 import com.nexustools.genericui.style.mapper.BootstrapStyleSnapshot
 import com.nexustools.genericui.style.transition.CssTransitionSpec
@@ -48,6 +50,11 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     private val customClasses: MutableSet<String> = linkedSetOf()
 
     protected var lastComputedStyle: ComputedStyle? = null
+    private var tintState: RgbaColor? = null
+    private var backgroundGradientState: Gradient? = null
+    private var hoveredState: Boolean = false
+    private var focusedState: Boolean = false
+    private var activePressedState: Boolean = false
     protected var onClickListener: (() -> Unit)? = null
     protected var onDoubleClickListener: (() -> Unit)? = null
     protected var onContextMenuListener: ((PointerEvent) -> Unit)? = null
@@ -57,6 +64,26 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     protected var onWheelListener: ((WheelEvent) -> Unit)? = null
     protected var onKeyDownListener: ((KeyEvent) -> Unit)? = null
     protected var onKeyUpListener: ((KeyEvent) -> Unit)? = null
+
+    init {
+        nativeWidget.attributes["nativeImpl"] = this
+    }
+
+    fun dispatchClick() {
+        onClickListener?.invoke()
+    }
+
+    fun dispatchPointerDown(event: PointerEvent) {
+        onPointerDownListener?.invoke(event)
+    }
+
+    fun dispatchPointerMove(event: PointerEvent) {
+        onPointerMoveListener?.invoke(event)
+    }
+
+    fun dispatchPointerUp(event: PointerEvent) {
+        onPointerUpListener?.invoke(event)
+    }
 
     override val isDisposed: Boolean
         get() = nativeWidget.disposed
@@ -348,7 +375,15 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     override fun applyComputedStyle(style: ComputedStyle) {
         lastComputedStyle = style
-        style.opacity?.let { nativeWidget.opacity = it }
+        style.tint?.let {
+            tintState = it
+            nativeWidget.attributes["tint"] = it
+        }
+        style.backgroundGradient?.let {
+            backgroundGradientState = it
+            nativeWidget.attributes["backgroundGradient"] = it
+        }
+        style.opacity.let { nativeWidget.opacity = it }
         style.transform?.let { nativeWidget.attributes["transform"] = it }
         style.transition?.let { nativeWidget.attributes["transition"] = it }
         style.backgroundImageUrl?.let { nativeWidget.attributes["backgroundImageUrl"] = it }
@@ -357,8 +392,62 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         style.zIndex?.let { nativeWidget.attributes["zIndex"] = it }
         style.left?.let { nativeWidget.attributes["left"] = it }
         style.top?.let { nativeWidget.attributes["top"] = it }
+        style.cursor?.let { nativeWidget.attributes["cursor"] = it }
         nativeWidget.attributes["computedStyle"] = style
     }
+
+    override fun setTint(tint: RgbaColor?) {
+        tintState = tint
+        nativeWidget.attributes["tint"] = tint
+    }
+
+    override fun getTint(): RgbaColor? = tintState ?: lastComputedStyle?.tint
+
+    override fun setBackgroundGradient(gradient: Gradient?) {
+        backgroundGradientState = gradient
+        nativeWidget.attributes["backgroundGradient"] = gradient
+    }
+
+    override fun getBackgroundGradient(): Gradient? =
+        backgroundGradientState ?: lastComputedStyle?.backgroundGradient
+
+    override fun setHoveredState(hovered: Boolean) {
+        hoveredState = hovered
+        nativeWidget.attributes["hovered"] = hovered
+    }
+
+    override fun isHoveredState(): Boolean = hoveredState
+
+    override fun setFocusedState(focused: Boolean) {
+        focusedState = focused
+        nativeWidget.attributes["focused"] = focused
+    }
+
+    override fun isFocusedState(): Boolean = focusedState
+
+    override fun setActivePressedState(active: Boolean) {
+        activePressedState = active
+        nativeWidget.attributes["activePressed"] = active
+    }
+
+    override fun isActivePressedState(): Boolean = activePressedState
+
+    fun resolveEffectiveStyle(): ComputedStyle? =
+        lastComputedStyle?.resolveForState(
+            hovered = hoveredState,
+            focused = focusedState,
+            active = activePressedState,
+            enabled = nativeWidget.enabled
+        )
+
+    fun getEffectiveTintColor(): RgbaColor? =
+        resolveEffectiveStyle()?.tint ?: tintState
+
+    fun getEffectiveBackgroundColor(): RgbaColor? =
+        resolveEffectiveStyle()?.backgroundColor
+
+    fun getEffectiveBackgroundGradient(): Gradient? =
+        resolveEffectiveStyle()?.backgroundGradient ?: backgroundGradientState
 
     override fun supportsNativeTransitions(): Boolean = true
 

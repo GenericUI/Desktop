@@ -26,7 +26,7 @@ open class DesktopRangeSliderNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setValue(value: Double) {
         val clamped = value.coerceIn(minVal, maxVal)
-        if (currentVal != clamped) {
+        if (kotlin.math.abs(currentVal - clamped) > 1e-4) {
             currentVal = clamped
             nativeWidget.attributes["value"] = clamped
             onValueChangedListener?.invoke(clamped)
@@ -37,5 +37,22 @@ open class DesktopRangeSliderNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setOnValueChanged(listener: ((Double) -> Unit)?) {
         onValueChangedListener = listener
+    }
+
+    fun getMin(): Double = minVal
+
+    fun getMax(): Double = maxVal
+
+    fun getStep(): Double = stepVal
+
+    fun setNormalizedFraction(fraction: Double) {
+        val clampedFraction = fraction.coerceIn(0.0, 1.0)
+        val raw = minVal + clampedFraction * (maxVal - minVal)
+        val stepped = if (stepVal > 0.0) {
+            minVal + kotlin.math.round((raw - minVal) / stepVal) * stepVal
+        } else {
+            raw
+        }
+        setValue(stepped)
     }
 }

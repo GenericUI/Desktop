@@ -18,6 +18,7 @@ open class DesktopDockWorkspaceNativeImpl<out W : DesktopNativeWidget>(
     val coordinator: DesktopMultiWindowDockCoordinator = DesktopMultiWindowDockCoordinator()
     protected var centralDocument: NativeImpl<*>? = null
     protected val dockAreas: MutableMap<DockPosition, DockAreaNativeImpl<*>> = linkedMapOf()
+    protected var currentWindowMode: String = "SINGLE_WINDOW_MODE"
 
     override fun setCentralDocumentNative(centralImpl: NativeImpl<*>?) {
         centralDocument = centralImpl
@@ -28,4 +29,12 @@ open class DesktopDockWorkspaceNativeImpl<out W : DesktopNativeWidget>(
         dockAreas[position] = areaImpl
         addChildNative(areaImpl)
     }
+
+    override fun setWindowModeNative(modeName: String) {
+        currentWindowMode = modeName
+        nativeWidget.attributes["windowMode"] = modeName
+        requestRepaintNative()
+    }
+
+    fun getWindowMode(): String = currentWindowMode
 }
