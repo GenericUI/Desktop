@@ -108,6 +108,8 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
 
     override fun getSelectedTabIndex(): Int = selectedIndexVal
 
+    fun getActiveTabIndex(): Int = selectedIndexVal
+
     override fun setOnTabSelected(listener: ((Int) -> Unit)?) {
         onTabSelectedListener = listener
     }

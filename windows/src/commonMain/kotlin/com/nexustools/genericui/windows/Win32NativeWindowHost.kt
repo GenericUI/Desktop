@@ -851,19 +851,22 @@ object Win32NativeWindowHost {
         return true
     }
 
-    fun handleMouseDown(hwnd: HWND, x: Int, y: Int) {
-        SetFocus(hwnd)
-        val regions = hitRegionsByHwnd[hwnd.toLong()].orEmpty()
-        val hit = regions.lastOrNull { it.contains(x, y) }
-
+    private fun setWidgetFocused(newFocused: DesktopNativeWidget?) {
         val prevFocused = focusedWidget
-        val newFocused = hit?.widget
         if (prevFocused !== newFocused) {
             (prevFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(false)
             (newFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(true)
             focusedWidget = newFocused
             focusedTextInput = newFocused?.attributes?.get("nativeImpl") as? DesktopTextInputNativeImpl<*>
         }
+    }
+
+    fun handleMouseDown(hwnd: HWND, x: Int, y: Int) {
+        SetFocus(hwnd)
+        val regions = hitRegionsByHwnd[hwnd.toLong()].orEmpty()
+        val hit = regions.lastOrNull { it.contains(x, y) }
+
+        setWidgetFocused(hit?.widget)
 
         if (hit != null) {
             pressedWidget = hit.widget
