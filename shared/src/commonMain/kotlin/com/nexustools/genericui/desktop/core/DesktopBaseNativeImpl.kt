@@ -97,6 +97,10 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["bootstrapClass"] = getClass()
     }
 
+    open fun requestRepaintNative() {
+        onStyleChanged()
+    }
+
     private fun currentSnapshot(): BootstrapStyleSnapshot = BootstrapStyleSnapshot(
         componentPrefix = componentClassPrefix,
         type = typeState,
