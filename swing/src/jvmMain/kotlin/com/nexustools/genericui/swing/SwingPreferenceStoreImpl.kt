@@ -5,6 +5,7 @@ import com.nexustools.genericui.component.system.PreferenceElement
 import com.nexustools.genericui.nativeimpl.system.PreferenceStoreNativeImpl
 import com.nexustools.genericui.util.BinaryJson
 import com.nexustools.genericui.util.BinaryPlist
+import com.nexustools.genericui.util.ConfigDirectory
 import java.io.File
 import java.nio.file.FileSystems
 import java.nio.file.StandardWatchEventKinds
@@ -12,7 +13,8 @@ import java.nio.file.WatchKey
 import java.nio.file.WatchService
 
 /**
- * Java Swing / JVM desktop (`:desktop:swing`) implementation of [PreferenceStoreNativeImpl].
+ * Java Swing / JVM desktop (`:desktop:swing`) implementation of [PreferenceStoreNativeImpl] backed by
+ * [ConfigDirectory] ([SwingUserDirectoryNativeImpl]).
  *
  * Stores each preference `key` as a separate binary file in `<userConfigDir>/<appName>/`:
  * - On macOS: `<configDir>/<appName>/<key>.plist` encoded with [BinaryPlist] (`bplist00`).
@@ -32,7 +34,17 @@ class SwingPreferenceStoreImpl(
 
     val fileExtension: String = if (isMacOsHost) ".plist" else ".bson"
 
-    val configDirectory: File = (customDirectory ?: resolveHostAppConfigDirectory(appName)).apply {
+    val configDir: ConfigDirectory = ConfigDirectory(
+        appName = appName,
+        nativeImplOverride = SwingUserDirectoryNativeImpl(
+            appName = appName,
+            subdirectory = "",
+            isCache = false,
+            customDirectory = customDirectory
+        )
+    )
+
+    val configDirectory: File = File(configDir.directoryPath).apply {
         mkdirs()
     }
 
@@ -62,30 +74,26 @@ class SwingPreferenceStoreImpl(
         }
     }
 
-    fun fileForKey(key: String): File {
-        val safeKey = sanitizeName(key)
-        return File(configDirectory, "$safeKey$fileExtension")
-    }
+    fun fileForKey(key: String): File =
+        File(configDir.resolveKeyPath(key, fileExtension))
 
     override fun writeElement(key: String, element: PreferenceElement) {
         if (element.isNull) {
             remove(key)
             return
         }
-        configDirectory.mkdirs()
+        configDir.ensureExists()
         val bytes = if (isMacOsHost) {
             BinaryPlist.encodeElement(element)
         } else {
             BinaryJson.encodeElement(element)
         }
-        fileForKey(key).writeBytes(bytes)
+        configDir.writeKeyBytes(key, fileExtension, bytes)
         notifyListeners(key, element.toPlainValue())
     }
 
     override fun readElement(key: String): PreferenceElement? {
-        val file = fileForKey(key)
-        if (!file.exists() || !file.isFile) return null
-        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
+        val bytes = configDir.readKeyBytes(key, fileExtension) ?: return null
         if (bytes.isEmpty()) return null
         return if (isMacOsHost || BinaryPlist.isBinaryPlist(bytes)) {
             BinaryPlist.decodeElement(bytes)
@@ -94,41 +102,19 @@ class SwingPreferenceStoreImpl(
         }
     }
 
-    override fun contains(key: String): Boolean = fileForKey(key).isFile
+    override fun contains(key: String): Boolean = configDir.containsKey(key, fileExtension)
 
-    override fun keys(): Set<String> {
-        val files = configDirectory.listFiles() ?: return emptySet()
-        val result = LinkedHashSet<String>()
-        for (f in files) {
-            if (f.isFile && f.name.endsWith(fileExtension)) {
-                val keyName = f.name.removeSuffix(fileExtension)
-                if (keyName.isNotEmpty() && !keyName.startsWith(".")) {
-                    result.add(keyName)
-                }
-            }
-        }
-        return result
-    }
+    override fun keys(): Set<String> = configDir.keysForExtension(fileExtension)
 
     override fun remove(key: String) {
-        val file = fileForKey(key)
-        if (file.exists()) {
-            file.delete()
+        if (configDir.removeKey(key, fileExtension)) {
             notifyListeners(key, null)
         }
     }
 
     override fun clear() {
-        val files = configDirectory.listFiles() ?: emptyArray()
-        var deletedAny = false
-        for (f in files) {
-            if (f.isFile && f.name.endsWith(fileExtension)) {
-                if (f.delete()) {
-                    deletedAny = true
-                }
-            }
-        }
-        if (deletedAny) {
+        val removedCount = configDir.clearKeysWithExtension(fileExtension)
+        if (removedCount > 0) {
             notifyListeners(null, null)
         }
     }
@@ -175,6 +161,7 @@ class SwingPreferenceStoreImpl(
         runCatching { watchService?.close() }
         watchKey = null
         watchService = null
+        configDir.dispose()
     }
 
     private fun notifyListeners(key: String?, newValue: Any?) {
@@ -185,23 +172,9 @@ class SwingPreferenceStoreImpl(
     }
 
     companion object {
-        fun sanitizeName(raw: String): String {
-            val trimmed = raw.trim().ifEmpty { "GenericUI" }
-            return trimmed.replace(Regex("[\\\\/:*?\"<>|]"), "_")
-        }
+        fun sanitizeName(raw: String): String = SwingUserDirectoryNativeImpl.sanitizeName(raw)
 
-        fun resolveHostAppConfigDirectory(appName: String): File {
-            val safeApp = sanitizeName(appName)
-            val osName = System.getProperty("os.name", "").lowercase()
-            val userHome = System.getProperty("user.home", ".")
-            if (osName.contains("win")) {
-                val appData = System.getenv("APPDATA")?.trim()?.takeIf { it.isNotEmpty() }
-                val baseDir = if (appData != null) File(appData) else File(userHome, "AppData/Roaming")
-                return File(baseDir, safeApp)
-            }
-            val xdg = System.getenv("XDG_CONFIG_HOME")?.trim()?.takeIf { it.isNotEmpty() }
-            val baseDir = if (xdg != null) File(xdg) else File(userHome, ".config")
-            return File(baseDir, safeApp)
-        }
+        fun resolveHostAppConfigDirectory(appName: String): File =
+            SwingUserDirectoryNativeImpl.resolveHostAppConfigDirectory(appName)
     }
 }

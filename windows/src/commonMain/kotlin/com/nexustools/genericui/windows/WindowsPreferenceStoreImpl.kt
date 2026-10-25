@@ -7,10 +7,11 @@ import com.nexustools.genericui.component.system.PreferenceElement
 import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
 import com.nexustools.genericui.nativeimpl.system.PreferenceStoreNativeImpl
 import com.nexustools.genericui.util.BinaryJson
-import platform.posix.mkdir
+import com.nexustools.genericui.util.ConfigDirectory
 
 /**
- * Windows (`:desktop:windows`) implementation of [PreferenceStoreNativeImpl].
+ * Windows (`:desktop:windows`) implementation of [PreferenceStoreNativeImpl] backed by [ConfigDirectory]
+ * (`WindowsConfigDirectoryImpl`).
  *
  * Stores each preference key in its own binary JSON file (`%APPDATA%\<appName>\<key>.bson`)
  * encoded and decoded via [BinaryJson], and dispatches [PreferenceChangeListener] notifications.
@@ -19,9 +20,17 @@ class WindowsPreferenceStoreImpl(
     override val appName: String = "GenericUI"
 ) : PreferenceStoreNativeImpl {
 
-    val configDirectory: String = DesktopConfigDirectoryHelper.resolveWindowsAppConfigDir(appName)
+    val configDir: ConfigDirectory = ConfigDirectory(
+        appName = appName,
+        nativeImplOverride = WindowsConfigDirectoryImpl(appName)
+    )
 
-    override val storageLocationDescription: String = "$configDirectory\\*.bson (BinaryJson)"
+    val configDirectory: String
+        get() = configDir.directoryPath
+
+    override val storageLocationDescription: String
+        get() = "$configDirectory\\*.bson (BinaryJson)"
+
     override val usesNativeChangeListener: Boolean = true
 
     override var isDisposed: Boolean = false
@@ -32,29 +41,30 @@ class WindowsPreferenceStoreImpl(
     private val listeners = mutableListOf<PreferenceChangeListener>()
 
     init {
-        ensureDirectoryExists(configDirectory)
+        configDir.ensureExists()
         knownKeys.addAll(DesktopConfigDirectoryHelper.loadPersistedKeySet(configDirectory, '\\'))
+        knownKeys.addAll(configDir.keysForExtension(".bson"))
     }
 
     fun filePathForKey(key: String): String =
-        DesktopConfigDirectoryHelper.resolveKeyFilePath(configDirectory, key, ".bson", '\\')
+        configDir.resolveKeyPath(key, ".bson")
 
     override fun writeElement(key: String, element: PreferenceElement) {
         if (element.isNull) {
             remove(key)
             return
         }
-        ensureDirectoryExists(configDirectory)
+        configDir.ensureExists()
         val encoded = BinaryJson.encodeElement(element)
         memoryCache[key] = encoded
         knownKeys.add(key)
-        DesktopConfigDirectoryHelper.writeBytesToFile(filePathForKey(key), encoded)
+        configDir.writeKeyBytes(key, ".bson", encoded)
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
         notifyListeners(key, element.toPlainValue())
     }
 
     override fun readElement(key: String): PreferenceElement? {
-        val fileBytes = DesktopConfigDirectoryHelper.readBytesFromFile(filePathForKey(key))
+        val fileBytes = configDir.readKeyBytes(key, ".bson")
         if (fileBytes != null && fileBytes.isNotEmpty()) {
             memoryCache[key] = fileBytes
             knownKeys.add(key)
@@ -65,8 +75,7 @@ class WindowsPreferenceStoreImpl(
     }
 
     override fun contains(key: String): Boolean =
-        key in knownKeys || memoryCache.containsKey(key) ||
-            DesktopConfigDirectoryHelper.fileExists(filePathForKey(key))
+        key in knownKeys || memoryCache.containsKey(key) || configDir.containsKey(key, ".bson")
 
     override fun keys(): Set<String> = LinkedHashSet(knownKeys)
 
@@ -74,7 +83,7 @@ class WindowsPreferenceStoreImpl(
         val existed = contains(key)
         memoryCache.remove(key)
         knownKeys.remove(key)
-        DesktopConfigDirectoryHelper.deleteFile(filePathForKey(key))
+        configDir.removeKey(key, ".bson")
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
         if (existed) {
             notifyListeners(key, null)
@@ -84,8 +93,9 @@ class WindowsPreferenceStoreImpl(
     override fun clear() {
         val snapshotKeys = knownKeys.toList()
         for (k in snapshotKeys) {
-            DesktopConfigDirectoryHelper.deleteFile(filePathForKey(k))
+            configDir.removeKey(k, ".bson")
         }
+        configDir.clearKeysWithExtension(".bson")
         memoryCache.clear()
         knownKeys.clear()
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
@@ -96,9 +106,9 @@ class WindowsPreferenceStoreImpl(
 
     override fun flush(): Boolean {
         if (isDisposed) return false
-        ensureDirectoryExists(configDirectory)
+        configDir.ensureExists()
         for ((k, bytes) in memoryCache) {
-            DesktopConfigDirectoryHelper.writeBytesToFile(filePathForKey(k), bytes)
+            configDir.writeKeyBytes(k, ".bson", bytes)
         }
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
         return true
@@ -117,19 +127,7 @@ class WindowsPreferenceStoreImpl(
     override fun dispose() {
         isDisposed = true
         listeners.clear()
-    }
-
-    private fun ensureDirectoryExists(path: String) {
-        val normalized = path.replace('/', '\\')
-        val parts = normalized.split('\\')
-        var current = ""
-        for (part in parts) {
-            if (part.isEmpty()) continue
-            current = if (current.isEmpty()) part else "$current\\$part"
-            if (!current.endsWith(":")) {
-                mkdir(current)
-            }
-        }
+        configDir.dispose()
     }
 
     private fun notifyListeners(key: String?, newValue: Any?) {

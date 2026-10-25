@@ -2,6 +2,7 @@ package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.window.TitleBar
 
 /**
@@ -18,11 +19,31 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
     supportsEmbeddedMenuBarInTitleBar = false,
     supportsMultiWindow = true
 ) {
+    override fun configureAsToolModalWindow(
+        ownerWindow: WindowNativeImpl<*>?,
+        showInTaskbar: Boolean,
+        minimizable: Boolean,
+        alwaysOnTopOfOwner: Boolean
+    ) {
+        super.configureAsToolModalWindow(ownerWindow, showInTaskbar, minimizable, alwaysOnTopOfOwner)
+        nativeWidget.styleMask = (nativeWidget.styleMask or MacosViewHandle.NSWindowStyleMaskUtilityWindow) and
+            (if (!minimizable) MacosViewHandle.NSWindowStyleMaskMiniaturizable.inv() else -1L)
+        nativeWidget.attributes["floatingPanel"] = alwaysOnTopOfOwner
+        nativeWidget.attributes["hidesOnDeactivate"] = false
+        nativeWidget.attributes["level"] = if (alwaysOnTopOfOwner) "NSFloatingWindowLevel" else "NSNormalWindowLevel"
+    }
+
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         super.applyTitleBarInstructions(titleBar)
         val custom = titleBar?.customTitleBar == true
         if (custom) {
             nativeWidget.styleMask = nativeWidget.styleMask or MacosViewHandle.NSWindowStyleMaskFullSizeContentView
+        }
+        val allowMinimize = if (isToolModalWindow) minimizable else (titleBar?.showMinimizeButton ?: true)
+        if (!allowMinimize) {
+            nativeWidget.styleMask = nativeWidget.styleMask and MacosViewHandle.NSWindowStyleMaskMiniaturizable.inv()
+        } else {
+            nativeWidget.styleMask = nativeWidget.styleMask or MacosViewHandle.NSWindowStyleMaskMiniaturizable
         }
         nativeWidget.attributes["titlebarAppearsTransparent"] = custom
         nativeWidget.attributes["titleVisibility"] = if (custom) "NSWindowTitleHidden" else "NSWindowTitleVisible"

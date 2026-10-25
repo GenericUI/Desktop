@@ -95,6 +95,32 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         onPointerUpListener?.invoke(event)
     }
 
+    fun dispatchDoubleClick() {
+        onDoubleClickListener?.invoke()
+    }
+
+    fun dispatchContextMenu(event: PointerEvent) {
+        onContextMenuListener?.invoke(event)
+    }
+
+    fun performContextMenu(x: Float = 0f, y: Float = 0f): Boolean {
+        val listener = onContextMenuListener ?: return false
+        listener(PointerEvent(x = x, y = y, button = 2))
+        return true
+    }
+
+    fun dispatchWheel(event: WheelEvent) {
+        onWheelListener?.invoke(event)
+    }
+
+    fun dispatchKeyDown(event: KeyEvent) {
+        onKeyDownListener?.invoke(event)
+    }
+
+    fun dispatchKeyUp(event: KeyEvent) {
+        onKeyUpListener?.invoke(event)
+    }
+
     override val isDisposed: Boolean
         get() = nativeWidget.disposed
 
@@ -407,6 +433,21 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         style.left?.let { nativeWidget.attributes["left"] = it }
         style.top?.let { nativeWidget.attributes["top"] = it }
         style.cursor?.let { nativeWidget.attributes["cursor"] = it }
+        val rawPadLeft = style.rawDeclarations["padding-left"]?.removeSuffix("px")?.trim()?.toIntOrNull()
+        val rawPadTop = style.rawDeclarations["padding-top"]?.removeSuffix("px")?.trim()?.toIntOrNull()
+        val rawPadRight = style.rawDeclarations["padding-right"]?.removeSuffix("px")?.trim()?.toIntOrNull()
+        val rawPadBottom = style.rawDeclarations["padding-bottom"]?.removeSuffix("px")?.trim()?.toIntOrNull()
+        if (rawPadLeft != null || rawPadTop != null || rawPadRight != null || rawPadBottom != null) {
+            nativeWidget.padding = EdgeInsets(
+                top = rawPadTop ?: nativeWidget.padding.top,
+                right = rawPadRight ?: nativeWidget.padding.right,
+                bottom = rawPadBottom ?: nativeWidget.padding.bottom,
+                left = rawPadLeft ?: nativeWidget.padding.left
+            )
+        }
+        for ((k, v) in style.rawDeclarations) {
+            nativeWidget.styleProperties[k] = v
+        }
         nativeWidget.attributes["computedStyle"] = style
     }
 

@@ -8,13 +8,15 @@ import com.nexustools.genericui.nativeimpl.dock.DockAreaNativeImpl
 import com.nexustools.genericui.nativeimpl.dock.DockPanelNativeImpl
 import com.nexustools.genericui.nativeimpl.dock.DockWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.dock.DockWorkspaceNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 
 /**
  * Shared Desktop coordinator for GIMP / Photoshop Single-Window Mode (`StudioWindowMode.SINGLE_WINDOW_MODE`)
  * and Multi-Window Mode (`StudioWindowMode.MULTI_WINDOW_MODE`) across `:windows`, `:macos`, `:gtk`, and `:qt`.
  *
  * Manages detaching `DockPanel`s and `DockArea`s into floating utility `DockWindow`s and re-docking them back
- * into the primary `DockWorkspace`.
+ * into the primary `DockWorkspace`. Detached `DockWindow`s are attached to [ownerWindow] as tool-modal utility
+ * windows without taskbar entries or minimize buttons, and stay on top of [ownerWindow].
  */
 class DesktopMultiWindowDockCoordinator(
     private val dockWindowFactory: () -> DockWindowNativeImpl<*> = {
@@ -23,6 +25,14 @@ class DesktopMultiWindowDockCoordinator(
 ) {
     var windowMode: StudioWindowMode = StudioWindowMode.SINGLE_WINDOW_MODE
         private set
+
+    var ownerWindow: WindowNativeImpl<*>? = null
+        set(value) {
+            field = value
+            for (dockWindow in floatingWindowsByPanel.values) {
+                dockWindow.attachToOwnerWindow(value)
+            }
+        }
 
     private val floatingWindowsByPanel = linkedMapOf<DockPanelNativeImpl<*>, DockWindowNativeImpl<*>>()
     private val dockAreaByPosition = linkedMapOf<DockPosition, DockAreaNativeImpl<*>>()
@@ -40,8 +50,10 @@ class DesktopMultiWindowDockCoordinator(
     ): DockWindowNativeImpl<*> {
         val existing = floatingWindowsByPanel[panel]
         if (existing != null) {
+            existing.attachToOwnerWindow(ownerWindow)
             existing.setWindowBounds(bounds)
             existing.showDockWindow()
+            existing.bringToFront()
             return existing
         }
 
@@ -49,14 +61,22 @@ class DesktopMultiWindowDockCoordinator(
         val dockWindow = dockWindowFactory()
         dockWindow.setTitle(panel.getTitle())
         dockWindow.setWindowBounds(bounds)
+        dockWindow.attachToOwnerWindow(ownerWindow)
         dockWindow.addChildNative(panel)
         panel.setFloating(true)
         dockWindow.setOnDockWindowCloseRequested {
             reattachPanelToWorkspace(panel, DockPosition.RIGHT)
         }
         dockWindow.showDockWindow()
+        dockWindow.bringToFront()
         floatingWindowsByPanel[panel] = dockWindow
         return dockWindow
+    }
+
+    fun bringAllPanelsToFront() {
+        for (dockWindow in floatingWindowsByPanel.values) {
+            dockWindow.bringToFront()
+        }
     }
 
     fun reattachPanelToWorkspace(
@@ -86,6 +106,7 @@ class DesktopMultiWindowDockCoordinator(
                 detachPanelToFloatingWindow(panel, Rect(offset, offset, 320f, 520f))
                 offset += 36f
             }
+            bringAllPanelsToFront()
         } else {
             for (panel in panels.toList()) {
                 reattachPanelToWorkspace(panel, DockPosition.RIGHT)

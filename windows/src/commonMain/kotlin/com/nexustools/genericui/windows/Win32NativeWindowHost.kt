@@ -19,7 +19,10 @@ import com.nexustools.genericui.desktop.widget.DesktopSelectNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTabContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
+import com.nexustools.genericui.event.KeyEvent
 import com.nexustools.genericui.event.PointerEvent
+import com.nexustools.genericui.event.WheelEvent
+import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.res.Resources
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.gradient.Gradient
@@ -196,7 +199,7 @@ object Win32NativeWindowHost {
     private var hoverMouseX: Int = 0
     private var hoverMouseY: Int = 0
     private var hoverHwndKey: Long = 0L
-    private var canvasViewportRect: IntArray = intArrayOf(230, 48, 1220, 780)
+    private var canvasViewportRect: IntArray = intArrayOf(-1, -1, -1, -1)
     private var activeCanvasImpl: DesktopBaseNativeImpl<*>? = null
     private var activeCanvasSurfaceSize: Pair<Int, Int> = 320 to 240
     private var isDraggingCanvas: Boolean = false
@@ -864,39 +867,156 @@ object Win32NativeWindowHost {
             VK_OEM_PLUS, VK_ADD -> "+"
             VK_OEM_MINUS, VK_SUBTRACT -> "-"
             else -> null
-        } ?: return false
-
-        val sig = buildString {
-            if (ctrlDown) append("CTRL+")
-            if (altDown) append("ALT+")
-            if (shiftDown) append("SHIFT+")
-            append(keyName)
         }
-        val handler = shortcutCommandHandlers[sig]
-        if (handler != null) {
-            runCatching { handler.invoke() }
+
+        if (keyName != null) {
+            val sig = buildString {
+                if (ctrlDown) append("CTRL+")
+                if (altDown) append("ALT+")
+                if (shiftDown) append("SHIFT+")
+                append(keyName)
+            }
+            val handler = shortcutCommandHandlers[sig]
+            if (handler != null) {
+                runCatching { handler.invoke() }
+                return true
+            }
+        }
+
+        val canvasImpl = activeCanvasImpl
+        if (canvasImpl != null && textInput == null) {
+            val mappedKey = when (vkCode) {
+                VK_BACK -> "Backspace"
+                VK_RETURN -> "Enter"
+                VK_ESCAPE -> "Escape"
+                VK_TAB -> "Tab"
+                VK_DELETE -> "Delete"
+                VK_LEFT -> "ArrowLeft"
+                VK_RIGHT -> "ArrowRight"
+                VK_UP -> "ArrowUp"
+                VK_DOWN -> "ArrowDown"
+                VK_HOME -> "Home"
+                VK_END -> "End"
+                VK_PRIOR -> "PageUp"
+                VK_NEXT -> "PageDown"
+                in VK_F1..VK_F12 -> "F${vkCode - VK_F1 + 1}"
+                else -> if (ctrlDown || altDown) keyName else null
+            }
+            if (mappedKey != null) {
+                runCatching {
+                    canvasImpl.dispatchKeyDown(
+                        KeyEvent(
+                            key = mappedKey,
+                            code = mappedKey,
+                            keyCode = vkCode,
+                            shiftKey = shiftDown,
+                            ctrlKey = ctrlDown,
+                            altKey = altDown
+                        )
+                    )
+                }
+                InvalidateRect(hwnd, null, 0)
+                return true
+            }
+        }
+        return false
+    }
+
+    fun handleKeyUp(hwnd: HWND, vkCode: Int): Boolean {
+        val canvasImpl = activeCanvasImpl ?: return false
+        val ctrlDown = (GetKeyState(VK_CONTROL).toInt() and 0x8000) != 0
+        val shiftDown = (GetKeyState(VK_SHIFT).toInt() and 0x8000) != 0
+        val altDown = (GetKeyState(VK_MENU).toInt() and 0x8000) != 0
+        val mappedKey = when (vkCode) {
+            VK_BACK -> "Backspace"
+            VK_RETURN -> "Enter"
+            VK_ESCAPE -> "Escape"
+            VK_TAB -> "Tab"
+            VK_SPACE -> " "
+            VK_DELETE -> "Delete"
+            VK_LEFT -> "ArrowLeft"
+            VK_RIGHT -> "ArrowRight"
+            VK_UP -> "ArrowUp"
+            VK_DOWN -> "ArrowDown"
+            VK_HOME -> "Home"
+            VK_END -> "End"
+            VK_PRIOR -> "PageUp"
+            VK_NEXT -> "PageDown"
+            in 0x41..0x5A -> vkCode.toChar().toString()
+            in 0x30..0x39 -> vkCode.toChar().toString()
+            in VK_F1..VK_F12 -> "F${vkCode - VK_F1 + 1}"
+            else -> null
+        } ?: return false
+        runCatching {
+            canvasImpl.dispatchKeyUp(
+                KeyEvent(
+                    key = mappedKey,
+                    code = mappedKey,
+                    keyCode = vkCode,
+                    shiftKey = shiftDown,
+                    ctrlKey = ctrlDown,
+                    altKey = altDown
+                )
+            )
+        }
+        InvalidateRect(hwnd, null, 0)
+        return true
+    }
+
+    fun handleCharInput(hwnd: HWND, charCode: Int): Boolean {
+        if (charCode < 32 || charCode == 127) return false
+        val ctrlDown = (GetKeyState(VK_CONTROL).toInt() and 0x8000) != 0
+        if (ctrlDown) return false
+        val ch = charCode.toChar()
+        val textInput = focusedTextInput
+        if (textInput != null) {
+            textInput.setValue(textInput.getValue() + ch)
+            invalidateAllWindows()
+            return true
+        }
+        val canvasImpl = activeCanvasImpl
+        if (canvasImpl != null) {
+            val shiftDown = (GetKeyState(VK_SHIFT).toInt() and 0x8000) != 0
+            val altDown = (GetKeyState(VK_MENU).toInt() and 0x8000) != 0
+            val keyStr = ch.toString()
+            runCatching {
+                canvasImpl.dispatchKeyDown(
+                    KeyEvent(
+                        key = keyStr,
+                        code = keyStr,
+                        keyCode = charCode,
+                        shiftKey = shiftDown,
+                        ctrlKey = false,
+                        altKey = altDown
+                    )
+                )
+            }
+            InvalidateRect(hwnd, null, 0)
             return true
         }
         return false
     }
 
-    fun handleCharInput(hwnd: HWND, charCode: Int): Boolean {
-        val textInput = focusedTextInput ?: return false
-        if (charCode < 32 || charCode == 127) return false
-        val ctrlDown = (GetKeyState(VK_CONTROL).toInt() and 0x8000) != 0
-        if (ctrlDown) return false
-        val ch = charCode.toChar()
-        textInput.setValue(textInput.getValue() + ch)
-        invalidateAllWindows()
-        return true
+    fun handleWindowResize(hwnd: HWND) = memScoped {
+        if (hwnd != activeHwnd) return@memScoped
+        val rect = alloc<RECT>()
+        if (GetClientRect(hwnd, rect.ptr) != 0) {
+            val w = (rect.right - rect.left).coerceAtLeast(1)
+            val h = (rect.bottom - rect.top).coerceAtLeast(1)
+            runCatching { activeWindowImpl?.setWindowSize(Size(w, h)) }
+        }
     }
 
     fun updateCursorForWindow(hwnd: HWND): Boolean {
         val hit = hoveredHitRegion
+        val hitCursor = (hit?.widget?.attributes?.get("cursor") as? String)?.lowercase()
+        val canvasCursor = (activeCanvasImpl?.nativeWidget?.attributes?.get("cursor") as? String)?.lowercase()
         val cursorId = when {
-            hit?.isTextInput == true -> IDC_IBEAM
+            hit?.isTextInput == true || hitCursor == "text" -> IDC_IBEAM
+            hitCursor == "crosshair" -> IDC_CROSS
             hit != null -> IDC_HAND
             hwnd == activeHwnd &&
+                canvasCursor == "crosshair" &&
                 hoverMouseX in canvasViewportRect[0]..canvasViewportRect[2] &&
                 hoverMouseY in canvasViewportRect[1]..canvasViewportRect[3] -> IDC_CROSS
             else -> IDC_ARROW
@@ -944,6 +1064,23 @@ object Win32NativeWindowHost {
                 dcAppScrollY = next
                 InvalidateRect(hwnd, null, 0)
             }
+            return
+        }
+        val canvasImpl = activeCanvasImpl
+        if (canvasImpl != null && hwnd == activeHwnd) {
+            val (cx, cy) = mapWindowPointToCanvas(hoverMouseX, hoverMouseY)
+            val deltaY = if (wheelDelta > 0) -48f else 48f
+            runCatching {
+                canvasImpl.dispatchWheel(
+                    WheelEvent(
+                        x = cx,
+                        y = cy,
+                        deltaX = 0f,
+                        deltaY = deltaY
+                    )
+                )
+            }
+            InvalidateRect(hwnd, null, 0)
         }
     }
 
@@ -1042,6 +1179,29 @@ object Win32NativeWindowHost {
             hoveredTooltip = newTooltip
             InvalidateRect(hwnd, null, 0)
         }
+
+        if (hit == null && hwnd == activeHwnd) {
+            val cLeft = canvasViewportRect[0]
+            val cTop = canvasViewportRect[1]
+            val cRight = canvasViewportRect[2]
+            val cBottom = canvasViewportRect[3]
+            if (x in cLeft..cRight && y in cTop..cBottom) {
+                val canvasImpl = activeCanvasImpl
+                if (canvasImpl != null) {
+                    val (cx, cy) = mapWindowPointToCanvas(x, y)
+                    runCatching {
+                        canvasImpl.dispatchPointerMove(
+                            PointerEvent(
+                                x = cx,
+                                y = cy,
+                                button = -1
+                            )
+                        )
+                    }
+                    InvalidateRect(hwnd, null, 0)
+                }
+            }
+        }
     }
 
     fun handleMouseUp(hwnd: HWND, x: Int, y: Int) {
@@ -1136,6 +1296,10 @@ object Win32NativeWindowHost {
 
         currentPaintHwndKey = hwnd.toLong()
         hitRegions.clear()
+        if (hwnd == activeHwnd) {
+            canvasViewportRect = intArrayOf(-1, -1, -1, -1)
+            activeCanvasImpl = null
+        }
 
         val rootWidget = activeWindowImpl?.nativeWidget
         val toolPalettes = mutableListOf<DesktopToolPaletteNativeImpl<*>>()
@@ -1641,6 +1805,16 @@ object Win32NativeWindowHost {
             return
         }
 
+        if (canvases.isNotEmpty()) {
+            renderGeneralCanvas2DViewport(
+                hdc = hdc,
+                canvasWidget = canvases.first(),
+                clientW = clientW,
+                clientH = clientH
+            )
+            return
+        }
+
         // Generic application fallback
         val buttons = mutableListOf<DesktopButtonNativeImpl<*>>()
         val checkboxes = mutableListOf<DesktopCheckboxNativeImpl<*>>()
@@ -1700,6 +1874,68 @@ object Win32NativeWindowHost {
                 }
                 if (col == cols - 1 || idx == min(23, buttons.lastIndex)) {
                     y += 34
+                }
+            }
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun renderGeneralCanvas2DViewport(
+        hdc: HDC?,
+        canvasWidget: DesktopNativeWidget,
+        clientW: Int,
+        clientH: Int
+    ) {
+        activeCanvasImpl = canvasWidget.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+        val surfWFn = canvasWidget.attributes["surfaceWidth"] as? (() -> Int)
+        val surfHFn = canvasWidget.attributes["surfaceHeight"] as? (() -> Int)
+        val resizeFn = canvasWidget.attributes["resizeSurface"] as? ((Int, Int) -> Unit)
+        val vblankFn = canvasWidget.attributes["vblankDispatch"] as? ((Double?) -> Unit)
+        val swapCountFn = canvasWidget.attributes["swapCount"] as? (() -> Long)
+        val captureBgraFn = canvasWidget.attributes["captureBgra"] as? (() -> ByteArray)
+
+        val curW = (surfWFn?.invoke() ?: clientW).coerceAtLeast(1)
+        val curH = (surfHFn?.invoke() ?: clientH).coerceAtLeast(1)
+        if (curW != clientW || curH != clientH) {
+            runCatching { resizeFn?.invoke(clientW, clientH) }
+            runCatching { vblankFn?.invoke(null) }
+        } else if ((swapCountFn?.invoke() ?: 0L) == 0L) {
+            runCatching { vblankFn?.invoke(null) }
+        }
+
+        val surfW = (surfWFn?.invoke() ?: clientW).coerceAtLeast(1)
+        val surfH = (surfHFn?.invoke() ?: clientH).coerceAtLeast(1)
+        activeCanvasSurfaceSize = surfW to surfH
+        canvasViewportRect = intArrayOf(0, 0, clientW, clientH)
+
+        val bgra = captureBgraFn?.invoke()
+        if (bgra != null && bgra.size >= surfW * surfH * 4) {
+            memScoped {
+                val bmi = alloc<BITMAPINFO>()
+                bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+                bmi.bmiHeader.biWidth = surfW
+                bmi.bmiHeader.biHeight = -surfH
+                bmi.bmiHeader.biPlanes = 1u
+                bmi.bmiHeader.biBitCount = 32u
+                bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+
+                SetStretchBltMode(hdc, HALFTONE)
+                bgra.usePinned { pinned ->
+                    StretchDIBits(
+                        hdc,
+                        0,
+                        0,
+                        clientW,
+                        clientH,
+                        0,
+                        0,
+                        surfW,
+                        surfH,
+                        pinned.addressOf(0),
+                        bmi.ptr,
+                        DIB_RGB_COLORS.toUInt(),
+                        SRCCOPY
+                    )
                 }
             }
         }
@@ -3755,10 +3991,37 @@ object Win32NativeWindowHost {
                 // --- Column 0: Tree Indentation + Expand/Collapse Toggle + Type Badge + Editable Key ---
                 val cell0 = gridImpl.getOrMaterializeCellWidget(gridRowIdx * 4 + 0)
                 if (cell0 != null) {
-                    val colWrapper = findWidgetByClass(cell0, "lazy-grid-tree-col-wrapper") ?: cell0
-                    val padLeftStr = colWrapper.styleProperties["padding-left"] ?: "0px"
-                    val indentPx = padLeftStr.removeSuffix("px").trim().toIntOrNull() ?: 0
-                    var c0X = (colLefts[0] + 6 + indentPx).coerceAtMost(colRights[0] - 90)
+                    val colWrapper = findWidgetByClass(cell0, "lazy-grid-tree-hierarchy-cell")
+                        ?: findWidgetByClass(cell0, "lazy-grid-tree-col-wrapper")
+                        ?: cell0
+                    val attrIndent = (colWrapper.attributes["data-tree-indent-px"] as? String)?.toIntOrNull()
+                    val attrDepth = (colWrapper.attributes["data-tree-depth"] as? String)?.toIntOrNull()
+                    val computedPadLeft = (colWrapper.attributes["computedStyle"] as? com.nexustools.genericui.style.css.ComputedStyle)
+                        ?.rawDeclarations?.get("padding-left")?.removeSuffix("px")?.trim()?.toIntOrNull()
+                    val stylePadLeft = colWrapper.styleProperties["padding-left"]
+                        ?.removeSuffix("px")?.trim()?.toIntOrNull()
+                    val indentPx = when {
+                        colWrapper.padding.left > 0 -> colWrapper.padding.left
+                        attrIndent != null && attrIndent > 0 -> attrIndent
+                        computedPadLeft != null && computedPadLeft > 0 -> computedPadLeft
+                        stylePadLeft != null && stylePadLeft > 0 -> stylePadLeft
+                        attrDepth != null && attrDepth > 0 -> attrDepth * 20
+                        else -> 0
+                    }
+                    val baseLeftX = colLefts[0] + 8
+                    var c0X = (baseLeftX + indentPx).coerceAtMost(colRights[0] - 90)
+                    if (indentPx > 0) {
+                        val stepPx = 20
+                        val levels = (indentPx / stepPx).coerceAtLeast(1)
+                        val midY = (rTop + rBottom) / 2
+                        for (lvl in 0 until levels) {
+                            val guideX = (baseLeftX + lvl * stepPx + 8).coerceAtMost(c0X - 2)
+                            drawLineColor(hdc, guideX, rTop, guideX, rBottom, theme.borderSubtle)
+                            if (lvl == levels - 1) {
+                                drawLineColor(hdc, guideX, midY, (c0X - 3).coerceAtLeast(guideX), midY, theme.borderSubtle)
+                            }
+                        }
+                    }
 
                     val toggleBtnNode = findWidgetByClass(cell0, "lazy-grid-tree-toggle-btn")
                     val toggleBtnImpl = toggleBtnNode?.attributes?.get("nativeImpl") as? DesktopButtonNativeImpl<*>
@@ -3867,9 +4130,28 @@ object Win32NativeWindowHost {
                             )
                         )
                     } else {
-                        val staticKeyLabel = keyCellTexts.getOrNull(1) ?: "root"
+                        val selectButtons = collectDirectOrNestedButtons(cell0)
+                            .filter { it !== toggleBtnImpl }
+                        val selectBtn = selectButtons.firstOrNull()
+                        val staticKeyLabel = selectBtn?.getText()?.takeIf { it.isNotBlank() }
+                            ?: keyCellTexts.drop(1).firstOrNull { it != typeBadgeLabel }
+                            ?: keyCellTexts.getOrNull(1)
+                            ?: "root"
                         SelectObject(hdc, fontBold)
                         drawTextInRect(hdc, staticKeyLabel, c0X + 2, rTop, colRights[0] - 6, rBottom, theme.accentBlueText)
+                        if (selectBtn != null) {
+                            hitRegions.add(
+                                HitRegion(
+                                    left = c0X,
+                                    top = rTop + 4,
+                                    right = colRights[0] - 6,
+                                    bottom = rBottom - 4,
+                                    tooltip = "Select node ''",
+                                    widget = selectBtn.nativeWidget,
+                                    onClick = { _, _ -> selectBtn.dispatchClick() }
+                                )
+                            )
+                        }
                     }
                 }
 
@@ -7947,6 +8229,7 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
         }
         WM_SIZE -> {
             if (hwnd != null) {
+                runCatching { Win32NativeWindowHost.handleWindowResize(hwnd) }
                 InvalidateRect(hwnd, null, 0)
             }
             return 0L
@@ -7959,6 +8242,12 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
         WM_KEYDOWN -> {
             if (hwnd != null) {
                 runCatching { Win32NativeWindowHost.handleKeyDown(hwnd, wParam.toInt()) }
+            }
+            return 0L
+        }
+        WM_KEYUP -> {
+            if (hwnd != null) {
+                runCatching { Win32NativeWindowHost.handleKeyUp(hwnd, wParam.toInt()) }
             }
             return 0L
         }

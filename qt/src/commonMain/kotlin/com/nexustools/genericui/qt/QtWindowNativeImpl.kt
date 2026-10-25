@@ -1,6 +1,7 @@
 package com.nexustools.genericui.qt
 
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.window.TitleBar
 
 /**
@@ -16,6 +17,29 @@ class QtWindowNativeImpl : DesktopWindowNativeImpl<QtWidgetHandle>(
     supportsEmbeddedMenuBarInTitleBar = true,
     supportsMultiWindow = true
 ) {
+    override fun configureAsToolModalWindow(
+        ownerWindow: WindowNativeImpl<*>?,
+        showInTaskbar: Boolean,
+        minimizable: Boolean,
+        alwaysOnTopOfOwner: Boolean
+    ) {
+        super.configureAsToolModalWindow(ownerWindow, showInTaskbar, minimizable, alwaysOnTopOfOwner)
+        var flags = nativeWidget.qtWindowFlags
+        if (!showInTaskbar) {
+            flags = flags or QtWidgetHandle.Qt_Tool
+        }
+        if (alwaysOnTopOfOwner) {
+            flags = flags or QtWidgetHandle.Qt_WindowStaysOnTopHint
+        }
+        if (!minimizable) {
+            flags = flags and QtWidgetHandle.Qt_WindowMinimizeButtonHint.inv()
+        }
+        nativeWidget.qtWindowFlags = flags
+        nativeWidget.attributes["skip-taskbar"] = !showInTaskbar
+        nativeWidget.attributes["minimizable"] = minimizable
+        nativeWidget.attributes["transient-for-owner"] = alwaysOnTopOfOwner
+    }
+
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         super.applyTitleBarInstructions(titleBar)
         val custom = titleBar?.customTitleBar == true
@@ -23,6 +47,12 @@ class QtWindowNativeImpl : DesktopWindowNativeImpl<QtWidgetHandle>(
             nativeWidget.qtWindowFlags = nativeWidget.qtWindowFlags or QtWidgetHandle.Qt_FramelessWindowHint
         } else {
             nativeWidget.qtWindowFlags = nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_FramelessWindowHint.inv()
+        }
+        val allowMinimize = if (isToolModalWindow) minimizable else (titleBar?.showMinimizeButton ?: true)
+        if (!allowMinimize) {
+            nativeWidget.qtWindowFlags = nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_WindowMinimizeButtonHint.inv()
+        } else {
+            nativeWidget.qtWindowFlags = nativeWidget.qtWindowFlags or QtWidgetHandle.Qt_WindowMinimizeButtonHint
         }
     }
 }

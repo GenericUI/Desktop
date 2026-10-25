@@ -7,9 +7,11 @@ import com.nexustools.genericui.component.system.PreferenceElement
 import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
 import com.nexustools.genericui.nativeimpl.system.PreferenceStoreNativeImpl
 import com.nexustools.genericui.util.BinaryJson
+import com.nexustools.genericui.util.ConfigDirectory
 
 /**
- * Linux GTK4 (`:desktop:gtk`) implementation of [PreferenceStoreNativeImpl].
+ * Linux GTK4 (`:desktop:gtk`) implementation of [PreferenceStoreNativeImpl] backed by [ConfigDirectory]
+ * (`GtkConfigDirectoryImpl`).
  *
  * Stores each preference key in its own binary JSON file (`~/.config/<appName>/<key>.bson`)
  * encoded and decoded via [BinaryJson], and dispatches [PreferenceChangeListener] notifications.
@@ -18,9 +20,17 @@ class GtkPreferenceStoreImpl(
     override val appName: String = "GenericUI"
 ) : PreferenceStoreNativeImpl {
 
-    val configDirectory: String = DesktopConfigDirectoryHelper.resolveUnixAppConfigDir(appName)
+    val configDir: ConfigDirectory = ConfigDirectory(
+        appName = appName,
+        nativeImplOverride = GtkConfigDirectoryImpl(appName)
+    )
 
-    override val storageLocationDescription: String = "$configDirectory/*.bson (BinaryJson)"
+    val configDirectory: String
+        get() = configDir.directoryPath
+
+    override val storageLocationDescription: String
+        get() = "$configDirectory/*.bson (BinaryJson)"
+
     override val usesNativeChangeListener: Boolean = true
 
     override var isDisposed: Boolean = false
@@ -31,29 +41,30 @@ class GtkPreferenceStoreImpl(
     private val listeners = mutableListOf<PreferenceChangeListener>()
 
     init {
-        ensureDirectoryExists(configDirectory)
+        configDir.ensureExists()
         knownKeys.addAll(DesktopConfigDirectoryHelper.loadPersistedKeySet(configDirectory, '/'))
+        knownKeys.addAll(configDir.keysForExtension(".bson"))
     }
 
     fun filePathForKey(key: String): String =
-        DesktopConfigDirectoryHelper.resolveKeyFilePath(configDirectory, key, ".bson", '/')
+        configDir.resolveKeyPath(key, ".bson")
 
     override fun writeElement(key: String, element: PreferenceElement) {
         if (element.isNull) {
             remove(key)
             return
         }
-        ensureDirectoryExists(configDirectory)
+        configDir.ensureExists()
         val encoded = BinaryJson.encodeElement(element)
         memoryCache[key] = encoded
         knownKeys.add(key)
-        DesktopConfigDirectoryHelper.writeBytesToFile(filePathForKey(key), encoded)
+        configDir.writeKeyBytes(key, ".bson", encoded)
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '/', knownKeys)
         notifyListeners(key, element.toPlainValue())
     }
 
     override fun readElement(key: String): PreferenceElement? {
-        val fileBytes = DesktopConfigDirectoryHelper.readBytesFromFile(filePathForKey(key))
+        val fileBytes = configDir.readKeyBytes(key, ".bson")
         if (fileBytes != null && fileBytes.isNotEmpty()) {
             memoryCache[key] = fileBytes
             knownKeys.add(key)
@@ -64,8 +75,7 @@ class GtkPreferenceStoreImpl(
     }
 
     override fun contains(key: String): Boolean =
-        key in knownKeys || memoryCache.containsKey(key) ||
-            DesktopConfigDirectoryHelper.fileExists(filePathForKey(key))
+        key in knownKeys || memoryCache.containsKey(key) || configDir.containsKey(key, ".bson")
 
     override fun keys(): Set<String> = LinkedHashSet(knownKeys)
 
@@ -73,7 +83,7 @@ class GtkPreferenceStoreImpl(
         val existed = contains(key)
         memoryCache.remove(key)
         knownKeys.remove(key)
-        DesktopConfigDirectoryHelper.deleteFile(filePathForKey(key))
+        configDir.removeKey(key, ".bson")
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '/', knownKeys)
         if (existed) {
             notifyListeners(key, null)
@@ -83,8 +93,9 @@ class GtkPreferenceStoreImpl(
     override fun clear() {
         val snapshotKeys = knownKeys.toList()
         for (k in snapshotKeys) {
-            DesktopConfigDirectoryHelper.deleteFile(filePathForKey(k))
+            configDir.removeKey(k, ".bson")
         }
+        configDir.clearKeysWithExtension(".bson")
         memoryCache.clear()
         knownKeys.clear()
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '/', knownKeys)
@@ -95,9 +106,9 @@ class GtkPreferenceStoreImpl(
 
     override fun flush(): Boolean {
         if (isDisposed) return false
-        ensureDirectoryExists(configDirectory)
+        configDir.ensureExists()
         for ((k, bytes) in memoryCache) {
-            DesktopConfigDirectoryHelper.writeBytesToFile(filePathForKey(k), bytes)
+            configDir.writeKeyBytes(k, ".bson", bytes)
         }
         DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '/', knownKeys)
         return true
@@ -116,10 +127,7 @@ class GtkPreferenceStoreImpl(
     override fun dispose() {
         isDisposed = true
         listeners.clear()
-    }
-
-    private fun ensureDirectoryExists(path: String) {
-        DesktopConfigDirectoryHelper.ensureDirectoryExists(path)
+        configDir.dispose()
     }
 
     private fun notifyListeners(key: String?, newValue: Any?) {

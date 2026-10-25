@@ -1,6 +1,7 @@
 package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.image.*
+import com.nexustools.genericui.image.cache.ImageCacheManager
 import com.nexustools.genericui.image.codec.LibJpegCodec
 import com.nexustools.genericui.image.codec.LibPngCodec
 import com.nexustools.genericui.image.codec.LibWebpCodec
@@ -10,6 +11,7 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.URI
 import javax.imageio.ImageIO
 
 /**
@@ -17,6 +19,25 @@ import javax.imageio.ImageIO
  */
 class SwingImageIoCodecImpl : ImageCodecNativeImpl {
     override val codecBackendName: String = "swing-javax-imageio"
+
+    init {
+        if (ImageCacheManager.localResourceReaderHook == null) {
+            ImageCacheManager.localResourceReaderHook = { uriOrPath ->
+                readLocalOrResourceBytes(uriOrPath)
+            }
+        }
+        if (ImageCacheManager.urlFetcherHook == null) {
+            ImageCacheManager.urlFetcherHook = { url ->
+                if (url.startsWith("http://", ignoreCase = true) ||
+                    url.startsWith("https://", ignoreCase = true)
+                ) {
+                    runCatching { URI.create(url).toURL().readBytes() }.getOrNull()
+                } else {
+                    readLocalOrResourceBytes(url)
+                }
+            }
+        }
+    }
 
     override fun probeMetadata(source: ImageSource): ImageMetadata? {
         source.memoryBuffer?.let { buf ->
@@ -135,11 +156,28 @@ class SwingImageIoCodecImpl : ImageCodecNativeImpl {
     private fun resolveSourceBytes(source: ImageSource): ByteArray? {
         source.encodedBytes?.let { return it }
         val uri = source.uriOrPath ?: return null
-        return try {
-            val f = File(uri)
-            if (f.isFile && f.exists()) f.readBytes() else null
-        } catch (_: Throwable) {
-            null
+        ImageCacheManager.fetchAndCacheBytes(uri)?.let { return it }
+        return readLocalOrResourceBytes(uri)
+    }
+
+    private fun readLocalOrResourceBytes(uriOrPath: String): ByteArray? {
+        val clean = uriOrPath.substringBefore('?').substringBefore('#').trim()
+        if (clean.isEmpty()) return null
+        val candidates = listOf(
+            File(clean),
+            File("src/commonMain/resources/$clean"),
+            File("resources/$clean"),
+            File("../src/commonMain/resources/$clean")
+        )
+        for (f in candidates) {
+            if (f.isFile && f.exists()) {
+                runCatching { return f.readBytes() }
+            }
         }
+        val resourceStream = SwingImageIoCodecImpl::class.java.classLoader?.getResourceAsStream(clean.trimStart('/'))
+        if (resourceStream != null) {
+            return runCatching { resourceStream.use { it.readBytes() } }.getOrNull()
+        }
+        return null
     }
 }

@@ -204,4 +204,10 @@ class QtNativeFactory : NativeFactory {
 
     override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
         QtPreferenceStoreImpl(appName)
+
+    override fun createConfigDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        QtConfigDirectoryImpl(appName, subdirectory)
+
+    override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        QtCacheDirectoryImpl(appName, subdirectory)
 }

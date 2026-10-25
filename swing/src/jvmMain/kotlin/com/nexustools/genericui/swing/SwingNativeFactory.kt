@@ -112,4 +112,8 @@ class SwingNativeFactory : NativeFactory {
     override fun createNotificationManager(): NotificationManagerNativeImpl = SwingNotificationManagerImpl()
     override fun createNetworkMonitor(): NetworkMonitorNativeImpl = SwingNetworkMonitorImpl()
     override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl = SwingPreferenceStoreImpl(appName)
+    override fun createConfigDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        SwingUserDirectoryNativeImpl(appName = appName, subdirectory = subdirectory, isCache = false)
+    override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        SwingUserDirectoryNativeImpl(appName = appName, subdirectory = subdirectory, isCache = true)
 }

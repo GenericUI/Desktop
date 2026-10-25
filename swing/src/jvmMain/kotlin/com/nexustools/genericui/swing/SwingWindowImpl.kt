@@ -12,6 +12,7 @@ import com.nexustools.genericui.window.TitleBar
 import com.nexustools.genericui.window.WindowConfiguration
 import java.awt.BorderLayout
 import java.awt.GraphicsEnvironment
+import java.awt.Window
 import javax.swing.JComponent
 import javax.swing.JFrame
 import javax.swing.JMenuBar
@@ -27,6 +28,22 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     override val supportsCustomTitleBar: Boolean = true
     override val supportsEmbeddedMenuBarInTitleBar: Boolean = true
     override val supportsMultiWindow: Boolean = true
+
+    var isToolModalWindow: Boolean = false
+        private set
+    var showInTaskbar: Boolean = true
+        private set
+    var minimizable: Boolean = true
+        private set
+    var alwaysOnTopOfOwner: Boolean = false
+        private set
+    var ownerWindow: WindowNativeImpl<*>? = null
+        private set
+    var zOrderLayer: Int = 0
+        private set
+
+    private val ownedToolWindows = mutableListOf<SwingWindowImpl>()
+    private val ownedDockWindows = mutableListOf<SwingDockWindowImpl>()
 
     val jFrame: JFrame? = if (!GraphicsEnvironment.isHeadless()) {
         try {
@@ -53,6 +70,81 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     private var onResizeListener: ((WindowConfiguration) -> Unit)? = null
     private var onFocusListener: ((Boolean) -> Unit)? = null
     private var onCloseRequestedListener: (() -> Boolean)? = null
+
+    internal fun registerOwnedToolWindow(toolWindow: SwingWindowImpl) {
+        if (toolWindow !== this && toolWindow !in ownedToolWindows) {
+            ownedToolWindows.add(toolWindow)
+        }
+    }
+
+    internal fun unregisterOwnedToolWindow(toolWindow: SwingWindowImpl) {
+        ownedToolWindows.remove(toolWindow)
+    }
+
+    internal fun registerOwnedDockWindow(dockWindow: SwingDockWindowImpl) {
+        if (dockWindow !in ownedDockWindows) {
+            ownedDockWindows.add(dockWindow)
+        }
+    }
+
+    internal fun unregisterOwnedDockWindow(dockWindow: SwingDockWindowImpl) {
+        ownedDockWindows.remove(dockWindow)
+    }
+
+    override fun configureAsToolModalWindow(
+        ownerWindow: WindowNativeImpl<*>?,
+        showInTaskbar: Boolean,
+        minimizable: Boolean,
+        alwaysOnTopOfOwner: Boolean
+    ) {
+        (this.ownerWindow as? SwingWindowImpl)?.unregisterOwnedToolWindow(this)
+        this.ownerWindow = ownerWindow
+        this.isToolModalWindow = true
+        this.showInTaskbar = showInTaskbar
+        this.minimizable = minimizable
+        this.alwaysOnTopOfOwner = alwaysOnTopOfOwner
+
+        nativeWidget.putClientProperty("tool-modal", "true")
+        nativeWidget.putClientProperty("show-in-taskbar", showInTaskbar.toString())
+        nativeWidget.putClientProperty("minimizable", minimizable.toString())
+        nativeWidget.putClientProperty("always-on-top-of-owner", alwaysOnTopOfOwner.toString())
+        nativeWidget.putClientProperty("ownerWindow", ownerWindow)
+
+        try {
+            if (!showInTaskbar && jFrame != null && !jFrame.isDisplayable) {
+                jFrame.type = Window.Type.UTILITY
+            }
+            if (alwaysOnTopOfOwner) {
+                jFrame?.isAlwaysOnTop = true
+            }
+        } catch (_: Throwable) {
+        }
+
+        (ownerWindow as? SwingWindowImpl)?.registerOwnedToolWindow(this)
+        bringToFront()
+    }
+
+    override fun bringToFront() {
+        zOrderLayer = nextZOrderSequence()
+        nativeWidget.putClientProperty("zOrderLayer", zOrderLayer)
+        nativeWidget.putClientProperty("broughtToFront", true)
+        try {
+            if (jFrame?.isVisible == true) {
+                jFrame.toFront()
+            }
+        } catch (_: Throwable) {
+        }
+        for (toolWin in ownedToolWindows.toList()) {
+            if (toolWin.isVisible()) {
+                toolWin.bringToFront()
+            }
+        }
+        for (dockWin in ownedDockWindows.toList()) {
+            if (dockWin.isVisible()) {
+                dockWin.bringToFront()
+            }
+        }
+    }
 
     override fun setTitle(title: String) {
         titleText = title
@@ -89,6 +181,17 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         activeTitleBar = titleBar
+        if (titleBar != null) {
+            if (!isToolModalWindow) {
+                minimizable = titleBar.showMinimizeButton
+            }
+            nativeWidget.putClientProperty(
+                "minimizable",
+                (if (isToolModalWindow) minimizable else titleBar.showMinimizeButton).toString()
+            )
+            nativeWidget.putClientProperty("maximizable", titleBar.showMaximizeButton.toString())
+            nativeWidget.putClientProperty("closable", titleBar.showCloseButton.toString())
+        }
     }
 
     override fun setMenuBarNative(menuBarImpl: MenuBarNativeImpl<*>?) {
@@ -125,6 +228,7 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     override fun showWindow() {
         setVisible(true)
         jFrame?.isVisible = true
+        bringToFront()
         onFocusListener?.invoke(true)
     }
 
@@ -134,6 +238,10 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
             setVisible(false)
             jFrame?.isVisible = false
             jFrame?.dispose()
+            (ownerWindow as? SwingWindowImpl)?.unregisterOwnedToolWindow(this)
+            ownerWindow = null
+            ownedToolWindows.clear()
+            ownedDockWindows.clear()
         }
     }
 
@@ -142,4 +250,10 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     override fun setOnWindowResize(listener: ((WindowConfiguration) -> Unit)?) { onResizeListener = listener }
     override fun setOnWindowFocusChanged(listener: ((Boolean) -> Unit)?) { onFocusListener = listener }
     override fun setOnWindowCloseRequested(listener: (() -> Boolean)?) { onCloseRequestedListener = listener }
+
+    companion object {
+        private var zOrderCounter: Int = 0
+
+        internal fun nextZOrderSequence(): Int = ++zOrderCounter
+    }
 }

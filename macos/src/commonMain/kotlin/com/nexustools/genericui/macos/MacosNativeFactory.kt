@@ -204,4 +204,10 @@ class MacosNativeFactory : NativeFactory {
 
     override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
         MacosPreferenceStoreImpl(appName)
+
+    override fun createConfigDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        MacosConfigDirectoryImpl(appName, subdirectory)
+
+    override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        MacosCacheDirectoryImpl(appName, subdirectory)
 }

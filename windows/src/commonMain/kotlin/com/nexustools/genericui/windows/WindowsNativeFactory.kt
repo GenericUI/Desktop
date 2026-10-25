@@ -205,4 +205,10 @@ class WindowsNativeFactory : NativeFactory {
 
     override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
         WindowsPreferenceStoreImpl(appName)
+
+    override fun createConfigDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        WindowsConfigDirectoryImpl(appName, subdirectory)
+
+    override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        WindowsCacheDirectoryImpl(appName, subdirectory)
 }

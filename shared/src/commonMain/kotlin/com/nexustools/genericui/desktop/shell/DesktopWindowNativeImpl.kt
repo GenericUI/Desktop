@@ -3,6 +3,7 @@ package com.nexustools.genericui.desktop.shell
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
+import com.nexustools.genericui.desktop.dock.DesktopDockWindowNativeImpl
 import com.nexustools.genericui.enums.window.DisplayCutoutMode
 import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Rect
@@ -16,7 +17,7 @@ import com.nexustools.genericui.window.WindowConfiguration
 /**
  * Shared desktop base implementation of [WindowNativeImpl] supporting custom title bars,
  * platform-configurable embedded menu bar in title bar (`true` on Windows/GTK/Qt, `false` on macOS),
- * multi-window management, fullscreen, Picture-in-Picture, and window lifecycle callbacks.
+ * multi-window management, tool-modal panel windows, fullscreen, Picture-in-Picture, and window lifecycle callbacks.
  */
 open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W,
@@ -24,6 +25,22 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     override val supportsEmbeddedMenuBarInTitleBar: Boolean = true,
     override val supportsMultiWindow: Boolean = true
 ) : DesktopBaseContainerNativeImpl<W>(nativeWidget, "window"), WindowNativeImpl<W> {
+
+    var isToolModalWindow: Boolean = false
+        protected set
+    var showInTaskbar: Boolean = true
+        protected set
+    var minimizable: Boolean = true
+        protected set
+    var alwaysOnTopOfOwner: Boolean = false
+        protected set
+    var ownerWindow: WindowNativeImpl<*>? = null
+        protected set
+    var zOrderLayer: Int = 0
+        protected set
+
+    private val ownedToolWindows = mutableListOf<DesktopWindowNativeImpl<*>>()
+    private val ownedDockWindows = mutableListOf<DesktopDockWindowNativeImpl<*>>()
 
     protected var windowTitle: String = ""
     protected var currentWindowSize: Size = Size(1280f, 800f)
@@ -39,6 +56,65 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     protected var onWindowResizeListener: ((WindowConfiguration) -> Unit)? = null
     protected var onWindowFocusChangedListener: ((Boolean) -> Unit)? = null
     protected var onWindowCloseRequestedListener: (() -> Boolean)? = null
+
+    internal fun registerOwnedToolWindow(toolWindow: DesktopWindowNativeImpl<*>) {
+        if (toolWindow !== this && toolWindow !in ownedToolWindows) {
+            ownedToolWindows.add(toolWindow)
+        }
+    }
+
+    internal fun unregisterOwnedToolWindow(toolWindow: DesktopWindowNativeImpl<*>) {
+        ownedToolWindows.remove(toolWindow)
+    }
+
+    internal fun registerOwnedDockWindow(dockWindow: DesktopDockWindowNativeImpl<*>) {
+        if (dockWindow !in ownedDockWindows) {
+            ownedDockWindows.add(dockWindow)
+        }
+    }
+
+    internal fun unregisterOwnedDockWindow(dockWindow: DesktopDockWindowNativeImpl<*>) {
+        ownedDockWindows.remove(dockWindow)
+    }
+
+    override fun configureAsToolModalWindow(
+        ownerWindow: WindowNativeImpl<*>?,
+        showInTaskbar: Boolean,
+        minimizable: Boolean,
+        alwaysOnTopOfOwner: Boolean
+    ) {
+        (this.ownerWindow as? DesktopWindowNativeImpl<*>)?.unregisterOwnedToolWindow(this)
+        this.ownerWindow = ownerWindow
+        this.isToolModalWindow = true
+        this.showInTaskbar = showInTaskbar
+        this.minimizable = minimizable
+        this.alwaysOnTopOfOwner = alwaysOnTopOfOwner
+
+        nativeWidget.attributes["tool-modal"] = "true"
+        nativeWidget.attributes["show-in-taskbar"] = showInTaskbar.toString()
+        nativeWidget.attributes["minimizable"] = minimizable.toString()
+        nativeWidget.attributes["always-on-top-of-owner"] = alwaysOnTopOfOwner.toString()
+        nativeWidget.attributes["ownerWindow"] = ownerWindow
+
+        (ownerWindow as? DesktopWindowNativeImpl<*>)?.registerOwnedToolWindow(this)
+        bringToFront()
+    }
+
+    override fun bringToFront() {
+        zOrderLayer = nextZOrderSequence()
+        nativeWidget.attributes["zOrderLayer"] = zOrderLayer
+        nativeWidget.attributes["broughtToFront"] = true
+        for (toolWin in ownedToolWindows.toList()) {
+            if (toolWin.isVisible()) {
+                toolWin.bringToFront()
+            }
+        }
+        for (dockWin in ownedDockWindows.toList()) {
+            if (dockWin.isVisible()) {
+                dockWin.bringToFront()
+            }
+        }
+    }
 
     override fun setTitle(title: String) {
         windowTitle = title
@@ -83,6 +159,14 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         activeTitleBar = titleBar
         nativeWidget.attributes["titleBar"] = titleBar
+        if (titleBar != null) {
+            if (!isToolModalWindow) {
+                minimizable = titleBar.showMinimizeButton
+            }
+            nativeWidget.attributes["minimizable"] = (if (isToolModalWindow) minimizable else titleBar.showMinimizeButton).toString()
+            nativeWidget.attributes["maximizable"] = titleBar.showMaximizeButton.toString()
+            nativeWidget.attributes["closable"] = titleBar.showCloseButton.toString()
+        }
     }
 
     override fun setMenuBarNative(menuBarImpl: MenuBarNativeImpl<*>?) {
@@ -121,6 +205,7 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
 
     override fun showWindow() {
         setVisible(true)
+        bringToFront()
         onWindowFocusChangedListener?.invoke(true)
     }
 
@@ -129,8 +214,24 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         if (allow) {
             setVisible(false)
             onWindowFocusChangedListener?.invoke(false)
+            (ownerWindow as? DesktopWindowNativeImpl<*>)?.unregisterOwnedToolWindow(this)
+            ownerWindow = null
+            ownedToolWindows.clear()
+            ownedDockWindows.clear()
             dispose()
         }
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super<DesktopBaseContainerNativeImpl>.setFocusedState(focused)
+        if (focused) {
+            bringToFront()
+        }
+    }
+
+    open fun dispatchFocusChanged(focused: Boolean) {
+        setFocusedState(focused)
+        onWindowFocusChangedListener?.invoke(focused)
     }
 
     override fun setOnWindowResize(listener: ((WindowConfiguration) -> Unit)?) {
@@ -143,5 +244,11 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setOnWindowCloseRequested(listener: (() -> Boolean)?) {
         onWindowCloseRequestedListener = listener
+    }
+
+    companion object {
+        private var zOrderCounter: Int = 0
+
+        internal fun nextZOrderSequence(): Int = ++zOrderCounter
     }
 }

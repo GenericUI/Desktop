@@ -23,6 +23,9 @@ class QtWidgetHandle(
         const val Qt_Dialog: Int = 0x00000003
         const val Qt_Tool: Int = 0x0000000B
         const val Qt_FramelessWindowHint: Int = 0x00000800
+        const val Qt_WindowMinimizeButtonHint: Int = 0x00004000
+        const val Qt_WindowMaximizeButtonHint: Int = 0x00008000
         const val Qt_WindowStaysOnTopHint: Int = 0x00040000
+        const val Qt_WindowCloseButtonHint: Int = 0x08000000
     }
 }

@@ -272,6 +272,12 @@ open class SwingBaseNativeImpl(
     override fun setOnKeyDown(listener: ((KeyEvent) -> Unit)?) { onKeyDownListener = listener }
     override fun setOnKeyUp(listener: ((KeyEvent) -> Unit)?) { onKeyUpListener = listener }
 
+    fun performContextMenu(x: Float = 0f, y: Float = 0f): Boolean {
+        val listener = onContextMenuListener ?: return false
+        listener(PointerEvent(x = x, y = y, button = 2))
+        return true
+    }
+
     override fun dispose() {
         nativeWidget.parent?.remove(nativeWidget)
     }

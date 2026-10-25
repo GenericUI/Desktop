@@ -25,6 +25,8 @@ class SwingMenuItemImpl(
     override val nativeWidget: JMenuItem = super.nativeWidget as JMenuItem
 
     private var checkedState: Boolean = false
+    private var iconName: String? = null
+    private var shortcutVal: KeyShortcut? = null
 
     init {
         nativeWidget.addActionListener {
@@ -35,6 +37,11 @@ class SwingMenuItemImpl(
         }
     }
 
+    fun trigger() {
+        if (!isEnabled()) return
+        onClickListener?.invoke()
+    }
+
     override fun setLabel(label: String) {
         nativeWidget.text = label
     }
@@ -42,10 +49,14 @@ class SwingMenuItemImpl(
     override fun getLabel(): String = nativeWidget.text ?: ""
 
     override fun setIcon(icon: String?) {
+        iconName = icon
         nativeWidget.putClientProperty("icon", icon)
     }
 
+    override fun getIcon(): String? = iconName
+
     override fun setShortcut(shortcut: KeyShortcut?) {
+        shortcutVal = shortcut
         if (shortcut != null) {
             val formatted = shortcut.toString().replace("+", " ").replace("Ctrl", "control").replace("Cmd", "meta")
             KeyStroke.getKeyStroke(formatted)?.let { nativeWidget.accelerator = it }
@@ -53,6 +64,8 @@ class SwingMenuItemImpl(
             nativeWidget.accelerator = null
         }
     }
+
+    override fun getShortcut(): KeyShortcut? = shortcutVal
 
     override fun setChecked(checked: Boolean) {
         checkedState = checked

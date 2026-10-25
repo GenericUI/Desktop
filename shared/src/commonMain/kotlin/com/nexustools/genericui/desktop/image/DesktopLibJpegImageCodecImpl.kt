@@ -11,6 +11,7 @@ import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.image.ImageMetadata
 import com.nexustools.genericui.image.ImageSource
 import com.nexustools.genericui.image.PixelFormat
+import com.nexustools.genericui.image.cache.ImageCacheManager
 import com.nexustools.genericui.image.codec.LibJpegCodec
 import com.nexustools.genericui.image.codec.LibPngCodec
 import com.nexustools.genericui.image.codec.LibWebpCodec
@@ -45,12 +46,6 @@ open class DesktopLibJpegImageCodecImpl(
                 encodeJpegScanlines(buffer, quality)
             }
         }
-        if (LibPngCodec.nativeLibPngDecodeHook == null) {
-            LibPngCodec.nativeLibPngDecodeHook = { pngBytes ->
-                val meta = LibPngCodec.probePngMetadata(pngBytes)
-                ImageBuffer(meta.width, meta.height, PixelFormat.RGBA_8888, ImageColorSpace.SRGB)
-            }
-        }
         if (LibWebpCodec.nativeLibWebpDecodeHook == null) {
             LibWebpCodec.nativeLibWebpDecodeHook = { webpBytes ->
                 val meta = LibWebpCodec.probeWebpMetadata(webpBytes)
@@ -70,9 +65,11 @@ open class DesktopLibJpegImageCodecImpl(
                 colorSpace = buf.colorSpace
             )
         }
-        val bytes = source.encodedBytes ?: return null
+        val bytes = source.encodedBytes
+            ?: source.uriOrPath?.let { ImageCacheManager.fetchAndCacheBytes(it) }
+            ?: return null
         if (bytes.isEmpty()) return null
-        return when (val fmt = ImageFormat.detectFromHeader(bytes)) {
+        return when (ImageFormat.detectFromHeader(bytes)) {
             ImageFormat.JPEG -> LibJpegCodec.probeJpegMetadata(bytes)
             ImageFormat.PNG -> LibPngCodec.probePngMetadata(bytes)
             ImageFormat.WEBP -> LibWebpCodec.probeWebpMetadata(bytes)
@@ -82,7 +79,9 @@ open class DesktopLibJpegImageCodecImpl(
 
     override fun decode(source: ImageSource, options: ImageDecodeOptions): ImageBuffer? {
         source.memoryBuffer?.let { return it.copy() }
-        val bytes = source.encodedBytes ?: return null
+        val bytes = source.encodedBytes
+            ?: source.uriOrPath?.let { ImageCacheManager.fetchAndCacheBytes(it) }
+            ?: return null
         if (bytes.isEmpty()) return null
         return when (ImageFormat.detectFromHeader(bytes)) {
             ImageFormat.JPEG -> LibJpegCodec.decode(bytes)
@@ -112,12 +111,10 @@ open class DesktopLibJpegImageCodecImpl(
 
     /**
      * `libjpeg` (`jpeg_CreateDecompress` / `jpeg_read_header` / `jpeg_start_decompress` / `jpeg_read_scanlines`
-     * with `JCS_EXT_RGBA`) scanline decoder entry point.
+     * with `JCS_EXT_RGBA`) scanline decoder entry point -> delegates to [LibJpegCodec.decodePureKotlin].
      */
-    protected open fun decodeJpegScanlines(jpegBytes: ByteArray): ImageBuffer {
-        val meta = LibJpegCodec.probeJpegMetadata(jpegBytes)
-        return ImageBuffer(meta.width, meta.height, PixelFormat.RGBA_8888, meta.colorSpace)
-    }
+    protected open fun decodeJpegScanlines(jpegBytes: ByteArray): ImageBuffer =
+        LibJpegCodec.decodePureKotlin(jpegBytes)
 
     /**
      * `libjpeg` (`jpeg_CreateCompress` / `jpeg_set_defaults` / `jpeg_set_quality` / `jpeg_write_scanlines`)

@@ -204,4 +204,10 @@ class GtkNativeFactory : NativeFactory {
 
     override fun createPreferenceStore(appName: String): PreferenceStoreNativeImpl =
         GtkPreferenceStoreImpl(appName)
+
+    override fun createConfigDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        GtkConfigDirectoryImpl(appName, subdirectory)
+
+    override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
+        GtkCacheDirectoryImpl(appName, subdirectory)
 }
