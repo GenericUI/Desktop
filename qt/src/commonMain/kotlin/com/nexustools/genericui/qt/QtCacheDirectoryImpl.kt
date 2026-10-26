@@ -1,7 +1,6 @@
 package com.nexustools.genericui.qt
 
-import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
-import com.nexustools.genericui.desktop.system.DesktopUserDirectoryNativeImpl
+import com.nexustools.genericui.linux.LinuxXdgCacheDirectoryImpl
 
 /**
  * Linux Qt6 (`:desktop:qt`) implementation of [com.nexustools.genericui.nativeimpl.system.UserDirectoryNativeImpl]
@@ -10,9 +9,7 @@ import com.nexustools.genericui.desktop.system.DesktopUserDirectoryNativeImpl
 class QtCacheDirectoryImpl(
     appName: String = "GenericUI",
     subdirectory: String = ""
-) : DesktopUserDirectoryNativeImpl(
+) : LinuxXdgCacheDirectoryImpl(
     appName = appName,
-    subdirectory = subdirectory,
-    baseDirectoryPath = DesktopConfigDirectoryHelper.resolveUnixAppCacheDir(appName),
-    fileSeparator = '/'
+    subdirectory = subdirectory
 )

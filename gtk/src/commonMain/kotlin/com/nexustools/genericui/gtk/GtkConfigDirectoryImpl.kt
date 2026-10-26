@@ -1,7 +1,6 @@
 package com.nexustools.genericui.gtk
 
-import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
-import com.nexustools.genericui.desktop.system.DesktopUserDirectoryNativeImpl
+import com.nexustools.genericui.linux.LinuxXdgConfigDirectoryImpl
 
 /**
  * Linux GTK4 (`:desktop:gtk`) implementation of [com.nexustools.genericui.nativeimpl.system.UserDirectoryNativeImpl]
@@ -10,9 +9,7 @@ import com.nexustools.genericui.desktop.system.DesktopUserDirectoryNativeImpl
 class GtkConfigDirectoryImpl(
     appName: String = "GenericUI",
     subdirectory: String = ""
-) : DesktopUserDirectoryNativeImpl(
+) : LinuxXdgConfigDirectoryImpl(
     appName = appName,
-    subdirectory = subdirectory,
-    baseDirectoryPath = DesktopConfigDirectoryHelper.resolveUnixAppConfigDir(appName),
-    fileSeparator = '/'
+    subdirectory = subdirectory
 )

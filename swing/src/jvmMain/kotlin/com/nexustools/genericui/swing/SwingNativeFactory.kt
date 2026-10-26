@@ -107,6 +107,7 @@ class SwingNativeFactory : NativeFactory {
     override fun createTreeView(): TreeViewNativeImpl<*> = SwingTreeViewImpl()
 
     // System Services
+    override fun createUiTimerScheduler(): UiTimerNativeImpl = SwingUiTimerImpl()
     override fun createPermissionManager(): PermissionManagerNativeImpl = SwingPermissionManagerImpl()
     override fun createSystemTray(): SystemTrayNativeImpl = SwingSystemTrayImpl()
     override fun createNotificationManager(): NotificationManagerNativeImpl = SwingNotificationManagerImpl()
@@ -116,4 +117,6 @@ class SwingNativeFactory : NativeFactory {
         SwingUserDirectoryNativeImpl(appName = appName, subdirectory = subdirectory, isCache = false)
     override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
         SwingUserDirectoryNativeImpl(appName = appName, subdirectory = subdirectory, isCache = true)
+    override fun createResourceResolver(): com.nexustools.genericui.resources.ResourceResolverNativeImpl =
+        SwingResourceResolverImpl()
 }

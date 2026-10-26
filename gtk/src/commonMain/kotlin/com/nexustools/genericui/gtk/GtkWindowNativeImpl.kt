@@ -3,6 +3,7 @@ package com.nexustools.genericui.gtk
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.window.TitleBar
+import com.nexustools.genericui.window.TitleCapabilities
 
 /**
  * GTK 4 `GtkApplicationWindow` / `AdwApplicationWindow` implementation of
@@ -29,6 +30,32 @@ class GtkWindowNativeImpl : DesktopWindowNativeImpl<GtkWidgetHandle>(
         nativeWidget.attributes["transient-for-owner"] = alwaysOnTopOfOwner
         nativeWidget.attributes["gtkButtonsLayout"] = if (minimizable) ":minimize,maximize,close" else ":close"
     }
+
+    override fun getTitleCapabilities(): TitleCapabilities = TitleCapabilities(
+        isSupported = true,
+        isEmulated = false,
+        supportsCustomTitleBar = true,
+        supportsCustomComponents = true,
+        supportsLeadingComponents = true,
+        supportsCenterComponents = true,
+        supportsTrailingComponents = true,
+        supportsEmbeddedMenuBar = true,
+        supportsNavbarMenuBar = false,
+        supportsWindowIcon = true,
+        supportsWindowTitle = true,
+        supportsMinimizeButton = true,
+        supportsMaximizeButton = true,
+        supportsCloseButton = true,
+        supportsCollapseToggle = false,
+        supportsControlsPlacement = true,
+        supportsCustomHeight = true,
+        supportsSystemAeroOrBackdrop = false,
+        isToolWindowTitleBar = false,
+        isTitleBarRequired = true,
+        titleBarRendersAsNavbar = false,
+        menuBarRendersAsNavbar = false,
+        menuBarMergesIntoTitleNavbar = false
+    )
 
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         super.applyTitleBarInstructions(titleBar)

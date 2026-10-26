@@ -43,6 +43,8 @@ open class SwingBaseNativeImpl(
     protected var onPointerDownListener: ((PointerEvent) -> Unit)? = null
     protected var onPointerMoveListener: ((PointerEvent) -> Unit)? = null
     protected var onPointerUpListener: ((PointerEvent) -> Unit)? = null
+    protected var onPointerEnterListener: ((PointerEvent) -> Unit)? = null
+    protected var onPointerLeaveListener: ((PointerEvent) -> Unit)? = null
     protected var onWheelListener: ((WheelEvent) -> Unit)? = null
     protected var onKeyDownListener: ((KeyEvent) -> Unit)? = null
     protected var onKeyUpListener: ((KeyEvent) -> Unit)? = null
@@ -79,6 +81,14 @@ open class SwingBaseNativeImpl(
 
             override fun mouseDragged(e: MouseEvent) {
                 onPointerMoveListener?.invoke(toPointerEvent(e))
+            }
+
+            override fun mouseEntered(e: MouseEvent) {
+                onPointerEnterListener?.invoke(toPointerEvent(e))
+            }
+
+            override fun mouseExited(e: MouseEvent) {
+                onPointerLeaveListener?.invoke(toPointerEvent(e))
             }
         }
         nativeWidget.addMouseListener(mouseAdapter)
@@ -268,6 +278,8 @@ open class SwingBaseNativeImpl(
     override fun setOnPointerDown(listener: ((PointerEvent) -> Unit)?) { onPointerDownListener = listener }
     override fun setOnPointerMove(listener: ((PointerEvent) -> Unit)?) { onPointerMoveListener = listener }
     override fun setOnPointerUp(listener: ((PointerEvent) -> Unit)?) { onPointerUpListener = listener }
+    override fun setOnPointerEnter(listener: ((PointerEvent) -> Unit)?) { onPointerEnterListener = listener }
+    override fun setOnPointerLeave(listener: ((PointerEvent) -> Unit)?) { onPointerLeaveListener = listener }
     override fun setOnWheel(listener: ((WheelEvent) -> Unit)?) { onWheelListener = listener }
     override fun setOnKeyDown(listener: ((KeyEvent) -> Unit)?) { onKeyDownListener = listener }
     override fun setOnKeyUp(listener: ((KeyEvent) -> Unit)?) { onKeyUpListener = listener }

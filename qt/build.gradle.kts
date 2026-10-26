@@ -12,7 +12,7 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":common"))
-            api(project(":desktop:shared"))
+            api(project(":desktop:linuxCommon"))
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

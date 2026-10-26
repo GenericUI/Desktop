@@ -13,7 +13,7 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            api(project(":common"))
+            api(project(":desktop:common"))
         }
         jvmMain.dependencies {
             implementation(libs.kotlinx.coroutinesSwing)

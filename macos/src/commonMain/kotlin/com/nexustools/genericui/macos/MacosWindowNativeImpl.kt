@@ -4,6 +4,7 @@ import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.window.TitleBar
+import com.nexustools.genericui.window.TitleCapabilities
 
 /**
  * macOS AppKit `NSWindow` implementation of [com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl].
@@ -48,6 +49,32 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         nativeWidget.attributes["titlebarAppearsTransparent"] = custom
         nativeWidget.attributes["titleVisibility"] = if (custom) "NSWindowTitleHidden" else "NSWindowTitleVisible"
     }
+
+    override fun getTitleCapabilities(): TitleCapabilities = TitleCapabilities(
+        isSupported = true,
+        isEmulated = false,
+        supportsCustomTitleBar = true,
+        supportsCustomComponents = true,
+        supportsLeadingComponents = true,
+        supportsCenterComponents = true,
+        supportsTrailingComponents = true,
+        supportsEmbeddedMenuBar = false,
+        supportsNavbarMenuBar = false,
+        supportsWindowIcon = true,
+        supportsWindowTitle = true,
+        supportsMinimizeButton = true,
+        supportsMaximizeButton = true,
+        supportsCloseButton = true,
+        supportsCollapseToggle = false,
+        supportsControlsPlacement = true,
+        supportsCustomHeight = true,
+        supportsSystemAeroOrBackdrop = true,
+        isToolWindowTitleBar = false,
+        isTitleBarRequired = true,
+        titleBarRendersAsNavbar = false,
+        menuBarRendersAsNavbar = false,
+        menuBarMergesIntoTitleNavbar = false
+    )
 
     override fun setMenuBarNative(menuBarImpl: MenuBarNativeImpl<*>?) {
         super.setMenuBarNative(menuBarImpl)

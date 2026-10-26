@@ -17,6 +17,7 @@ import com.nexustools.genericui.desktop.shell.DesktopMenuItemNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopSplitPaneNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopPermissionManagerNativeImpl
+import com.nexustools.genericui.desktop.system.DesktopUiTimerNativeImpl
 import com.nexustools.genericui.desktop.widget.*
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
@@ -193,6 +194,9 @@ class WindowsNativeFactory : NativeFactory {
     override fun createTreeView(): TreeViewNativeImpl<*> =
         DesktopTreeViewNativeImpl(Win32HwndHandle("SysTreeView32"))
 
+    override fun createUiTimerScheduler(): UiTimerNativeImpl =
+        DesktopUiTimerNativeImpl("Win32 SetTimer")
+
     override fun createPermissionManager(): PermissionManagerNativeImpl =
         DesktopPermissionManagerNativeImpl("Windows AppCapability")
 
@@ -211,4 +215,7 @@ class WindowsNativeFactory : NativeFactory {
 
     override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
         WindowsCacheDirectoryImpl(appName, subdirectory)
+
+    override fun createResourceResolver(): com.nexustools.genericui.resources.ResourceResolverNativeImpl =
+        WindowsResourceResolverImpl()
 }

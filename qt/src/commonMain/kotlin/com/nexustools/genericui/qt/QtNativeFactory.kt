@@ -17,6 +17,7 @@ import com.nexustools.genericui.desktop.shell.DesktopMenuItemNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopSplitPaneNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopPermissionManagerNativeImpl
+import com.nexustools.genericui.desktop.system.DesktopUiTimerNativeImpl
 import com.nexustools.genericui.desktop.widget.*
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
@@ -192,6 +193,9 @@ class QtNativeFactory : NativeFactory {
     override fun createTreeView(): TreeViewNativeImpl<*> =
         DesktopTreeViewNativeImpl(QtWidgetHandle("QTreeView"))
 
+    override fun createUiTimerScheduler(): UiTimerNativeImpl =
+        DesktopUiTimerNativeImpl("Qt6 QTimer")
+
     override fun createPermissionManager(): PermissionManagerNativeImpl =
         DesktopPermissionManagerNativeImpl("Qt6 QPermissions")
 
@@ -210,4 +214,7 @@ class QtNativeFactory : NativeFactory {
 
     override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
         QtCacheDirectoryImpl(appName, subdirectory)
+
+    override fun createResourceResolver(): com.nexustools.genericui.resources.ResourceResolverNativeImpl =
+        QtResourceResolverImpl()
 }

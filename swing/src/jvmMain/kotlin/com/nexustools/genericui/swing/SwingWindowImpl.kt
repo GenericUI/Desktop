@@ -9,6 +9,7 @@ import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.window.PipConfig
 import com.nexustools.genericui.window.TitleBar
+import com.nexustools.genericui.window.TitleCapabilities
 import com.nexustools.genericui.window.WindowConfiguration
 import java.awt.BorderLayout
 import java.awt.GraphicsEnvironment
@@ -45,16 +46,37 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     private val ownedToolWindows = mutableListOf<SwingWindowImpl>()
     private val ownedDockWindows = mutableListOf<SwingDockWindowImpl>()
 
+    val defaultWindowIconPath: String = "icon.png"
+
     val jFrame: JFrame? = if (!GraphicsEnvironment.isHeadless()) {
         try {
             JFrame("GenericUI").apply {
                 contentPane.add(nativeWidget, BorderLayout.CENTER)
                 setSize(1280, 800)
+                loadDefaultWindowIcon()?.let { iconImage = it }
             }
         } catch (_: Throwable) {
             null
         }
     } else null
+
+    init {
+        nativeWidget.putClientProperty("windowIcon", defaultWindowIconPath)
+    }
+
+    private fun loadDefaultWindowIcon(): java.awt.Image? {
+        return try {
+            val localFile = java.io.File(defaultWindowIconPath)
+            if (localFile.isFile) {
+                javax.imageio.ImageIO.read(localFile)
+            } else {
+                val stream = SwingWindowImpl::class.java.getResourceAsStream("/$defaultWindowIconPath")
+                if (stream != null) stream.use { javax.imageio.ImageIO.read(it) } else null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     private var titleText: String = "GenericUI"
     private var windowSize: Size = Size(1280, 800)
@@ -180,8 +202,10 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     override fun isFullscreen(): Boolean = fullscreenFlag
 
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
+        activeTitleBar?.setHostEmbedsComponents(false)
         activeTitleBar = titleBar
         if (titleBar != null) {
+            titleBar.setHostEmbedsComponents(getTitleCapabilities().canEmbedComponentsInTitleBar)
             if (!isToolModalWindow) {
                 minimizable = titleBar.showMinimizeButton
             }
@@ -193,6 +217,32 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
             nativeWidget.putClientProperty("closable", titleBar.showCloseButton.toString())
         }
     }
+
+    override fun getTitleCapabilities(): TitleCapabilities = TitleCapabilities(
+        isSupported = true,
+        isEmulated = false,
+        supportsCustomTitleBar = true,
+        supportsCustomComponents = true,
+        supportsLeadingComponents = true,
+        supportsCenterComponents = true,
+        supportsTrailingComponents = true,
+        supportsEmbeddedMenuBar = true,
+        supportsNavbarMenuBar = false,
+        supportsWindowIcon = true,
+        supportsWindowTitle = true,
+        supportsMinimizeButton = true,
+        supportsMaximizeButton = true,
+        supportsCloseButton = true,
+        supportsCollapseToggle = false,
+        supportsControlsPlacement = true,
+        supportsCustomHeight = true,
+        supportsSystemAeroOrBackdrop = false,
+        isToolWindowTitleBar = false,
+        isTitleBarRequired = true,
+        titleBarRendersAsNavbar = false,
+        menuBarRendersAsNavbar = false,
+        menuBarMergesIntoTitleNavbar = false
+    )
 
     override fun setMenuBarNative(menuBarImpl: MenuBarNativeImpl<*>?) {
         this.menuBarImpl = menuBarImpl

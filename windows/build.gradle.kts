@@ -3,12 +3,16 @@ plugins {
 }
 
 kotlin {
-    mingwX64()
+    mingwX64 {
+        binaries.all {
+            linkerOpts("-lole32", "-lcomdlg32", "-lgdi32", "-luser32")
+        }
+    }
 
     sourceSets {
         commonMain.dependencies {
             api(project(":common"))
-            api(project(":desktop:shared"))
+            api(project(":desktop:nativeCommon"))
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
