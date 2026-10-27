@@ -2,45 +2,64 @@ package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.desktop.shell.DesktopApplicationNativeImpl
 import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.style.theme.SystemThemeDetector
 
 /**
- * Win32 implementation of [com.nexustools.genericui.nativeimpl.shell.ApplicationNativeImpl] driving
- * Per-Monitor V2 DPI awareness (`SetProcessDpiAwarenessContext`), Dark Mode immersive attribute
- * (`DWMWA_USE_IMMERSIVE_DARK_MODE`), and the Win32 `PeekMessageW` / `TranslateMessage` / `DispatchMessageW`
- * + monitor-refresh-rate `QueryPerformanceCounter` VBlank loop.
+ * Windows Win32 application implementation (`:desktop:windows`) managing Win32 message loop
+ * lifecycle, `SystemThemeDetector` OS dark/light theme detection, and DWM/UxTheme dark mode attributes.
  */
-class WindowsApplicationNativeImpl : DesktopApplicationNativeImpl<Win32HwndHandle>(
-    nativeApplication = Win32HwndHandle(
-        win32ClassName = "Win32ApplicationInstance",
-        dwStyle = 0L
-    )
-) {
+class WindowsApplicationNativeImpl :
+    DesktopApplicationNativeImpl<Win32HwndHandle>(
+        nativeApplication = Win32HwndHandle(
+            win32ClassName = "GenericUiWin32Application",
+            dwStyle = 0L,
+            dwExStyle = 0L
+        )
+    ) {
+
     init {
-        nativeApplication.attributes["dpiAwareness"] = "DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2"
-        nativeApplication.attributes["comInitialized"] = "COINIT_APARTMENTTHREADED"
+        installWindowsThemeDetector()
     }
 
     override fun setThemeMode(mode: ThemeMode) {
         super.setThemeMode(mode)
-        nativeApplication.attributes["DWMWA_USE_IMMERSIVE_DARK_MODE"] = (mode == ThemeMode.DARK)
+        installWindowsThemeDetector()
+        Win32NativeWindowHost.forcedThemeMode = mode
+        val resolved = SystemThemeDetector.resolveTheme(mode)
+        val isDark = resolved == ThemeMode.DARK
+        nativeApplication.attributes["dwmUseImmersiveDarkMode"] = isDark
+        nativeApplication.attributes["effectiveThemeMode"] = resolved
+        nativeApplication.attributes["uxThemeClass"] = if (isDark) "DarkMode_Explorer" else "Explorer"
+        val hwnd = Win32NativeWindowHost.activeHwnd
+        if (hwnd != null) {
+            Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, isDark)
+            Win32NativeWindowHost.invalidateAllWindows()
+        }
     }
 
     override fun runEventLoop(onStarted: () -> Unit) {
-        if (interactiveWin32GuiEnabled) {
-            Win32WinMain.initializeFromProcessStartup()
-        }
+        nativeApplication.attributes["messageLoopRunning"] = true
         super.runEventLoop(onStarted)
-        if (interactiveWin32GuiEnabled) {
-            Win32NativeWindowHost.runMessageLoop()
-        }
+    }
+
+    override fun exitApplication(exitCode: Int) {
+        nativeApplication.attributes["messageLoopRunning"] = false
+        nativeApplication.attributes["postQuitMessageCode"] = exitCode
+        super.exitApplication(exitCode)
     }
 
     companion object {
         /**
-         * Enabled by Windows application entry points (`Win32WinMain.launch` / `main()`) to open the
-         * live Win32 GUI window and run the interactive monitor-refresh-rate message loop, while remaining
-         * `false` during headless unit tests (`mingwX64Test`).
+         * Set to `true` by [WindowsLauncher.launch] when running as a standalone Windows desktop
+         * executable (`runDebugExecutableMingwX64` / `runReleaseExecutableMingwX64`).
+         * Remains `false` during automated unit tests so tests never block on `GetMessageW`.
          */
         var interactiveWin32GuiEnabled: Boolean = false
+
+        fun installWindowsThemeDetector() {
+            SystemThemeDetector.backendDetector = {
+                if (Win32DwmUxThemeBridge.isSystemDarkTheme()) ThemeMode.DARK else ThemeMode.LIGHT
+            }
+        }
     }
 }

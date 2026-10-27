@@ -1161,7 +1161,7 @@ object Win32NativeTitleBarRenderer {
 
                 val isHovered = hoveredWidget == impl.nativeWidget || isRectHoveredFn(absLeft, absTop, absRight, absBottom)
                 val isPressed = pressedWidget == impl.nativeWidget
-                val customTint = (impl.getEffectiveTintColor() ?: impl.getEffectiveBackgroundColor())?.let {
+                val customTint = impl.getEffectiveAccentColor(palette.isDark)?.let {
                     Win32DwmUxThemeBridge.colorRefRgb(it.r, it.g, it.b)
                 }
 

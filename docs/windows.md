@@ -1,7 +1,7 @@
-# `:desktop:windows` — Windows Native Backend (Win32 + Direct2D)
+# `:desktop:windows` — Windows Native Backend (Win32 + `UxTheme` + Direct2D)
 
 ## Overview
-`:desktop:windows` is the native Windows (`mingwX64`) backend for GenericUI. It compiles directly to a standalone `.exe` binary using Kotlin/Native C-Interop against the Win32 API (`user32`, `gdi32`, `comctl32`, `dwmapi`, `shell32`, `ole32`, `wininet`) and Direct2D (`d2d1`, `dwrite`). It depends on `:common`, `:systemCommon`, `:desktop:common`, and `:desktop:nativeCommon`.
+`:desktop:windows` is the native Windows (`mingwX64`) backend for GenericUI. It compiles directly to a standalone `.exe` binary using Kotlin/Native C-Interop against the Win32 API (`user32`, `gdi32`, `comctl32`, `dwmapi`, `uxtheme`, `shell32`, `ole32`, `wininet`) and Direct2D (`d2d1`, `dwrite`). It depends on `:common`, `:systemCommon`, `:desktop:common`, and `:desktop:nativeCommon`.
 
 ---
 
@@ -22,57 +22,57 @@ fun main(args: Array<String>) {
 }
 ```
 
-`WindowsLauncher` (`com.nexustools.genericui.windows.WindowsLauncher`) performs:
-1. `WindowsNativeBootstrap.ensureInstalled()` — registers `WindowsWidgetFactoryProvider`, `WindowsSystemProvider`, `WindowsResourceResolverImpl`, `WindowsPreferenceStoreImpl`, and `WindowsAppFragmentLauncher`.
-2. Creates the primary `Window`, mounts a `FragmentHostFragment` rooted at `mainFragmentFactory()`, and starts the Win32 message loop via `Win32NativeWindowHost`.
-3. Routes `AppFragmentLauncher.launchFragment(...)` calls to new top-level Win32 `HWND` windows hosting their own `FragmentHostFragment`.
+When `styles { globalStyleSheet = "styles/main.scss" }` is configured in `build.gradle.kts`, the generated startup code automatically calls `app.addStyleSheet(R.style.main)` (or `app.addStyleSheet("styles/main.scss")`) to attach the precompiled `PrecompiledStyleSheet` before mounting the root `FragmentHostFragment`.
+
+---
+
+## Native `UxTheme` Control Rendering (`BootstrapType.NONE` Default) & Semantic `BootstrapType` Tinting
+
+### 1. `BootstrapType.NONE` Default & Authentic Win32 `UxTheme` Controls
+Native Windows applications **never** use Bootstrap CSS styling:
+- When `component.getBootstrap().type == BootstrapType.NONE` (`BootstrapType.None`, the default) and no inline `ComponentStyle` (`component.getStyle()`) background or border is set, `:desktop:windows` renders the **genuine Windows `UxTheme` system control** via `Win32DwmUxThemeBridge`:
+  - Applies `SetWindowTheme(hwnd, "Explorer", null)` in `LIGHT` mode and `SetWindowTheme(hwnd, "DarkMode_Explorer", null)` in `DARK` mode (`Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, isDark)`).
+  - Opens the theme class via `OpenThemeData(hwnd, "Explorer::BUTTON")` (`LIGHT`) or `OpenThemeData(hwnd, "DarkMode_Explorer::BUTTON")` (`DARK`) and paints native button parts (`BP_PUSHBUTTON`, `BP_CHECKBOX`, `BP_RADIOBUTTON`, `BP_GROUPBOX`, `BP_COMMANDLINK`) and states (`PBS_NORMAL`, `PBS_HOT`, `PBS_PRESSED`, `PBS_DISABLED`, `PBS_DEFAULTED`) using `DrawThemeBackground` and `DrawThemeTextEx` (`Win32DwmUxThemeBridge.drawUxThemeControlBackground`).
+
+### 2. Semantic `BootstrapType` Tinting
+When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is explicitly set on `component.getBootstrap().type`, `:desktop:windows` emulates `BootstrapType` by **tinting the native Win32 control** with the semantic color (`DesktopBaseNativeImpl.resolveSemanticBootstrapColor(darkTheme)` — red for `DANGER`, blue for `PRIMARY`, green for `SUCCESS`, amber for `WARNING`, cyan for `INFO`, supporting `outline = true/false`).
+
+For form controls such as checkboxes, radio buttons, sliders, and progress bars, `component.getStyle().setAccentColor(color)` (`accent-color`) sets the active indicator fill color. Unsupported CSS properties and CSS transitions are **silently ignored** on native Win32 controls (whereas `:extensions:alien` supports 100% of all CSS properties and transitions).
+
+### 3. Strict User CSS Class Isolation
+`addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` return **only** user-added custom classes (`styleSnapshot.customClasses`). `ComponentBootstrap` (`getBootstrap()`) enum utilities are executed directly by the Win32 layout and painting engine.
+
+---
+
+## Custom Cursor Synthesis (`WindowsCurCodec` & `WindowsCurResourceGenerator`)
+
+`:desktop:windows` translates any `CssCustomCursor` (PNG `ResourceID`, SVG `ResourceID`/markup, or `ImageBuffer` with `hotspotX` and `hotspotY`) into a native Windows `.cur` cursor and Win32 `HCURSOR`:
+1. **Runtime (`WindowsCurCodec` in `com.nexustools.genericui.windows.WindowsCurCodec`)**:
+   - `WindowsCurCodec.encodeToCurBytes(cursor)` resolves the PNG, SVG, or `ImageBuffer` into RGBA pixels and encodes a standards-compliant **Windows `.cur` binary (`ByteArray`)**:
+     - 6-byte `ICONDIR` header (`idReserved = 0`, `idType = 2`, `idCount = 1`)
+     - 16-byte `ICONDIRENTRY` (`bWidth`, `bHeight`, `wXHotSpot = hotspotX`, `wYHotSpot = hotspotY`, `dwBytesInRes`, `dwImageOffset = 22`)
+     - 40-byte `BITMAPINFOHEADER` + bottom-up 32-bit BGRA XOR pixel array + bottom-up 1-bpp AND mask.
+   - `WindowsCurCodec.createWin32Cursor(cursor)` creates and caches a native Win32 `HCURSOR` via `CreateDIBSection` + `CreateIconIndirect` (with `fIcon = 0`, `xHotspot`, `yHotspot`), which `Win32NativeWindowHost` applies on `WM_SETCURSOR`.
+2. **Build-Time (`WindowsCurResourceGenerator` in `:gradle-plugin`)**:
+   - During `compileGenericUiResources`, `.png` and `.svg` cursor assets are pre-converted into valid `.cur` files under `backends/windows/cursors/<name>.cur`.
+
+---
+
+## `IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`) & DWM Integration
+
+`IApplication` defaults to **`ThemeMode.AUTO`** (`setTheme`, `getTheme`, `getResolvedTheme`):
+- `Win32DwmUxThemeBridge.isSystemDarkTheme()` reads `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme` (and `SystemUsesLightTheme`).
+- `Win32NativeWindowHost` listens for live `WM_SETTINGCHANGE` (`"ImmersiveColorSet"`) and `WM_THEMECHANGED` broadcasts when `getTheme() == ThemeMode.AUTO`.
+- Updates `DWMWA_USE_IMMERSIVE_DARK_MODE` (`dwAttribute = 20`), Windows 11 Mica backdrop (`DWMWA_SYSTEMBACKDROP_TYPE`), and child control `SetWindowTheme(hwnd, "DarkMode_Explorer" | "Explorer", null)` dynamically.
 
 ---
 
 ## Window Chrome, `TitleCapabilities`, & Single-Placement `TitleBar`
 
-On `:desktop:windows`, `WindowsWindowImpl` reports:
-```kotlin
-TitleCapabilities(
-    isTitleBarRequired = true,
-    isEmulated = false,
-    supportsIcon = true,
-    supportsLeadingComponents = true,
-    supportsCenterComponents = true,
-    supportsTrailingComponents = true,
-    supportsCustomComponents = true,
-    supportsSubtitle = true,
-    supportsMinimizeButton = true,
-    supportsMaximizeButton = true,
-    supportsCloseButton = true,
-    supportsFullscreenButton = true,
-    canEmbedComponentsInTitleBar = true,
-    titleBarRendersAsNavbar = false,
-    menuBarRendersAsNavbar = false,
-    menuBarMergesIntoTitleNavbar = false
-)
-```
-
-### Single-Placement Custom `TitleBar` Component Rule
-When a `TitleBar` contains custom leading, center, or trailing components (for example, a search `TextInput`, workspace switcher, or action `Button`), `WindowsWindowImpl` marks those components (`mountedInTitleBar = true`) and mounts their native Win32 child `HWND`s inside the custom titlebar chrome region (`Win32NativeWindowHost` with `WM_NCCALCSIZE` / `WM_NCHITTEST` caption hit-testing).
-
-`Win32NativeWindowHost` filters out any component with `mountedInTitleBar == true` when laying out the main window client area, ensuring custom titlebar widgets appear **only once** inside the titlebar and are never duplicated in the window body.
+On `:desktop:windows`, `WindowsWindowImpl` reports `TitleCapabilities(isTitleBarRequired = true, supportsCustomComponents = true, canEmbedComponentsInTitleBar = true, titleBarRendersAsNavbar = false)`. Custom leading, center, or trailing components added to `TitleBar` are marked `mountedInTitleBar = true` and mounted inside the custom titlebar region (`Win32NativeWindowHost` with `WM_NCCALCSIZE` / `WM_NCHITTEST` caption hit-testing), appearing **strictly once** in the titlebar and never duplicated in the window body.
 
 ---
 
 ## Native Win32 `.exe` Resources (`WindowsResourceResolverImpl`)
 
-During the Gradle build, `GenericUiCompileResourcesTask` converts `src/commonMain/resources/` into a Win32 resource script (`genericui_resources.rc`) and compiles it with `windres.exe` into `genericui_resources.res`, which is linked directly into the `.exe` binary:
-- Strings (`values/strings.xml`, `values-<lang>/strings.xml`) $\rightarrow$ `STRINGTABLE` entries.
-- Colors, dimensions, themes, layouts, raw files, images, fonts $\rightarrow$ `RCDATA` (`RT_RCDATA`) binary resources keyed by deterministic integer resource IDs (`10000 + (id and 0x3FFF)`).
-
-At runtime, `WindowsResourceResolverImpl` (`com.nexustools.genericui.windows.system.WindowsResourceResolverImpl`) resolves resources directly from the running executable's Win32 module (`GetModuleHandleW(null)`) using `FindResourceW`, `LoadResource`, `LockResource`, and `SizeofResource` (`WIN32_RT_RCDATA`), returning `rc://<win32Id>/<name>` URIs and raw byte arrays with an in-memory fallback map for unit tests.
-
----
-
-## Key Package Structure (`com.nexustools.genericui.windows`)
-
-- **`WindowsLauncher.kt` / `WindowsNativeBootstrap.kt` / `Win32NativeWindowHost.kt`**: Entry point, provider registration, and native `HWND` message loop (`WndProc`, DPI scaling, Dark Mode `DWMWA_USE_IMMERSIVE_DARK_MODE`, custom titlebar hit-testing, MenuBar/StatusBar layout).
-- **`widget/*`**: Native Win32 controls (`WindowsButtonImpl`, `WindowsLabelImpl`, `WindowsTextInputImpl`, `WindowsTextAreaImpl`, `WindowsComboBoxImpl`, `WindowsSliderImpl`, `WindowsProgressBarImpl`, `WindowsDatePickerImpl`, `WindowsColorPickerImpl`, `WindowsImageImpl`, `WindowsRichTextEditorImpl`, etc.).
-- **`container/*`**: Layout containers, scroll views, split panes, tab views, accordion, drawer, modal, popover, and `WindowsWindowImpl`.
-- **`system/*`**: `WindowsResourceResolverImpl`, `WindowsPreferenceStoreImpl` (Windows Registry `HKEY_CURRENT_USER\Software\<appId>`), `WindowsKeystoreImpl` (DPAPI / Credential Manager), `WindowsClipboardImpl`, `WindowsFileBrowserDialogImpl` (COM `IFileOpenDialog` / `IFileSaveDialog`), `WindowsStandardDialogsImpl` (`MessageBoxW` / `TaskDialogIndirect`), `WindowsSystemTrayImpl` (`Shell_NotifyIconW`), `WindowsThemeDetectorImpl`, and `WindowsUiDispatcherImpl`.
+During the Gradle build, `GenericUiCompileResourcesTask` converts `src/commonMain/resources/` into a Win32 resource script (`genericui_resources.rc`) and compiles it with `windres.exe` into `genericui_resources.res` (`STRINGTABLE` + `RT_RCDATA`), which is linked directly into the `.exe` binary. At runtime, `WindowsResourceResolverImpl` resolves resources directly from the executable module (`GetModuleHandleW(null)`) via `FindResourceW`, `LoadResource`, `LockResource`, and `SizeofResource`.

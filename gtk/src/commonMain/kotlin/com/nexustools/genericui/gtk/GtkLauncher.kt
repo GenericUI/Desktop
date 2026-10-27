@@ -15,12 +15,15 @@ object GtkLauncher {
     fun prepare(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
-    ): IApplication = GenericUiLaunchSequence.prepareApplication(
-        factory = GtkNativeFactory(),
-        args = args,
-        descriptor = descriptor,
-        isSystemTarget = true
-    )
+    ): IApplication {
+        GtkApplicationNativeImpl.installGtkThemeDetector()
+        return GenericUiLaunchSequence.prepareApplication(
+            factory = GtkNativeFactory(),
+            args = args,
+            descriptor = descriptor,
+            isSystemTarget = true
+        )
+    }
 
     /**
      * Prepares and launches the [IApplication] on the GTK 4 backend.
@@ -28,10 +31,13 @@ object GtkLauncher {
     fun launch(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
-    ): IApplication = GenericUiLaunchSequence.launch(
-        factory = GtkNativeFactory(),
-        args = args,
-        descriptor = descriptor,
-        isSystemTarget = true
-    )
+    ): IApplication {
+        GtkApplicationNativeImpl.installGtkThemeDetector()
+        return GenericUiLaunchSequence.launch(
+            factory = GtkNativeFactory(),
+            args = args,
+            descriptor = descriptor,
+            isSystemTarget = true
+        )
+    }
 }

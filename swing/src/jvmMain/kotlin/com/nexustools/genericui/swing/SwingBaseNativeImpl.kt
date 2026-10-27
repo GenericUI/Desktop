@@ -2,22 +2,39 @@ package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.enums.bootstrap.*
+import com.nexustools.genericui.enums.css.CssCursor
+import com.nexustools.genericui.enums.css.CssVisibility
+import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.event.KeyEvent
 import com.nexustools.genericui.event.PointerEvent
 import com.nexustools.genericui.event.WheelEvent
 import com.nexustools.genericui.geometry.EdgeInsets
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
+import com.nexustools.genericui.style.color.BootstrapColorPalette
+import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.style.css.CssCursorValue
+import com.nexustools.genericui.style.css.CssCustomCursor
+import com.nexustools.genericui.style.gradient.Gradient
 import com.nexustools.genericui.style.mapper.BootstrapClassMapper
 import com.nexustools.genericui.style.mapper.BootstrapStyleSnapshot
+import com.nexustools.genericui.style.theme.SystemThemeDetector
 import java.awt.Color
+import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Font
+import java.awt.GraphicsEnvironment
+import java.awt.Point
+import java.awt.Toolkit
 import java.awt.event.KeyAdapter
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.image.BufferedImage
 import javax.swing.BorderFactory
+import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
 
@@ -37,6 +54,18 @@ open class SwingBaseNativeImpl(
     private var marginInsets: EdgeInsets = EdgeInsets.ZERO
     private var logicalBounds: Rect = Rect(0, 0, 200, 40)
 
+    protected var lastComputedStyle: ComputedStyle? = null
+    protected var lastComponentStyle: ComponentStyle? = null
+    protected var lastBootstrap: ComponentBootstrap? = null
+    protected var customCursorState: CssCursorValue? = null
+    private var customBackgroundColor: RgbaColor? = null
+    private var customTextColor: RgbaColor? = null
+    private var backgroundGradientState: Gradient? = null
+
+    private val defaultComponentBackground: Color? = nativeWidget.background
+    private val defaultComponentForeground: Color? = nativeWidget.foreground
+    private val defaultComponentBorder = nativeWidget.border
+
     protected var onClickListener: (() -> Unit)? = null
     protected var onDoubleClickListener: (() -> Unit)? = null
     protected var onContextMenuListener: ((PointerEvent) -> Unit)? = null
@@ -52,6 +81,7 @@ open class SwingBaseNativeImpl(
     init {
         val mouseAdapter = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
+                if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
                 if (e.clickCount >= 2) {
                     onDoubleClickListener?.invoke()
                 } else if (e.button == MouseEvent.BUTTON1) {
@@ -60,6 +90,7 @@ open class SwingBaseNativeImpl(
             }
 
             override fun mousePressed(e: MouseEvent) {
+                if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
                 val pe = toPointerEvent(e)
                 onPointerDownListener?.invoke(pe)
                 if (e.isPopupTrigger || e.button == MouseEvent.BUTTON3) {
@@ -68,6 +99,7 @@ open class SwingBaseNativeImpl(
             }
 
             override fun mouseReleased(e: MouseEvent) {
+                if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
                 val pe = toPointerEvent(e)
                 onPointerUpListener?.invoke(pe)
                 if (e.isPopupTrigger) {
@@ -76,10 +108,12 @@ open class SwingBaseNativeImpl(
             }
 
             override fun mouseMoved(e: MouseEvent) {
+                if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
                 onPointerMoveListener?.invoke(toPointerEvent(e))
             }
 
             override fun mouseDragged(e: MouseEvent) {
+                if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
                 onPointerMoveListener?.invoke(toPointerEvent(e))
             }
 
@@ -94,62 +128,208 @@ open class SwingBaseNativeImpl(
         nativeWidget.addMouseListener(mouseAdapter)
         nativeWidget.addMouseMotionListener(mouseAdapter)
         nativeWidget.addMouseWheelListener { e ->
-            onWheelListener?.invoke(
-                WheelEvent(
-                    x = e.x.toFloat(),
-                    y = e.y.toFloat(),
-                    deltaX = 0f,
-                    deltaY = e.preciseWheelRotation.toFloat(),
-                    ctrlKey = e.isControlDown,
-                    shiftKey = e.isShiftDown,
-                    altKey = e.isAltDown
+            if (nativeWidget.isEnabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+                onWheelListener?.invoke(
+                    WheelEvent(
+                        x = e.x.toFloat(),
+                        y = e.y.toFloat(),
+                        deltaX = 0f,
+                        deltaY = e.preciseWheelRotation.toFloat(),
+                        ctrlKey = e.isControlDown,
+                        shiftKey = e.isShiftDown,
+                        altKey = e.isAltDown
+                    )
                 )
-            )
+            }
         }
         nativeWidget.addKeyListener(object : KeyAdapter() {
             override fun keyPressed(e: java.awt.event.KeyEvent) {
-                onKeyDownListener?.invoke(toKeyEvent(e))
+                if (nativeWidget.isEnabled) onKeyDownListener?.invoke(toKeyEvent(e))
             }
 
             override fun keyReleased(e: java.awt.event.KeyEvent) {
-                onKeyUpListener?.invoke(toKeyEvent(e))
+                if (nativeWidget.isEnabled) onKeyUpListener?.invoke(toKeyEvent(e))
             }
         })
     }
 
+    protected open fun syncSwingAppearance() {
+        val isDark = SystemThemeDetector.detectSystemTheme() == ThemeMode.DARK
+        val semanticType = styleSnapshot.type?.takeIf { it.isSemantic }
+            ?: styleSnapshot.backgroundType?.takeIf { it.isSemantic }
+        val bgRgba = customBackgroundColor
+            ?: lastComponentStyle?.backgroundColor
+            ?: semanticType?.let { BootstrapColorPalette.resolveColor(it, isDark) }
+        val fgRgba = customTextColor
+            ?: lastComponentStyle?.color
+            ?: styleSnapshot.textColorType?.takeIf { it.isSemantic }?.let { BootstrapColorPalette.resolveColor(it, isDark) }
+            ?: semanticType?.let {
+                if (styleSnapshot.outline) BootstrapColorPalette.resolveColor(it, isDark)
+                else BootstrapColorPalette.resolveForegroundOn(it)
+            }
+
+        if (bgRgba != null && !styleSnapshot.outline) {
+            nativeWidget.background = Color(bgRgba.r.coerceIn(0, 255), bgRgba.g.coerceIn(0, 255), bgRgba.b.coerceIn(0, 255), bgRgba.a.coerceIn(0, 255))
+            nativeWidget.isOpaque = bgRgba.a > 0
+            (nativeWidget as? JButton)?.isContentAreaFilled = true
+        } else {
+            nativeWidget.background = defaultComponentBackground
+        }
+
+        if (fgRgba != null) {
+            nativeWidget.foreground = Color(fgRgba.r.coerceIn(0, 255), fgRgba.g.coerceIn(0, 255), fgRgba.b.coerceIn(0, 255), fgRgba.a.coerceIn(0, 255))
+        } else {
+            nativeWidget.foreground = defaultComponentForeground
+        }
+
+        if (styleSnapshot.display == DisplayMode.NONE || styleSnapshot.visibility == BootstrapVisibility.INVISIBLE) {
+            nativeWidget.isVisible = false
+        }
+        styleSnapshot.opacity?.let {
+            opacityVal = it.alpha.coerceIn(0f, 1f)
+        }
+    }
+
     override fun setClass(className: String) {
-        styleSnapshot = BootstrapClassMapper.fromClassString(className, componentClassPrefix)
+        val tokens = className.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.toSet()
+        styleSnapshot = styleSnapshot.copy(customClasses = tokens)
     }
 
     override fun getClass(): String =
-        BootstrapClassMapper.toClassString(styleSnapshot)
+        styleSnapshot.customClasses.joinToString(" ")
+
+    override fun getClasses(): Set<String> =
+        styleSnapshot.customClasses.toSet()
 
     override fun addClass(className: String) {
-        val combined = (getClass() + " " + className).trim()
-        styleSnapshot = BootstrapClassMapper.fromClassString(combined, componentClassPrefix)
+        val tokens = className.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return
+        val updated = LinkedHashSet(styleSnapshot.customClasses)
+        updated.addAll(tokens)
+        styleSnapshot = styleSnapshot.copy(customClasses = updated)
     }
 
     override fun removeClass(className: String) {
-        val remaining = getClass().split(Regex("\\s+")).filter { it.isNotEmpty() && it != className }
-        styleSnapshot = BootstrapClassMapper.fromClassString(remaining.joinToString(" "), componentClassPrefix)
+        val tokens = className.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return
+        val updated = LinkedHashSet(styleSnapshot.customClasses)
+        updated.removeAll(tokens.toSet())
+        styleSnapshot = styleSnapshot.copy(customClasses = updated)
     }
 
-    override fun hasClass(className: String): Boolean =
-        BootstrapClassMapper.toClassTokens(styleSnapshot).contains(className.trim())
+    override fun hasClass(className: String): Boolean {
+        val tokens = className.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return false
+        return styleSnapshot.customClasses.containsAll(tokens)
+    }
 
-    override fun setType(type: BootstrapType?) { styleSnapshot = styleSnapshot.copy(type = type) }
+    fun getEnumClasses(): Set<String> =
+        BootstrapClassMapper.toEnumClassSet(styleSnapshot)
+
+    override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
+        lastBootstrap = bootstrap
+        styleSnapshot = bootstrap.applyToSnapshot(styleSnapshot)
+        syncSwingAppearance()
+    }
+
+    override fun applyComponentStyle(style: ComponentStyle) {
+        lastComponentStyle = style
+        customBackgroundColor = style.backgroundColor
+        customTextColor = style.color
+        style.backgroundImage?.gradient?.let { backgroundGradientState = it }
+        style.opacity?.let { opacityVal = it.coerceIn(0f, 1f) }
+        style.cursor?.let { setCustomCursor(it) }
+        if (style.visibility == CssVisibility.HIDDEN || style.visibility == CssVisibility.COLLAPSE) {
+            nativeWidget.isVisible = false
+        }
+        syncSwingAppearance()
+    }
+
+    override fun setCustomCursor(cursor: CssCursorValue?) {
+        customCursorState = cursor
+        when (cursor) {
+            null -> nativeWidget.cursor = Cursor.getDefaultCursor()
+            is CssCursor -> nativeWidget.cursor = mapCssCursorToAwt(cursor)
+            is CssCustomCursor -> {
+                if (!GraphicsEnvironment.isHeadless()) {
+                    val imgBuf = cursor.resolveToImageBuffer()
+                    if (imgBuf != null && imgBuf.width > 0 && imgBuf.height > 0) {
+                        val bImg = BufferedImage(imgBuf.width, imgBuf.height, BufferedImage.TYPE_INT_ARGB)
+                        for (y in 0 until imgBuf.height) {
+                            for (x in 0 until imgBuf.width) {
+                                val px = imgBuf.getPixel(x, y)
+                                val argb = ((px.a and 0xFF) shl 24) or
+                                    ((px.r and 0xFF) shl 16) or
+                                    ((px.g and 0xFF) shl 8) or
+                                    (px.b and 0xFF)
+                                bImg.setRGB(x, y, argb)
+                            }
+                        }
+                        val hotSpot = Point(
+                            cursor.hotspotX.coerceIn(0, (imgBuf.width - 1).coerceAtLeast(0)),
+                            cursor.hotspotY.coerceIn(0, (imgBuf.height - 1).coerceAtLeast(0))
+                        )
+                        nativeWidget.cursor = Toolkit.getDefaultToolkit().createCustomCursor(bImg, hotSpot, "GenericUICustomCursor")
+                    } else {
+                        nativeWidget.cursor = mapCssCursorToAwt(cursor.fallback)
+                    }
+                }
+            }
+            else -> nativeWidget.cursor = Cursor.getDefaultCursor()
+        }
+    }
+
+    private fun mapCssCursorToAwt(cursor: CssCursor): Cursor = when (cursor) {
+        CssCursor.POINTER -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+        CssCursor.TEXT -> Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
+        CssCursor.CROSSHAIR -> Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
+        CssCursor.MOVE, CssCursor.GRAB, CssCursor.GRABBING -> Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+        CssCursor.WAIT, CssCursor.PROGRESS -> Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR)
+        CssCursor.N_RESIZE, CssCursor.ROW_RESIZE -> Cursor.getPredefinedCursor(Cursor.N_RESIZE_CURSOR)
+        CssCursor.S_RESIZE, CssCursor.NS_RESIZE -> Cursor.getPredefinedCursor(Cursor.S_RESIZE_CURSOR)
+        CssCursor.E_RESIZE, CssCursor.EW_RESIZE, CssCursor.COL_RESIZE -> Cursor.getPredefinedCursor(Cursor.E_RESIZE_CURSOR)
+        CssCursor.W_RESIZE -> Cursor.getPredefinedCursor(Cursor.W_RESIZE_CURSOR)
+        CssCursor.NE_RESIZE, CssCursor.NESW_RESIZE -> Cursor.getPredefinedCursor(Cursor.NE_RESIZE_CURSOR)
+        CssCursor.NW_RESIZE, CssCursor.NWSE_RESIZE -> Cursor.getPredefinedCursor(Cursor.NW_RESIZE_CURSOR)
+        CssCursor.SE_RESIZE -> Cursor.getPredefinedCursor(Cursor.SE_RESIZE_CURSOR)
+        CssCursor.SW_RESIZE -> Cursor.getPredefinedCursor(Cursor.SW_RESIZE_CURSOR)
+        else -> Cursor.getDefaultCursor()
+    }
+
+    override fun setBackgroundGradient(gradient: Gradient?) {
+        backgroundGradientState = gradient
+    }
+
+    override fun getBackgroundGradient(): Gradient? =
+        backgroundGradientState
+            ?: lastComponentStyle?.backgroundImage?.gradient
+            ?: lastComputedStyle?.backgroundGradient
+
+    override fun setType(type: BootstrapType?) {
+        styleSnapshot = styleSnapshot.copy(type = type)
+        syncSwingAppearance()
+    }
     override fun getType(): BootstrapType? = styleSnapshot.type
 
-    override fun setOutline(outline: Boolean) { styleSnapshot = styleSnapshot.copy(outline = outline) }
+    override fun setOutline(outline: Boolean) {
+        styleSnapshot = styleSnapshot.copy(outline = outline)
+        syncSwingAppearance()
+    }
     override fun isOutline(): Boolean = styleSnapshot.outline
 
     override fun setSize(size: BootstrapSize?) { styleSnapshot = styleSnapshot.copy(size = size) }
     override fun getSize(): BootstrapSize? = styleSnapshot.size
 
-    override fun setBackgroundType(type: BootstrapType?) { styleSnapshot = styleSnapshot.copy(backgroundType = type) }
+    override fun setBackgroundType(type: BootstrapType?) {
+        styleSnapshot = styleSnapshot.copy(backgroundType = type)
+        syncSwingAppearance()
+    }
     override fun getBackgroundType(): BootstrapType? = styleSnapshot.backgroundType
 
-    override fun setTextColorType(type: BootstrapType?) { styleSnapshot = styleSnapshot.copy(textColorType = type) }
+    override fun setTextColorType(type: BootstrapType?) {
+        styleSnapshot = styleSnapshot.copy(textColorType = type)
+        syncSwingAppearance()
+    }
     override fun getTextColorType(): BootstrapType? = styleSnapshot.textColorType
 
     override fun setBorderType(type: BootstrapType?) { styleSnapshot = styleSnapshot.copy(borderType = type) }
@@ -173,7 +353,10 @@ open class SwingBaseNativeImpl(
     override fun setShadow(shadow: ShadowElevation?) { styleSnapshot = styleSnapshot.copy(shadow = shadow) }
     override fun getShadow(): ShadowElevation? = styleSnapshot.shadow
 
-    override fun setDisplay(display: DisplayMode?) { styleSnapshot = styleSnapshot.copy(display = display) }
+    override fun setDisplay(display: DisplayMode?) {
+        styleSnapshot = styleSnapshot.copy(display = display)
+        syncSwingAppearance()
+    }
     override fun getDisplay(): DisplayMode? = styleSnapshot.display
 
     override fun setFlexDirection(direction: FlexDirection?) { styleSnapshot = styleSnapshot.copy(flexDirection = direction) }
@@ -248,7 +431,11 @@ open class SwingBaseNativeImpl(
 
     override fun setPadding(padding: EdgeInsets) {
         paddingInsets = padding
-        nativeWidget.border = BorderFactory.createEmptyBorder(padding.top, padding.left, padding.bottom, padding.right)
+        if (padding != EdgeInsets.ZERO) {
+            nativeWidget.border = BorderFactory.createEmptyBorder(padding.top, padding.left, padding.bottom, padding.right)
+        } else {
+            nativeWidget.border = defaultComponentBorder
+        }
     }
 
     override fun setMargin(margin: EdgeInsets) {
@@ -256,6 +443,7 @@ open class SwingBaseNativeImpl(
     }
 
     override fun applyComputedStyle(style: ComputedStyle) {
+        lastComputedStyle = style
         style.backgroundColor?.let { c ->
             val alpha = c.a.coerceIn(0, 255)
             nativeWidget.background = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), alpha)
@@ -269,7 +457,8 @@ open class SwingBaseNativeImpl(
             val currentFont = nativeWidget.font ?: Font("SansSerif", Font.PLAIN, 14)
             nativeWidget.font = currentFont.deriveFont(sz)
         }
-        style.opacity?.let { opacityVal = it.coerceIn(0f, 1f) }
+        style.opacity.let { opacityVal = it.coerceIn(0f, 1f) }
+        style.customCursor?.let { setCustomCursor(it) }
     }
 
     override fun setOnClick(listener: (() -> Unit)?) { onClickListener = listener }

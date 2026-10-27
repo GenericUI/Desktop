@@ -5,28 +5,18 @@ import com.nexustools.genericui.core.GenericUiAppDescriptor
 import com.nexustools.genericui.core.GenericUiLaunchSequence
 
 /**
- * Platform launcher for the Windows (`:desktop:windows`) backend target.
+ * Platform launcher for the Windows Win32 (`:desktop:windows`) backend target.
  */
 object WindowsLauncher {
 
     /**
-     * When `true`, suppresses interactive Win32 GUI window creation and message loop execution.
-     */
-    var headlessMode: Boolean = false
-
-    /**
-     * Prepares the [IApplication] for the Windows backend without starting the interactive Win32 message loop.
+     * Prepares the [IApplication] for the Windows Win32 backend without starting the message loop.
      */
     fun prepare(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
     ): IApplication {
-        val isHeadless = headlessMode ||
-            args.contains("--headless-verify") ||
-            args.contains("--headless")
-        if (isHeadless) {
-            WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = false
-        }
+        WindowsApplicationNativeImpl.installWindowsThemeDetector()
         return GenericUiLaunchSequence.prepareApplication(
             factory = WindowsNativeFactory(),
             args = args,
@@ -36,25 +26,24 @@ object WindowsLauncher {
     }
 
     /**
-     * Initializes the Win32 process startup state, prepares the [IApplication], and runs the
-     * Win32 message loop unless `"--headless-verify"` or `"--headless"` is present in [args].
+     * Prepares and launches the [IApplication] on the Windows Win32 backend.
      */
     fun launch(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
     ): IApplication {
-        Win32WinMain.initializeFromProcessStartup(explicitArgs = args)
-        val isHeadless = headlessMode ||
-            args.contains("--headless-verify") ||
-            args.contains("--headless") ||
-            Win32WinMain.commandLineArgs.contains("--headless-verify") ||
-            Win32WinMain.commandLineArgs.contains("--headless")
-        WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = !isHeadless
-        return GenericUiLaunchSequence.launch(
-            factory = WindowsNativeFactory(),
-            args = args,
-            descriptor = descriptor,
-            isSystemTarget = true
-        )
+        WindowsApplicationNativeImpl.installWindowsThemeDetector()
+        val prevInteractive = WindowsApplicationNativeImpl.interactiveWin32GuiEnabled
+        WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = true
+        return try {
+            GenericUiLaunchSequence.launch(
+                factory = WindowsNativeFactory(),
+                args = args,
+                descriptor = descriptor,
+                isSystemTarget = true
+            )
+        } finally {
+            WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
+        }
     }
 }

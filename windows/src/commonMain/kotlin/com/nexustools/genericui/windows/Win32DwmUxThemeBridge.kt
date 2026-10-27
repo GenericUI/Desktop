@@ -64,6 +64,20 @@ object Win32DwmUxThemeBridge {
     const val CBS_PUSHED: Int = 3
     const val CBS_DISABLED: Int = 4
 
+    // UxTheme BUTTON parts & states (BP_PUSHBUTTON / PBS_*)
+    const val BP_PUSHBUTTON: Int = 1
+    const val BP_RADIOBUTTON: Int = 2
+    const val BP_CHECKBOX: Int = 3
+    const val BP_GROUPBOX: Int = 4
+    const val BP_COMMANDLINK: Int = 6
+
+    const val PBS_NORMAL: Int = 1
+    const val PBS_HOT: Int = 2
+    const val PBS_PRESSED: Int = 3
+    const val PBS_DISABLED: Int = 4
+    const val PBS_DEFAULTED: Int = 5
+    const val PBS_DEFAULTED_ANIMATING: Int = 6
+
     private var ntdllModule: HMODULE? = null
     private var dwmModule: HMODULE? = null
     private var uxThemeModule: HMODULE? = null
@@ -735,6 +749,74 @@ object Win32DwmUxThemeBridge {
             >()
 
         val hTheme = openTheme(hwnd, "WINDOW".wcstr.ptr) ?: return@memScoped false
+        return@memScoped try {
+            val rc = alloc<RECT>()
+            rc.left = left
+            rc.top = top
+            rc.right = right
+            rc.bottom = bottom
+            drawThemeBg(hTheme, hdc, partId, stateId, rc.ptr, null) >= 0
+        } finally {
+            closeTheme(hTheme)
+        }
+    }
+
+    /**
+     * Applies `"DarkMode_Explorer"` or `"Explorer"` visual style theme to a control or window [hwnd]
+     * via `uxtheme.dll!SetWindowTheme`.
+     */
+    fun setControlWindowTheme(
+        hwnd: HWND?,
+        isDark: Boolean
+    ): Boolean = memScoped {
+        if (hwnd == null) return@memScoped false
+        ensureModulesLoaded()
+        val mod = uxThemeModule ?: return@memScoped false
+        val setThemeProc = GetProcAddress(mod, "SetWindowTheme") ?: return@memScoped false
+        val setWindowTheme = setThemeProc.reinterpret<
+            CFunction<(HWND?, CPointer<WCHARVar>?, CPointer<WCHARVar>?) -> HRESULT>
+            >()
+        val subAppName = if (isDark) "DarkMode_Explorer" else "Explorer"
+        setWindowTheme(hwnd, subAppName.wcstr.ptr, null) >= 0
+    }
+
+    /**
+     * Draws a native UxTheme control part & state (such as `Explorer::BUTTON` / `DarkMode_Explorer::BUTTON`
+     * with [BP_PUSHBUTTON] and [PBS_NORMAL]..[PBS_DEFAULTED]) via `uxtheme.dll!OpenThemeData`
+     * and `DrawThemeBackground`.
+     */
+    fun drawUxThemeControlBackground(
+        hwnd: HWND?,
+        hdc: HDC?,
+        classList: String,
+        partId: Int = BP_PUSHBUTTON,
+        stateId: Int = PBS_NORMAL,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int
+    ): Boolean = memScoped {
+        if (hdc == null) return@memScoped false
+        ensureModulesLoaded()
+        val mod = uxThemeModule ?: return@memScoped false
+        val openProc = GetProcAddress(mod, "OpenThemeData") ?: return@memScoped false
+        val closeProc = GetProcAddress(mod, "CloseThemeData") ?: return@memScoped false
+        val drawBgProc = GetProcAddress(mod, "DrawThemeBackground") ?: return@memScoped false
+
+        val openTheme = openProc.reinterpret<CFunction<(HWND?, CPointer<WCHARVar>) -> COpaquePointer?>>()
+        val closeTheme = closeProc.reinterpret<CFunction<(COpaquePointer?) -> HRESULT>>()
+        val drawThemeBg = drawBgProc.reinterpret<
+            CFunction<(COpaquePointer?, HDC?, Int, Int, CPointer<RECT>, CPointer<RECT>?) -> HRESULT>
+            >()
+
+        val primaryTheme = openTheme(hwnd, classList.wcstr.ptr)
+        val hTheme = primaryTheme ?: if (classList.contains("::")) {
+            val baseClass = classList.substringAfterLast("::")
+            openTheme(hwnd, baseClass.wcstr.ptr)
+        } else {
+            null
+        } ?: return@memScoped false
+
         return@memScoped try {
             val rc = alloc<RECT>()
             rc.left = left

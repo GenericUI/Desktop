@@ -1,7 +1,7 @@
-# `:desktop:gtk` — Linux GTK Native Backend (`linuxX64`)
+# `:desktop:gtk` — Linux GTK4 Native Backend (`linuxX64`)
 
 ## Overview
-`:desktop:gtk` is the native Linux GTK (`linuxX64`) backend for GenericUI. It uses Kotlin/Native C-Interop (`gtk.def`) with GTK 3/4, GDK, GIO, GLib, Pango, and Cairo, and depends on `:common`, `:systemCommon`, `:desktop:common`, `:desktop:nativeCommon`, and `:desktop:linuxCommon`.
+`:desktop:gtk` is the native Linux GTK (`linuxX64`) backend for GenericUI. It uses Kotlin/Native C-Interop (`gtk.def`) with GTK4 / Libadwaita, GDK, GIO, GLib, Pango, and Cairo, and depends on `:common`, `:systemCommon`, `:desktop:common`, `:desktop:nativeCommon`, and `:desktop:linuxCommon`.
 
 ---
 
@@ -22,28 +22,33 @@ fun main(args: Array<String>) {
 }
 ```
 
-`GtkLauncher` (`com.nexustools.genericui.gtk.GtkLauncher`) initializes `GtkNativeBootstrap`, registers the Linux XDG storage providers from `:desktop:linuxCommon`, creates the primary `GtkWindow` via `GtkNativeWindowHost`, mounts `FragmentHostFragment`, and enters `gtk_main()`. Calling `launchFragment(...)` opens an independent `GtkWindow`.
+When `styles { globalStyleSheet = "styles/main.scss" }` is configured in `build.gradle.kts`, the generated startup code automatically registers the precompiled `PrecompiledStyleSheet` via `app.addStyleSheet(...)`.
+
+---
+
+## Native GTK4 Control Rendering (`BootstrapType.NONE` Default), Semantic `BootstrapType` Tinting, & Custom Cursors
+
+1. **`BootstrapType.NONE` Default & Zero Bootstrap CSS Styling**:
+   - Native GTK applications **never** use Bootstrap CSS styling.
+   - When `component.getBootstrap().type == BootstrapType.NONE` (the default) and no inline `ComponentStyle` background/border is set, `:desktop:gtk` renders the **authentic GTK4 / Adwaita system widget** matching the active `LIGHT` / `DARK` desktop theme.
+2. **Semantic `BootstrapType` Tinting**:
+   - When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is set on `component.getBootstrap().type`, `:desktop:gtk` emulates `BootstrapType` by **tinting the native `GtkWidget`** with the semantic color (`DesktopBaseNativeImpl.resolveSemanticBootstrapColor(darkTheme)`, supporting `outline = true/false`).
+   - `component.getStyle().setAccentColor(color)` (`accent-color`) customizes active indicator fills on check/radio/scale/progress widgets. Unsupported CSS properties and CSS transitions are **silently ignored**.
+3. **Strict User CSS Class Isolation**:
+   - `addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` return **only** user-added custom classes (`styleSnapshot.customClasses`).
+4. **Custom Cursor Translation (`CssCustomCursor` $\rightarrow$ `GdkCursor`)**:
+   - Translates any PNG `ResourceID`, SVG `ResourceID`/markup, or `ImageBuffer` `CssCustomCursor` into a `GdkTexture` and constructs a native `GdkCursor` (`gdk_cursor_new_from_texture(texture, hotspotX, hotspotY, fallbackCursor)`) applied via `gtk_widget_set_cursor`.
+5. **`IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`)**:
+   - Defaults to `ThemeMode.AUTO`, reading `gtk-application-prefer-dark-theme` from `GtkSettings` / FreeDesktop `org.freedesktop.portal.Settings` (`color-scheme`) and listening for live theme changes.
 
 ---
 
 ## Window Chrome, `TitleCapabilities`, & `GtkHeaderBar`
 
-`GtkWindowImpl` reports native desktop `TitleCapabilities` (`isTitleBarRequired = true`, `supportsCustomComponents = true`, `canEmbedComponentsInTitleBar = true`, `titleBarRendersAsNavbar = false`):
-- **Single-Placement `GtkHeaderBar`**: When custom leading, center, or trailing components are configured on `TitleBar`, `GtkNativeWindowHost` packs them into the window's `GtkHeaderBar` (`gtk_header_bar_pack_start`, `gtk_header_bar_set_custom_title`, `gtk_header_bar_pack_end`) and marks them `mountedInTitleBar = true` so they are never duplicated in the main window content box.
-- **`GtkMenuBar` & `GtkStatusbar`**: Mounted at the top and bottom of the root vertical `GtkBox` container.
+`GtkWindowImpl` reports native desktop `TitleCapabilities` (`isTitleBarRequired = true`, `supportsCustomComponents = true`, `canEmbedComponentsInTitleBar = true`, `titleBarRendersAsNavbar = false`). Custom leading, center, and trailing components added to `TitleBar` are packed into `GtkHeaderBar` and marked `mountedInTitleBar = true` so they are never duplicated in the main window content box.
 
 ---
 
 ## Compiled `GResource` Bundle (`GtkResourceResolverImpl`)
 
-During the Gradle build, `GenericUiCompileResourcesTask` generates `genericui.gresource.xml` from `src/commonMain/resources/` and compiles it via `glib-compile-resources` into `genericui.gresource`.
-
-At runtime, `GtkResourceResolverImpl` (`com.nexustools.genericui.gtk.system.GtkResourceResolverImpl`) loads the registered `GResource` bundle (`g_resources_lookup_data` / `resource://` URIs) along with compiled string/color/dimension tables.
-
----
-
-## Key Package Structure (`com.nexustools.genericui.gtk`)
-
-- **`GtkLauncher.kt` / `GtkNativeBootstrap.kt` / `GtkNativeWindowHost.kt`**: GTK initialization (`gtk_init`), `GtkWindow` + `GtkHeaderBar` management, and GLib main loop integration.
-- **`widget/*` & `container/*`**: Native `GtkWidget` implementations (`GtkButton`, `GtkLabel`, `GtkEntry`, `GtkTextView`, `GtkComboBoxText`, `GtkScale`, `GtkProgressBar`, `GtkPaned`, `GtkNotebook`, `GtkScrolledWindow`).
-- **`system/*`**: `GtkResourceResolverImpl`, `GtkClipboardImpl` (`GtkClipboard`), `GtkFileBrowserDialogImpl` (`GtkFileChooserNative`), `GtkKeystoreImpl` (`libsecret`), and XDG config/cache/preference stores from `:desktop:linuxCommon` (`LinuxXdgConfigDirectoryImpl`, `LinuxXdgCacheDirectoryImpl`, `LinuxXdgPreferenceStoreImpl`).
+During the Gradle build, `GenericUiCompileResourcesTask` generates `genericui.gresource.xml` from `src/commonMain/resources/` and compiles it via `glib-compile-resources` into `genericui.gresource`, resolved at runtime by `GtkResourceResolverImpl`.

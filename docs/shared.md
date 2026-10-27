@@ -11,7 +11,7 @@ Desktop cross-backend code in GenericUI is organized into three layered modules 
    - `DesktopNetworkMonitorNativeImpl`, `DesktopNotificationManagerNativeImpl`, `DesktopPermissionManagerNativeImpl`, `DesktopSystemTrayNativeImpl` (`com.nexustools.genericui.desktop.system`)
 
 2. **[`:desktop:nativeCommon`](nativeCommon.md)** (`mingwX64`, `macosX64`, `macosArm64`, `linuxX64`):
-   - `DesktopBaseNativeImpl`, `DesktopBaseContainerNativeImpl`, `DesktopNativeWidget`, `DesktopWindowNativeImpl`, `DesktopApplicationNativeImpl` (`com.nexustools.genericui.desktop`)
+   - `DesktopBaseNativeImpl` (`BootstrapType.NONE` default, semantic `BootstrapType` tinting via `resolveSemanticBootstrapColor`, strict user `customClasses` isolation, `ComponentStyle` & `accentColor`, `CssCustomCursor`), `DesktopBaseContainerNativeImpl`, `DesktopNativeWidget`, `DesktopWindowNativeImpl`, `DesktopApplicationNativeImpl` (`com.nexustools.genericui.desktop`)
    - `DesktopMultiWindowDockCoordinator`, `DesktopDockWorkspaceNativeImpl`, `DesktopLazyListNativeImpl`, `DesktopLazyGridNativeImpl`, `DesktopTreeViewNativeImpl` (`com.nexustools.genericui.desktop.container`)
    - `DesktopConfigDirectoryHelper`, `DesktopUserDirectoryNativeImpl` (`com.nexustools.genericui.desktop.system`)
    - `DesktopLibJpegImageCodecImpl` (`com.nexustools.genericui.desktop.image`)

@@ -12,7 +12,10 @@ open class DesktopApplicationNativeImpl<out W : DesktopNativeWidget>(
     override val nativeApplication: W
 ) : ApplicationNativeImpl<W> {
 
-    protected var currentThemeMode: ThemeMode = ThemeMode.SYSTEM
+    val nativeWidget: W
+        get() = nativeApplication
+
+    protected var currentThemeMode: ThemeMode = ThemeMode.AUTO
     protected var running: Boolean = false
     protected var lastExitCode: Int = 0
 
@@ -26,9 +29,14 @@ open class DesktopApplicationNativeImpl<out W : DesktopNativeWidget>(
 
     override fun getThemeMode(): ThemeMode = currentThemeMode
 
+    protected open fun onNativeRun() {}
+
+    protected open fun onNativeExit(exitCode: Int) {}
+
     override fun runEventLoop(onStarted: () -> Unit) {
         running = true
         nativeApplication.attributes["running"] = true
+        onNativeRun()
         onStarted()
     }
 
@@ -37,6 +45,7 @@ open class DesktopApplicationNativeImpl<out W : DesktopNativeWidget>(
         running = false
         nativeApplication.attributes["running"] = false
         nativeApplication.attributes["exitCode"] = exitCode
+        onNativeExit(exitCode)
     }
 
     override fun dispose() {

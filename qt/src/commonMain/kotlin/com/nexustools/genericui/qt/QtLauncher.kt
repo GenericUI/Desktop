@@ -15,12 +15,15 @@ object QtLauncher {
     fun prepare(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
-    ): IApplication = GenericUiLaunchSequence.prepareApplication(
-        factory = QtNativeFactory(),
-        args = args,
-        descriptor = descriptor,
-        isSystemTarget = true
-    )
+    ): IApplication {
+        QtApplicationNativeImpl.installQtThemeDetector()
+        return GenericUiLaunchSequence.prepareApplication(
+            factory = QtNativeFactory(),
+            args = args,
+            descriptor = descriptor,
+            isSystemTarget = true
+        )
+    }
 
     /**
      * Prepares and launches the [IApplication] on the Qt 6 backend.
@@ -28,10 +31,13 @@ object QtLauncher {
     fun launch(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
-    ): IApplication = GenericUiLaunchSequence.launch(
-        factory = QtNativeFactory(),
-        args = args,
-        descriptor = descriptor,
-        isSystemTarget = true
-    )
+    ): IApplication {
+        QtApplicationNativeImpl.installQtThemeDetector()
+        return GenericUiLaunchSequence.launch(
+            factory = QtNativeFactory(),
+            args = args,
+            descriptor = descriptor,
+            isSystemTarget = true
+        )
+    }
 }

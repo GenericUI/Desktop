@@ -1,30 +1,21 @@
-# `:desktop:nativeCommon` — Native Desktop Common Runtime
+# `:desktop:nativeCommon` — Native C-Interop Desktop Foundation
 
-> **Parent Submodule**: [`:desktop` (`../README.md`)](../README.md) | **Root Repository**: [**GenericUI (`../../README.md`)**](../../README.md)  
-> **Sibling Desktop Modules**: [`:desktop:common`](../common/README.md) · [`:desktop:linuxCommon`](../linuxCommon/README.md) · [`:desktop:windows`](../docs/windows.md) · [`:desktop:macos`](../docs/macos.md) · [`:desktop:gtk`](../docs/gtk.md) · [`:desktop:qt`](../docs/qt.md) · [`:desktop:swing`](../docs/swing.md)
-
-The **`:desktop:nativeCommon`** module (`com.nexustools.genericui.desktop.*`) is the Kotlin/Native desktop runtime included by the four native OS desktop backends: **`:desktop:windows`** (`mingwX64`), **`:desktop:macos`** (`macosArm64`, `macosX64`), **`:desktop:gtk`** (`linuxX64`, `linuxArm64`), and **`:desktop:qt`** (`linuxX64`, `linuxArm64`). It backs the canonical **`nativeDesktopCommon`** variant scope (`AppTarget.NATIVE_DESKTOP_COMMON`, specificity rank `3`) in the sourceSet hierarchy (`common` $\rightarrow$ `systemCommon` $\rightarrow$ `desktopCommon` $\rightarrow$ `nativeDesktopCommon`).
+## Overview
+`:desktop:nativeCommon` provides the shared Kotlin/Native widget, container, window, styling, docking, lazy viewport, user directory, and libjpeg implementation for the four native cinterop desktop backends (`:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, and `:desktop:qt`). It targets `mingwX64()`, `macosX64()`, `macosArm64()`, and `linuxX64()`, and depends on `:common`, `:systemCommon`, and `:desktop:common`.
 
 ---
 
-## Core Responsibilities & Classes
+## Key Packages & Classes
 
-| Package | Class / Object | Responsibility |
-| :--- | :--- | :--- |
-| `com.nexustools.genericui.desktop.core` | `DesktopNativeWidget` | Native widget descriptor tracking platform family, widget type, native pointer/handle attributes, bounds, padding/margin, visibility, enabled state, and child hierarchy. |
-| `com.nexustools.genericui.desktop.core` | `DesktopBaseNativeImpl<W>` | Base `NativeImpl<W>` peer for native desktop widgets; manages `BootstrapStyleSnapshot`, `ComputedStyle`, `CssTransitionSpec`, pointer enter/leave (`onPointerEnter` / `onPointerLeave`), and input event listeners. |
-| `com.nexustools.genericui.desktop.core` | `DesktopBaseContainerNativeImpl<W>` | Extends `DesktopBaseNativeImpl<W>` with child `NativeImpl` attachment (`addChildNative`, `removeChildNative`, `clearChildrenNative`) and layout invalidation. |
-| `com.nexustools.genericui.desktop.shell` | `DesktopWindowNativeImpl` | Base class for top-level native desktop windows (`TitleCapabilities`, `TitleBar` instruction application, single-placement `mountedInTitleBar` component marking, menu bar sync, fullscreen/maximized state, VBlank scheduling). |
-| `com.nexustools.genericui.desktop.shell` | `DesktopApplicationNativeImpl` | Base class for native desktop `Application` lifecycle, theme color/mode, and window management. |
-| `com.nexustools.genericui.desktop.dock` | `DesktopMultiWindowDockCoordinator` | Orchestrates GIMP-style runtime switching between `StudioWindowMode.SINGLE_WINDOW_MODE` and `StudioWindowMode.MULTI_WINDOW_MODE` (detaching/reattaching `DockPanel`s to native floating utility windows). |
-| `com.nexustools.genericui.desktop.dock` | `DesktopDockWorkspaceNativeImpl` | Native peer for `DockWorkspace` integrating `DesktopMultiWindowDockCoordinator` with platform `DockWindowNativeImpl` factories. |
-| `com.nexustools.genericui.desktop.lazy` | `DesktopLazyListNativeImpl`, `DesktopLazyGridNativeImpl`, `DesktopTreeViewNativeImpl` | Native peers for `LazyList`, `LazyGrid`, and `TreeView` powered by `:desktop:common`'s `DesktopLazyViewportEngine`. |
-| `com.nexustools.genericui.desktop.system` | `DesktopConfigDirectoryHelper`, `DesktopUserDirectoryNativeImpl` | Resolves OS preference and cache directories (`%APPDATA%` on Windows, `~/Library/Preferences` on macOS, `$XDG_CONFIG_HOME` on Linux) and provides POSIX binary file I/O for `PreferenceStore`. |
-| `com.nexustools.genericui.desktop.image` | `DesktopLibJpegImageCodecImpl`, `DesktopImageCodecHooks` | Native `libjpeg` / `libpng` / `libwebp` image decoding/encoding hooks paired with platform codecs. |
-| `com.nexustools.genericui.desktop.widget` | `DesktopButtonNativeImpl`, `DesktopTextInputNativeImpl`, `DesktopTableNativeImpl`, etc. | Complete suite of native desktop widget peers inherited by `:windows`, `:macos`, `:gtk`, and `:qt`. |
+- **`com.nexustools.genericui.desktop.core` (`DesktopBaseNativeImpl`)**:
+  - **`BootstrapType.NONE` Default & Semantic `BootstrapType` Tinting**: When `styleSnapshot.type == BootstrapType.NONE` (the default) and no inline `ComponentStyle` background/border is set, native desktop backends render the genuine OS system control. When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is set, `resolveSemanticBootstrapColor(darkTheme)` and `resolveSemanticBootstrapForeground(darkTheme)` provide the semantic palette colors for tinting the native control (supporting `outline = true/false`).
+  - **Strict User CSS Class Isolation**: `addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` read and mutate exclusively `styleSnapshot.customClasses`. `ComponentBootstrap` (`applyComponentBootstrap`) enum utilities are evaluated directly by the native layout/rendering engines.
+  - **`ComponentStyle`, `accentColor`, & `CssCustomCursor`**: `applyComponentStyle(style: ComponentStyle)` applies `backgroundColor`, `backgroundImage` gradients, `color`, `accentColor` (`getEffectiveAccentColor`), `borderColor`, `borderRadius`, `opacity`, `zIndex`, `visibility`, and `cursor` (`setCustomCursor(cursor: CssCursorValue?)`), while silently ignoring unsupported CSS properties.
+- **`com.nexustools.genericui.desktop`**:
+  - `DesktopBaseContainerNativeImpl`, `DesktopNativeWidget`, `DesktopWindowNativeImpl`, `DesktopApplicationNativeImpl` (managing `IApplication.addStyleSheet`/`removeStyleSheet` and `ThemeMode.AUTO`/`DARK`/`LIGHT`).
+- **`com.nexustools.genericui.desktop.container` / `dock`**:
+  - `DesktopMultiWindowDockCoordinator`, `DesktopDockWorkspaceNativeImpl`, `DesktopLazyListNativeImpl`, `DesktopLazyGridNativeImpl`, `DesktopTreeViewNativeImpl`.
+- **`com.nexustools.genericui.desktop.system` & `image`**:
+  - `DesktopConfigDirectoryHelper`, `DesktopUserDirectoryNativeImpl`, `DesktopLibJpegImageCodecImpl` (`cinterop/libjpeg.def`).
 
----
-
-## Detailed Documentation
-
-See [**`../docs/nativeCommon.md`**](../docs/nativeCommon.md) for architecture details and code examples.
+See [`../docs/nativeCommon.md`](../docs/nativeCommon.md) for detailed architecture documentation.

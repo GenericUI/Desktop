@@ -15,12 +15,15 @@ object SwingLauncher {
     fun prepare(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
-    ): IApplication = GenericUiLaunchSequence.prepareApplication(
-        factory = SwingNativeFactory(),
-        args = args,
-        descriptor = descriptor,
-        isSystemTarget = true
-    )
+    ): IApplication {
+        SwingApplicationImpl.installSwingThemeDetector()
+        return GenericUiLaunchSequence.prepareApplication(
+            factory = SwingNativeFactory(),
+            args = args,
+            descriptor = descriptor,
+            isSystemTarget = true
+        )
+    }
 
     /**
      * Prepares and launches the [IApplication] on the Java Swing backend.
@@ -28,10 +31,13 @@ object SwingLauncher {
     fun launch(
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
-    ): IApplication = GenericUiLaunchSequence.launch(
-        factory = SwingNativeFactory(),
-        args = args,
-        descriptor = descriptor,
-        isSystemTarget = true
-    )
+    ): IApplication {
+        SwingApplicationImpl.installSwingThemeDetector()
+        return GenericUiLaunchSequence.launch(
+            factory = SwingNativeFactory(),
+            args = args,
+            descriptor = descriptor,
+            isSystemTarget = true
+        )
+    }
 }

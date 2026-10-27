@@ -20,13 +20,19 @@ import com.nexustools.genericui.desktop.widget.DesktopSelectNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTabContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
+import com.nexustools.genericui.enums.bootstrap.BootstrapType
+import com.nexustools.genericui.enums.css.CssCursor
+import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.event.KeyEvent
 import com.nexustools.genericui.event.PointerEvent
 import com.nexustools.genericui.event.WheelEvent
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.res.Resources
+import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssCustomCursor
 import com.nexustools.genericui.style.gradient.Gradient
+import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.window.TitleBar
 import kotlinx.cinterop.*
 import platform.windows.*
@@ -246,6 +252,7 @@ object Win32NativeWindowHost {
     private val WHITESPACE_REGEX = Regex("\\s+")
 
     private var cachedSystemDarkTheme: Boolean? = null
+    var forcedThemeMode: ThemeMode = ThemeMode.AUTO
     private var cachedFontSmall: HFONT? = null
     private var cachedFontSmallBold: HFONT? = null
     private var cachedFontNormal: HFONT? = null
@@ -273,39 +280,28 @@ object Win32NativeWindowHost {
     }
 
     fun isWindowsSystemDarkTheme(): Boolean {
-        cachedSystemDarkTheme?.let { return it }
-        val resolved = memScoped {
-            val hKey = alloc<HKEYVar>()
-            val openRes = RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                0u,
-                KEY_READ.toUInt(),
-                hKey.ptr
-            )
-            if (openRes != ERROR_SUCCESS) {
-                return@memScoped true
-            }
-            val data = alloc<DWORDVar>()
-            val dataSize = alloc<DWORDVar>()
-            dataSize.value = sizeOf<DWORDVar>().toUInt()
-            val queryRes = RegQueryValueExW(
-                hKey.value,
-                "AppsUseLightTheme",
-                null,
-                null,
-                data.ptr.reinterpret(),
-                dataSize.ptr
-            )
-            RegCloseKey(hKey.value)
-            if (queryRes == ERROR_SUCCESS) {
-                data.value == 0u
-            } else {
-                true
-            }
+        when (forcedThemeMode) {
+            ThemeMode.DARK -> return true
+            ThemeMode.LIGHT -> return false
+            ThemeMode.AUTO -> Unit
         }
+        SystemThemeDetector.overrideDetectedTheme?.let {
+            return it == ThemeMode.DARK
+        }
+        cachedSystemDarkTheme?.let { return it }
+        val resolved = Win32DwmUxThemeBridge.isSystemDarkTheme()
         cachedSystemDarkTheme = resolved
         return resolved
+    }
+
+    fun onSystemThemeChanged(hwnd: HWND?) {
+        invalidateSystemThemeCache()
+        val isDark = isWindowsSystemDarkTheme()
+        if (hwnd != null) {
+            Win32DwmUxThemeBridge.clearCachedHwndState(hwnd)
+            Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, isDark)
+        }
+        invalidateAllWindows()
     }
 
     private fun resolveAppIcons(hInstance: HINSTANCE?) = memScoped {
@@ -1099,11 +1095,49 @@ object Win32NativeWindowHost {
 
     fun updateCursorForWindow(hwnd: HWND): Boolean {
         val hit = hoveredHitRegion
-        val hitCursor = (hit?.widget?.attributes?.get("cursor") as? String)?.lowercase()
+        val targetWidget = hit?.widget ?: hoveredWidget
+        val targetImpl = targetWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
+        val customCursor = (targetWidget?.attributes?.get("customCursor") as? CssCustomCursor)
+            ?: (targetImpl?.getCustomCursor() as? CssCustomCursor)
+            ?: if (
+                hwnd == activeHwnd &&
+                hoverMouseX in canvasViewportRect[0]..canvasViewportRect[2] &&
+                hoverMouseY in canvasViewportRect[1]..canvasViewportRect[3]
+            ) {
+                (activeCanvasImpl?.nativeWidget?.attributes?.get("customCursor") as? CssCustomCursor)
+                    ?: (activeCanvasImpl?.getCustomCursor() as? CssCustomCursor)
+            } else {
+                null
+            }
+
+        if (customCursor != null) {
+            val hCustom = WindowsCurCodec.createWin32Cursor(customCursor)
+            if (hCustom != null) {
+                SetCursor(hCustom)
+                return true
+            }
+        }
+
+        val hitCursor = (targetWidget?.attributes?.get("cursor") as? String)?.lowercase()
+            ?: customCursor?.fallback?.cssValue
         val canvasCursor = (activeCanvasImpl?.nativeWidget?.attributes?.get("cursor") as? String)?.lowercase()
+        if (hitCursor == "none") {
+            SetCursor(null)
+            return true
+        }
         val cursorId = when {
             hit?.isTextInput == true || hitCursor == "text" -> IDC_IBEAM
             hitCursor == "crosshair" -> IDC_CROSS
+            hitCursor == "pointer" || hitCursor == "grab" || hitCursor == "grabbing" -> IDC_HAND
+            hitCursor == "wait" -> IDC_WAIT
+            hitCursor == "progress" -> IDC_APPSTARTING
+            hitCursor == "help" -> IDC_HELP
+            hitCursor == "move" -> IDC_SIZEALL
+            hitCursor == "not-allowed" || hitCursor == "no-drop" -> IDC_NO
+            hitCursor == "ew-resize" || hitCursor == "col-resize" || hitCursor == "e-resize" || hitCursor == "w-resize" -> IDC_SIZEWE
+            hitCursor == "ns-resize" || hitCursor == "row-resize" || hitCursor == "n-resize" || hitCursor == "s-resize" -> IDC_SIZENS
+            hitCursor == "nwse-resize" || hitCursor == "nw-resize" || hitCursor == "se-resize" -> IDC_SIZENWSE
+            hitCursor == "nesw-resize" || hitCursor == "ne-resize" || hitCursor == "sw-resize" -> IDC_SIZENESW
             hit != null -> IDC_HAND
             hwnd == activeHwnd &&
                 canvasCursor == "crosshair" &&
@@ -6826,7 +6860,7 @@ object Win32NativeWindowHost {
                         else -> max(60, right - cx)
                     }
                     val cRight = if (idx == visibleChildren.lastIndex) right else min(right, cx + itemW)
-                    val isActiveLayerBtn = widgetHasClass(child, "active-layer-btn") || widgetHasClass(child, "btn-primary")
+                    val isActiveLayerBtn = cImpl.getType() == BootstrapType.PRIMARY || widgetHasClass(child, "active-layer-btn") || widgetHasClass(child, "btn-primary")
                     SelectObject(hdc, if (isActiveLayerBtn) fontBold else fontSmall)
                     drawButtonControl(
                         hdc = hdc,
@@ -6873,7 +6907,7 @@ object Win32NativeWindowHost {
                 val cRight = if (idx == count - 1) right else min(right, cx + itemW)
                 when (val cImpl = child.attributes["nativeImpl"]) {
                     is DesktopButtonNativeImpl<*> -> {
-                        val isPrimary = widgetHasClass(child, "btn-primary") || widgetHasClass(child, "active-layer-btn")
+                        val isPrimary = cImpl.getType() == BootstrapType.PRIMARY || widgetHasClass(child, "btn-primary") || widgetHasClass(child, "active-layer-btn")
                         SelectObject(hdc, if (isPrimary) fontBold else fontSmall)
                         drawButtonControl(
                             hdc = hdc,
@@ -7741,6 +7775,46 @@ object Win32NativeWindowHost {
      * - Gradient backgrounds (`style { background = LinearGradient(...) }` or `RadialGradient(...)`)
      * - CSS pseudo-class states (`:hover`, `:active`, `:focus`) with distinct hover shading, pressed bevel, and focus ring!
      */
+    fun resolveButtonThemeClassList(darkTheme: Boolean = isWindowsSystemDarkTheme()): String =
+        if (darkTheme) "DarkMode_Explorer::BUTTON" else "Explorer::BUTTON"
+
+    fun usesNativeSystemControlRendering(widget: DesktopNativeWidget?): Boolean {
+        val impl = widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*> ?: return true
+        return impl.getEffectiveBackgroundColor() == null &&
+            impl.getEffectiveBackgroundGradient() == null &&
+            impl.getType()?.takeIf { it.isSemantic } == null &&
+            impl.getBackgroundType()?.takeIf { it.isSemantic } == null &&
+            impl.getComponentStyle()?.accentColor == null
+    }
+
+    fun resolveControlBackgroundColor(
+        widget: DesktopNativeWidget?,
+        darkTheme: Boolean = isWindowsSystemDarkTheme()
+    ): RgbaColor {
+        val impl = widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
+        impl?.getEffectiveBackgroundColor()?.let { return it }
+        impl?.getComponentStyle()?.accentColor?.let { return it }
+        val semanticType = impl?.getType()?.takeIf { it.isSemantic }
+            ?: impl?.getBackgroundType()?.takeIf { it.isSemantic }
+        if (semanticType != null) {
+            if (impl?.isOutline() == true) {
+                return if (darkTheme) RgbaColor(45, 45, 48) else RgbaColor(250, 250, 252)
+            }
+            return BootstrapColorPalette.resolveColor(semanticType, darkTheme)
+        }
+        return if (darkTheme) RgbaColor(45, 45, 48) else RgbaColor(250, 250, 252)
+    }
+
+    fun resolveControlForegroundColor(
+        widget: DesktopNativeWidget?,
+        darkTheme: Boolean = isWindowsSystemDarkTheme()
+    ): RgbaColor {
+        val impl = widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
+        impl?.getEffectiveTextColor()?.let { return it }
+        impl?.resolveSemanticBootstrapForeground(darkTheme)?.let { return it }
+        return if (darkTheme) RgbaColor(242, 242, 242) else RgbaColor(0, 0, 0)
+    }
+
     private fun drawButtonControl(
         hdc: HDC?,
         theme: SystemThemePalette = if (isWindowsSystemDarkTheme()) darkSystemPalette else lightSystemPalette,
@@ -7756,33 +7830,101 @@ object Win32NativeWindowHost {
         hwndForHover: HWND? = null
     ) {
         val impl = widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
-        val isHovered = (widget != null && hoveredWidget == widget) || isRectHovered(hwndForHover, left, top, right, bottom)
-        val isPressed = widget != null && pressedWidget == widget
+        val isEnabled = impl?.isEnabled() ?: true
+        val isHovered = isEnabled && ((widget != null && hoveredWidget == widget) || isRectHovered(hwndForHover, left, top, right, bottom))
+        val isPressed = isEnabled && (widget != null && pressedWidget == widget)
         val isFocused = widget != null && focusedWidget == widget
-        val styleTint = impl?.getEffectiveTintColor()?.let { rgbaToColorRef(it) } ?: tintOverride
+
+        val semanticType = impl?.getType()?.takeIf { it.isSemantic }
+            ?: impl?.getBackgroundType()?.takeIf { it.isSemantic }
+        val isOutline = impl?.isOutline() == true
+        val semanticColorRef = semanticType?.let {
+            rgbaToColorRef(BootstrapColorPalette.resolveColor(it, theme.isDark))
+        }
+        val styleAccent = impl?.getComponentStyle()?.accentColor?.let { rgbaToColorRef(it) }
+        val styleTint = styleAccent ?: semanticColorRef ?: tintOverride
         val styleBgColor = impl?.getEffectiveBackgroundColor()?.let { rgbaToColorRef(it) }
         val styleGradient = impl?.getEffectiveBackgroundGradient()
+        val isNativeUnstyled = styleBgColor == null && styleTint == null && styleGradient == null && !primary
+
+        if (isNativeUnstyled) {
+            val uxStateId = when {
+                !isEnabled -> Win32DwmUxThemeBridge.PBS_DISABLED
+                isPressed -> Win32DwmUxThemeBridge.PBS_PRESSED
+                isHovered -> Win32DwmUxThemeBridge.PBS_HOT
+                isFocused -> Win32DwmUxThemeBridge.PBS_DEFAULTED
+                else -> Win32DwmUxThemeBridge.PBS_NORMAL
+            }
+            val uxClassList = resolveButtonThemeClassList(theme.isDark)
+            val uxPainted = if (hwndForHover != null) {
+                Win32DwmUxThemeBridge.drawUxThemeControlBackground(
+                    hwnd = hwndForHover,
+                    hdc = hdc,
+                    classList = uxClassList,
+                    partId = Win32DwmUxThemeBridge.BP_PUSHBUTTON,
+                    stateId = uxStateId,
+                    left = left,
+                    top = top,
+                    right = right,
+                    bottom = bottom
+                )
+            } else {
+                false
+            }
+            if (!uxPainted) {
+                val fallbackBg = when {
+                    isPressed -> lightenColorRef(theme.bgCard, -18)
+                    isHovered -> theme.bgElevated
+                    else -> theme.bgCard
+                }
+                val fallbackBorder = when {
+                    isFocused -> theme.accentBlueBorder
+                    isHovered -> theme.borderStrong
+                    else -> theme.borderSubtle
+                }
+                drawRoundedRect(hdc, left, top, right, bottom, 5, fallbackBg, fallbackBorder)
+                if (!isPressed && right - left > 10 && bottom - top > 10) {
+                    drawLineColor(hdc, left + 3, top + 1, right - 3, top + 1, lightenColorRef(fallbackBg, 14))
+                }
+            }
+            if (isFocused) {
+                drawRectBorder(hdc, left + 1, top + 1, right - 1, bottom - 1, theme.accentBlue)
+            }
+            val nativeFg = impl?.getEffectiveTextColor()?.let { rgbaToColorRef(it) }
+                ?: if (!isEnabled) theme.textMuted else theme.textPrimary
+            drawButtonLabelAndIcon(hdc, label, icon, left, top + (if (isPressed) 1 else 0), right, bottom, nativeFg)
+            return
+        }
 
         val baseBg = when {
             styleBgColor != null -> styleBgColor
+            isOutline && semanticColorRef != null && !isHovered && !isPressed -> theme.bgCard
             styleTint != null -> styleTint
             primary -> theme.accentBlue
             else -> theme.bgCard
         }
         val bg = when {
-            isPressed -> lightenColorRef(baseBg, -18)
+            isPressed -> lightenColorRef(if (isOutline && semanticColorRef != null) semanticColorRef else baseBg, -18)
+            isHovered && isOutline && semanticColorRef != null -> semanticColorRef
             isHovered && (styleTint != null || styleBgColor != null || primary) -> lightenColorRef(baseBg, 22)
             isHovered -> theme.bgElevated
             else -> baseBg
         }
         val border = when {
             isFocused -> theme.accentBlueBorder
+            isOutline && semanticColorRef != null -> semanticColorRef
             styleTint != null -> lightenColorRef(styleTint, 35)
             primary -> theme.accentBlueBorder
             isHovered -> theme.borderStrong
             else -> theme.borderSubtle
         }
-        val fg = if (primary || styleTint != null || styleGradient != null) rgb(255, 255, 255) else theme.textPrimary
+        val fg = impl?.getEffectiveTextColor()?.let { rgbaToColorRef(it) }
+            ?: when {
+                isOutline && semanticColorRef != null && !isHovered && !isPressed -> semanticColorRef
+                semanticType != null -> rgbaToColorRef(BootstrapColorPalette.resolveForegroundOn(semanticType))
+                primary || styleTint != null || styleGradient != null -> rgb(255, 255, 255)
+                else -> theme.textPrimary
+            }
 
         drawRoundedRect(hdc, left, top, right, bottom, 5, bg, border)
         if (styleGradient != null && right - left > 4 && bottom - top > 4) {
@@ -8181,7 +8323,7 @@ object Win32NativeWindowHost {
         val boxSize = 14
         val boxTop = top + ((bottom - top) - boxSize) / 2
         val impl = widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
-        val tintColor = impl?.getEffectiveTintColor()?.let { rgbaToColorRef(it) }
+        val tintColor = impl?.getEffectiveAccentColor(theme.isDark)?.let { rgbaToColorRef(it) }
         val hovered = (widget != null && hoveredWidget == widget) || isRectHovered(hwndForHover, left, top, right, bottom)
         val focused = widget != null && focusedWidget == widget
         val boxBg = when {
@@ -8216,7 +8358,7 @@ object Win32NativeWindowHost {
         hwndForHover: HWND? = null
     ) {
         val impl = widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
-        val tintColor = impl?.getEffectiveTintColor()?.let { rgbaToColorRef(it) }
+        val tintColor = impl?.getEffectiveAccentColor(theme.isDark)?.let { rgbaToColorRef(it) }
         val hovered = (widget != null && hoveredWidget == widget) || isRectHovered(hwndForHover, left, top, right, bottom)
         val focused = widget != null && focusedWidget == widget
         val bg = when {
@@ -8244,7 +8386,7 @@ object Win32NativeWindowHost {
         bottom: Int
     ) {
         val midY = (top + bottom) / 2
-        val tintColor = slider.getEffectiveTintColor()?.let { rgbaToColorRef(it) }
+        val tintColor = slider.getEffectiveAccentColor(theme.isDark)?.let { rgbaToColorRef(it) }
         val hovered = hoveredWidget == slider.nativeWidget
         val activeColor = tintColor ?: theme.accentBlue
         val thumbColor = if (hovered) lightenColorRef(activeColor, 26) else theme.accentBlueHover
@@ -8426,11 +8568,7 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
         WM_SETTINGCHANGE,
         0x031A /* WM_THEMECHANGED */,
         0x0320 /* WM_DWMCOLORIZATIONCOLORCHANGED */ -> {
-            if (hwnd != null) {
-                Win32NativeWindowHost.invalidateSystemThemeCache()
-                Win32DwmUxThemeBridge.clearCachedHwndState(hwnd)
-                Win32NativeWindowHost.invalidateAllWindows()
-            }
+            Win32NativeWindowHost.onSystemThemeChanged(hwnd)
         }
         WM_ERASEBKGND -> return 1L
         WM_SETCURSOR -> {
