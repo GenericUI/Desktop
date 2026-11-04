@@ -1,5 +1,6 @@
 package com.nexustools.genericui.macos
 
+import com.nexustools.genericui.res.Resources
 import com.nexustools.genericui.resources.DefaultResourceResolverNativeImpl
 import com.nexustools.genericui.resources.ResourceID
 
@@ -14,4 +15,24 @@ class MacosResourceResolverImpl : DefaultResourceResolverNativeImpl() {
 
     override fun resolveBytes(resId: ResourceID): ByteArray? =
         super.resolveBytes(resId)
+
+    override suspend fun openResourceStream(resId: ResourceID): MacosFileReadableNativeImpl? {
+        val rawBytes = resolveBytes(resId)
+        if (rawBytes != null) {
+            return MacosFileReadableNativeImpl(
+                initialBytes = rawBytes,
+                filePath = resolveUrl(resId)
+            )
+        }
+        val rawText = Resources.activeTable.getRawText(resId)
+            ?: Resources.activeTable.getStringOrNull(resId)
+            ?: Resources.activeTable.getDrawable(resId)?.svgSource
+        if (rawText != null) {
+            return MacosFileReadableNativeImpl(
+                initialBytes = rawText.encodeToByteArray(),
+                filePath = resolveUrl(resId)
+            )
+        }
+        return null
+    }
 }

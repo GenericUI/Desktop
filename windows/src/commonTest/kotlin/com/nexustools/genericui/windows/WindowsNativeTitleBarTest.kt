@@ -3,6 +3,7 @@
 package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.component.action.Button
+import com.nexustools.genericui.component.dialog.DialogWindow
 import com.nexustools.genericui.component.dock.PanelWindow
 import com.nexustools.genericui.component.layout.Container
 import com.nexustools.genericui.component.layout.ScrollView
@@ -12,6 +13,7 @@ import com.nexustools.genericui.component.typography.Heading
 import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
+import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
 import com.nexustools.genericui.window.TitleBar
 import platform.windows.HTCAPTION
@@ -416,6 +418,210 @@ class WindowsNativeTitleBarTest {
         } finally {
             Win32NativeWindowHost.closeAllVisualWindows()
             Win32NativeWindowHost.visualTestMode = prevVisualTest
+            WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
+        }
+    }
+
+    @Test
+    fun testAssetPanelRenderingAndInteractionLagBenchmark() {
+        val prevInteractive = WindowsApplicationNativeImpl.interactiveWin32GuiEnabled
+        val prevVisualTest = Win32NativeWindowHost.visualTestMode
+        WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = true
+        Win32NativeWindowHost.visualTestMode = true
+        try {
+            val factory = WindowsNativeFactory()
+            GenericUI.initialize(factory)
+
+            // Build the full DCApp AssetManager hierarchy:
+            // rootContainer -> ScrollView -> page-host -> Fragment -> pageRoot (.container.page.page-asset)
+            // -> outerCard (.card) -> cardBody (.card-body) -> Row (.row) -> 60 Col (.col-12.col-md-6.col-lg-4)
+            // -> innerCard (.card) -> innerBody (.card-body) -> Heading, Text, Button
+            val rootContainer = Container("div", "dcapp-root w-100 h-100")
+            val scrollView = ScrollView().apply { addClass("overflow-auto w-100 h-100") }
+            val pageHost = Container("div", "page-host")
+            val assetFragmentWrapper = Container("div", "fragment")
+            val pageRoot = Container("div", "container page page-asset mb-2")
+            val outerCard = Card().apply { addClass("card mt-2 mb-2") }
+            val cardBody = Container("div", "card-body flex-fill d-flex flex-column text-center")
+            cardBody.addChild(Heading("Asset Manager", level = 1))
+            cardBody.addChild(
+                Heading(
+                    "Here you can manage your own asset, as well as search for and view asset created by others",
+                    level = 5
+                )
+            )
+
+            val gridRow = Container("div", "row")
+            for (i in 1..60) {
+                val col = Container("div", "col-12 col-md-6 col-lg-4 d-flex flex-column")
+                val innerCard = Card().apply { addClass("card flex-fill mb-3") }
+                val innerBody = Container("div", "card-body d-flex flex-column")
+                innerBody.addChild(Heading("Asset Category $i", level = 5))
+                innerBody.addChild(
+                    Text("Edit the structure, properties, and references of Asset Category $i here")
+                )
+                innerBody.addChild(Container("div", "flex-grow-1"))
+                innerBody.addChild(Button("View/Edit Category $i"))
+                innerCard.addChild(innerBody)
+                col.addChild(innerCard)
+                gridRow.addChild(col)
+            }
+            cardBody.addChild(gridRow)
+            outerCard.addChild(cardBody)
+            pageRoot.addChild(outerCard)
+            assetFragmentWrapper.addChild(pageRoot)
+            pageHost.addChild(assetFragmentWrapper)
+            scrollView.addChild(pageHost)
+            rootContainer.addChild(scrollView)
+
+            val mainWindow = Window(title = "Asset Manager ~ DC App")
+            mainWindow.setContent(rootContainer)
+            mainWindow.show(factory)
+            Win32NativeWindowHost.pumpVisualWindowEvents(24L)
+
+            val hwnd = Win32NativeWindowHost.activeHwnd
+            assertTrue(hwnd != null, "Expected active Win32 HWND for Asset Panel benchmark")
+
+            // Warm-up frames
+            repeat(3) {
+                platform.windows.InvalidateRect(hwnd, null, 0)
+                Win32NativeWindowHost.paintWindow(hwnd)
+            }
+
+            val maxScroll = Win32NativeWindowHost.getCardPageMaxScrollY()
+            assertTrue(
+                maxScroll > 0,
+                "Expected positive maxScrollY for 60 nested DCApp Asset Manager cards, got $maxScroll"
+            )
+
+            val clock = kotlin.time.TimeSource.Monotonic
+
+            // 1. Benchmark 30 full window paints
+            val paintTimesMs = DoubleArray(30)
+            for (i in paintTimesMs.indices) {
+                val mark = clock.markNow()
+                platform.windows.InvalidateRect(hwnd, null, 0)
+                Win32NativeWindowHost.paintWindow(hwnd)
+                paintTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
+            }
+
+            // 2. Benchmark 60 mouse-move hover sweeps across cards, buttons, and scrollbar
+            val hoverTimesMs = DoubleArray(60)
+            for (i in hoverTimesMs.indices) {
+                val mx = 120 + (i * 17) % 980
+                val my = 110 + (i * 23) % 580
+                val mark = clock.markNow()
+                Win32NativeWindowHost.handleMouseMove(hwnd, mx, my)
+                platform.windows.UpdateWindow(hwnd)
+                hoverTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
+            }
+
+            // 3. Benchmark 40 continuous scrollbar thumb drag steps
+            val thumbBounds = Win32NativeWindowHost.getCardPageScrollThumbBounds()
+            val thumbCenterX = (thumbBounds[0] + thumbBounds[2]) / 2
+            val thumbStartY = (thumbBounds[1] + thumbBounds[3]) / 2
+            val dragTimesMs = DoubleArray(40)
+            Win32NativeWindowHost.handleMouseDown(hwnd, thumbCenterX, thumbStartY)
+            assertTrue(Win32NativeWindowHost.isCardScrollbarThumbDragging())
+            for (i in dragTimesMs.indices) {
+                val dy = if (i < 20) (i + 1) * 14 else (40 - i) * 14
+                val mark = clock.markNow()
+                Win32NativeWindowHost.handleMouseMove(hwnd, thumbCenterX, thumbStartY + dy)
+                platform.windows.UpdateWindow(hwnd)
+                dragTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
+            }
+            Win32NativeWindowHost.handleMouseUp(hwnd, thumbCenterX, thumbStartY)
+
+            // 4. Benchmark 30 mouse wheel scroll steps
+            val wheelTimesMs = DoubleArray(30)
+            for (i in wheelTimesMs.indices) {
+                val delta = if (i < 15) -120 else 120
+                val mark = clock.markNow()
+                Win32NativeWindowHost.handleMouseWheel(hwnd, delta)
+                wheelTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
+            }
+
+            fun percentile95(samples: DoubleArray): Double {
+                val sorted = samples.sortedArray()
+                val idx = ((sorted.size - 1) * 0.95).toInt().coerceIn(0, sorted.lastIndex)
+                return sorted[idx]
+            }
+
+            val avgPaintMs = paintTimesMs.average()
+            val p95PaintMs = percentile95(paintTimesMs)
+            val avgHoverMs = hoverTimesMs.average()
+            val p95HoverMs = percentile95(hoverTimesMs)
+            val avgDragMs = dragTimesMs.average()
+            val p95DragMs = percentile95(dragTimesMs)
+            val avgWheelMs = wheelTimesMs.average()
+            val p95WheelMs = percentile95(wheelTimesMs)
+
+            println(
+                "[AssetPanelLagBenchmark] " +
+                    "paint(avg=${avgPaintMs}ms, p95=${p95PaintMs}ms) | " +
+                    "hover(avg=${avgHoverMs}ms, p95=${p95HoverMs}ms) | " +
+                    "drag(avg=${avgDragMs}ms, p95=${p95DragMs}ms) | " +
+                    "wheel(avg=${avgWheelMs}ms, p95=${p95WheelMs}ms)"
+            )
+
+            assertTrue(
+                avgPaintMs < 2.5,
+                "Expected Asset Panel full paint avg < 2.5ms for native responsiveness, got ${avgPaintMs}ms (p95=${p95PaintMs}ms)"
+            )
+            assertTrue(
+                avgHoverMs < 1.0,
+                "Expected Asset Panel mouse hover avg < 1.0ms for native responsiveness, got ${avgHoverMs}ms (p95=${p95HoverMs}ms)"
+            )
+            assertTrue(
+                avgDragMs < 2.5,
+                "Expected Asset Panel scrollbar drag step avg < 2.5ms for native responsiveness, got ${avgDragMs}ms (p95=${p95DragMs}ms)"
+            )
+            assertTrue(
+                avgWheelMs < 2.5,
+                "Expected Asset Panel wheel scroll step avg < 2.5ms for native responsiveness, got ${avgWheelMs}ms (p95=${p95WheelMs}ms)"
+            )
+        } finally {
+            Win32NativeWindowHost.closeAllVisualWindows()
+            Win32NativeWindowHost.visualTestMode = prevVisualTest
+            WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
+        }
+    }
+
+    @Test
+    fun testDialogWindowCreatesSeparateAttachedNativeWindowInsteadOfOverlay() {
+        val prevInteractive = WindowsApplicationNativeImpl.interactiveWin32GuiEnabled
+        WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = false
+        try {
+            val factory = WindowsNativeFactory()
+            GenericUI.initialize(factory)
+
+            val mainWindow = Window(title = "Main Studio")
+            mainWindow.setContent(Container("div", "w-100 h-100"))
+            mainWindow.show(factory)
+            val mainImpl = mainWindow.ensureNativeImpl() as WindowsWindowNativeImpl
+
+            val dialog = DialogWindow(title = "Preferences", modal = true)
+            dialog.setWindowSize(com.nexustools.genericui.geometry.Size(480, 320))
+            dialog.open(mainWindow)
+
+            assertTrue(dialog.isWindowShown)
+            assertTrue(mainWindow.attachedDialogWindows.contains(dialog))
+            assertTrue(mainWindow.childWindows.contains(dialog))
+
+            @Suppress("UNCHECKED_CAST")
+            val dialogImpl = dialog.ensureNativeImpl() as DesktopDialogWindowNativeImpl<Win32HwndHandle>
+            assertEquals(true, dialogImpl.nativeWidget.attributes["isSeparateNativeWindow"])
+            assertEquals(false, dialogImpl.nativeWidget.attributes["inWindowOverlay"])
+            assertEquals(true, dialogImpl.nativeWidget.attributes["attachedToMainWindow"])
+            assertTrue((dialogImpl.nativeWidget.dwExStyle and Win32HwndHandle.WS_EX_DLGMODALFRAME) != 0L)
+
+            mainWindow.bringToFront()
+            assertTrue(dialogImpl.zOrderLayer > mainImpl.zOrderLayer)
+
+            dialog.close()
+            assertFalse(dialog.isWindowShown)
+            assertFalse(mainWindow.attachedDialogWindows.contains(dialog))
+        } finally {
             WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
         }
     }

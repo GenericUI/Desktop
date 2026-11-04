@@ -16,15 +16,21 @@ open class DesktopButtonNativeImpl<out W : DesktopNativeWidget>(
     protected var buttonIcon: String? = null
 
     override fun setText(text: String) {
-        buttonText = text
-        nativeWidget.attributes["text"] = text
+        if (buttonText != text) {
+            buttonText = text
+            nativeWidget.attributes["text"] = text
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun getText(): String = buttonText
 
     override fun setIcon(icon: String?) {
-        buttonIcon = icon
-        nativeWidget.attributes["icon"] = icon
+        if (buttonIcon != icon) {
+            buttonIcon = icon
+            nativeWidget.attributes["icon"] = icon
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun getIcon(): String? = buttonIcon

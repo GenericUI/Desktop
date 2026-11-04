@@ -22,10 +22,9 @@ open class LinuxXdgPreferenceStoreImpl(
     configDirectoryImpl: UserDirectoryNativeImpl = LinuxXdgConfigDirectoryImpl(appName)
 ) : PreferenceStoreNativeImpl {
 
-    val configDir: ConfigDirectory = ConfigDirectory(
-        appName = appName,
-        nativeImplOverride = configDirectoryImpl
-    )
+    val configDir: ConfigDirectory = object : ConfigDirectory(appName = appName) {
+        override fun resolveCustomImpl(): UserDirectoryNativeImpl = configDirectoryImpl
+    }
 
     val configDirectory: String
         get() = configDir.directoryPath

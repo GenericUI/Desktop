@@ -3,6 +3,7 @@ package com.nexustools.genericui.desktop.shell
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
+import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockWindowNativeImpl
 import com.nexustools.genericui.enums.window.DisplayCutoutMode
 import com.nexustools.genericui.enums.window.WindowState
@@ -43,12 +44,17 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
 
     private val ownedToolWindows = mutableListOf<DesktopWindowNativeImpl<*>>()
     private val ownedDockWindows = mutableListOf<DesktopDockWindowNativeImpl<*>>()
+    private val _ownedDialogWindows = mutableListOf<DesktopDialogWindowNativeImpl<*>>()
+    val ownedDialogWindows: List<DesktopDialogWindowNativeImpl<*>>
+        get() = _ownedDialogWindows
 
     protected var windowTitle: String = ""
     protected var currentWindowSize: Size = Size(1280f, 800f)
+    private var minWindowSizeState: Size? = null
     protected var currentWindowState: WindowState = WindowState.NORMAL
     protected var fullscreenFlag: Boolean = false
     protected var cutoutModeState: DisplayCutoutMode = DisplayCutoutMode.SHORT_EDGES
+    protected var fullscreenElementImpl: NativeImpl<*>? = null
     protected var activeTitleBar: TitleBar? = null
     protected var attachedMenuBar: MenuBarNativeImpl<*>? = null
     protected var attachedNavBar: NativeImpl<*>? = null
@@ -83,6 +89,16 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
 
     internal fun unregisterOwnedDockWindow(dockWindow: DesktopDockWindowNativeImpl<*>) {
         ownedDockWindows.remove(dockWindow)
+    }
+
+    internal fun registerOwnedDialogWindow(dialogWindow: DesktopDialogWindowNativeImpl<*>) {
+        if (dialogWindow !in _ownedDialogWindows) {
+            _ownedDialogWindows.add(dialogWindow)
+        }
+    }
+
+    internal fun unregisterOwnedDialogWindow(dialogWindow: DesktopDialogWindowNativeImpl<*>) {
+        _ownedDialogWindows.remove(dialogWindow)
     }
 
     override fun configureAsToolModalWindow(
@@ -122,6 +138,11 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
                 dockWin.bringToFront()
             }
         }
+        for (dialogWin in _ownedDialogWindows.toList()) {
+            if (dialogWin.isVisible()) {
+                dialogWin.bringToFront()
+            }
+        }
     }
 
     override fun setTitle(title: String) {
@@ -131,13 +152,36 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
 
     override fun getTitle(): String = windowTitle
 
+    override fun getMinWindowSize(): Size? = minWindowSizeState
+
+    override fun setMinWindowSize(minSize: Size?) {
+        minWindowSizeState = minSize
+        if (minSize != null) {
+            nativeWidget.attributes["minWidthPx"] = minSize.width
+            nativeWidget.attributes["minHeightPx"] = minSize.height
+            val cur = getWindowSize()
+            if (cur.width < minSize.width || cur.height < minSize.height) {
+                setWindowSize(Size(maxOf(cur.width, minSize.width), maxOf(cur.height, minSize.height)))
+            }
+        } else {
+            nativeWidget.attributes.remove("minWidthPx")
+            nativeWidget.attributes.remove("minHeightPx")
+        }
+    }
+
     override fun setWindowSize(size: Size) {
-        currentWindowSize = size
-        nativeWidget.bounds = Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, size.width, size.height)
+        val minSize = minWindowSizeState
+        val clamped = if (minSize != null) {
+            Size(maxOf(size.width, minSize.width), maxOf(size.height, minSize.height))
+        } else {
+            size
+        }
+        currentWindowSize = clamped
+        nativeWidget.bounds = Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, clamped.width, clamped.height)
         onWindowResizeListener?.invoke(
             WindowConfiguration(
-                widthPx = size.width.toInt(),
-                heightPx = size.height.toInt(),
+                widthPx = clamped.width,
+                heightPx = clamped.height,
                 windowState = currentWindowState,
                 isFullscreen = fullscreenFlag,
                 isInPictureInPicture = inPipMode
@@ -158,11 +202,27 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
         fullscreenFlag = fullscreen
         cutoutModeState = cutoutMode
+        if (!fullscreen) {
+            fullscreenElementImpl = null
+            nativeWidget.attributes.remove("fullscreenElement")
+        }
         currentWindowState = if (fullscreen) WindowState.FULLSCREEN else WindowState.NORMAL
         nativeWidget.attributes["fullscreen"] = fullscreen
     }
 
     override fun isFullscreen(): Boolean = fullscreenFlag
+
+    override fun setFullscreenElement(elementImpl: NativeImpl<*>?, cutoutMode: DisplayCutoutMode) {
+        fullscreenElementImpl = elementImpl
+        if (elementImpl != null) {
+            nativeWidget.attributes["fullscreenElement"] = elementImpl.nativeWidget
+        } else {
+            nativeWidget.attributes.remove("fullscreenElement")
+        }
+        setFullscreen(elementImpl != null, cutoutMode)
+    }
+
+    override fun getFullscreenElement(): NativeImpl<*>? = fullscreenElementImpl
 
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         activeTitleBar?.let { prev ->
@@ -263,6 +323,10 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
             ownerWindow = null
             ownedToolWindows.clear()
             ownedDockWindows.clear()
+            for (dialogWin in _ownedDialogWindows.toList()) {
+                dialogWin.closeDialog()
+            }
+            _ownedDialogWindows.clear()
             dispose()
         }
     }

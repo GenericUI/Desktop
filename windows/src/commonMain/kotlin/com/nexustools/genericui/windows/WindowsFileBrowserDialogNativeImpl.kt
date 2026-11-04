@@ -74,7 +74,8 @@ class WindowsFileBrowserDialogNativeImpl : DesktopFileBrowserDialogNativeImpl(
                     hwndOwner = Win32NativeWindowHost.activeHwnd,
                     title = request.title.ifBlank { if (isSave) "Save File" else "Open File" },
                     suggestedFileName = request.suggestedFileName,
-                    isSave = isSave
+                    isSave = isSave,
+                    request = request
                 )
                 if (!chosenFile.isNullOrBlank()) {
                     val fileName = chosenFile.substringAfterLast('\\').substringAfterLast('/').ifEmpty { chosenFile }
@@ -103,18 +104,45 @@ class WindowsFileBrowserDialogNativeImpl : DesktopFileBrowserDialogNativeImpl(
         hwndOwner: HWND?,
         title: String,
         suggestedFileName: String?,
-        isSave: Boolean
+        isSave: Boolean,
+        request: FileBrowserRequest
     ): String? = memScoped {
         val fileBuf = allocArray<WCHARVar>(MAX_PATH)
         val initial = suggestedFileName?.trim().orEmpty()
         for (i in 0 until minOf(initial.length, MAX_PATH - 1)) {
             fileBuf[i] = initial[i].code.toUShort()
         }
+        val filterSpecs = DesktopFileBrowserHelper.buildWin32FilterSpecs(request.filters)
+            .ifEmpty { listOf("All Files (*.*)" to "*.*") }
+        val filterStr = buildString {
+            for ((desc, pattern) in filterSpecs) {
+                append(desc)
+                append('\u0000')
+                append(pattern)
+                append('\u0000')
+            }
+            append('\u0000')
+        }
+        val filterWChars = allocArray<WCHARVar>(filterStr.length + 1)
+        for (i in filterStr.indices) {
+            filterWChars[i] = filterStr[i].code.toUShort()
+        }
+        val defaultExt = request.filters.firstOrNull()?.extensions?.firstOrNull()
+            ?.trim()
+            ?.removePrefix("*.")
+            ?.removePrefix(".")
+            ?.takeIf { it.isNotEmpty() && it != "*" }
+
         val ofn = alloc<OPENFILENAMEW>()
         ofn.lStructSize = sizeOf<OPENFILENAMEW>().toUInt()
         ofn.hwndOwner = hwndOwner
         ofn.lpstrFile = fileBuf
         ofn.nMaxFile = MAX_PATH.toUInt()
+        ofn.lpstrFilter = filterWChars
+        ofn.nFilterIndex = 1u
+        if (defaultExt != null) {
+            ofn.lpstrDefExt = defaultExt.wcstr.ptr
+        }
         ofn.lpstrTitle = title.wcstr.ptr
         ofn.Flags = (if (isSave) {
             OFN_OVERWRITEPROMPT or OFN_PATHMUSTEXIST or OFN_NOCHANGEDIR

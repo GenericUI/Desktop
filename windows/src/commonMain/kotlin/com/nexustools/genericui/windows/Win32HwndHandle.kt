@@ -26,6 +26,7 @@ class Win32HwndHandle(
         const val WS_THICKFRAME: Long = 0x00040000L
         const val WS_MINIMIZEBOX: Long = 0x00020000L
         const val WS_MAXIMIZEBOX: Long = 0x00010000L
+        const val WS_EX_DLGMODALFRAME: Long = 0x00000001L
         const val WS_EX_TOOLWINDOW: Long = 0x00000080L
         const val WS_EX_TOPMOST: Long = 0x00000008L
         const val WS_EX_NOREDIRECTIONBITMAP: Long = 0x00200000L

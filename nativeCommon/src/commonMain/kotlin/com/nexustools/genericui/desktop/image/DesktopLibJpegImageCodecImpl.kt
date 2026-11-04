@@ -73,6 +73,7 @@ open class DesktopLibJpegImageCodecImpl(
             ImageFormat.JPEG -> LibJpegCodec.probeJpegMetadata(bytes)
             ImageFormat.PNG -> LibPngCodec.probePngMetadata(bytes)
             ImageFormat.WEBP -> LibWebpCodec.probeWebpMetadata(bytes)
+            ImageFormat.SVG -> ImageMetadata(width = 48, height = 48, format = ImageFormat.SVG)
             else -> null
         }
     }
@@ -87,6 +88,10 @@ open class DesktopLibJpegImageCodecImpl(
             ImageFormat.JPEG -> LibJpegCodec.decode(bytes)
             ImageFormat.PNG -> LibPngCodec.decode(bytes)
             ImageFormat.WEBP -> LibWebpCodec.decode(bytes)
+            ImageFormat.SVG -> ImageLoader.createDefaultPlaceholderBuffer(
+                width = options.targetWidth ?: 48,
+                height = options.targetHeight ?: 48
+            )
             else -> null
         }
     }

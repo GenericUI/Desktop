@@ -1,7 +1,9 @@
 package com.nexustools.genericui.windows
 
+import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
+import com.nexustools.genericui.enums.window.DisplayCutoutMode
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.window.TitleBar
 import com.nexustools.genericui.window.TitleCapabilities
@@ -111,6 +113,38 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         menuBarRendersAsNavbar = false,
         menuBarMergesIntoTitleNavbar = false
     )
+
+    override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
+        super.setFullscreen(fullscreen, cutoutMode)
+        if (!fullscreen) {
+            nativeWidget.attributes.remove("fullscreenElement")
+        }
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
+            Win32NativeWindowHost.setWindowFullscreen(
+                windowImpl = this,
+                fullscreen = fullscreen,
+                targetElementWidget = if (fullscreen) getFullscreenElement()?.nativeWidget as? DesktopNativeWidget else null
+            )
+        }
+    }
+
+    override fun setFullscreenElement(elementImpl: NativeImpl<*>?, cutoutMode: DisplayCutoutMode) {
+        super.setFullscreenElement(elementImpl, cutoutMode)
+        val fullscreen = elementImpl != null
+        val targetWidget = elementImpl?.nativeWidget as? DesktopNativeWidget
+        if (fullscreen && targetWidget != null) {
+            nativeWidget.attributes["fullscreenElement"] = targetWidget
+        } else {
+            nativeWidget.attributes.remove("fullscreenElement")
+        }
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
+            Win32NativeWindowHost.setWindowFullscreen(
+                windowImpl = this,
+                fullscreen = fullscreen,
+                targetElementWidget = targetWidget
+            )
+        }
+    }
 
     override fun showWindow() {
         super.showWindow()

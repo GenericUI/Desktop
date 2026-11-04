@@ -22,7 +22,7 @@ class WindowsPreferenceStoreImpl(
 
     val configDir: ConfigDirectory = ConfigDirectory(
         appName = appName,
-        nativeImplOverride = WindowsConfigDirectoryImpl(appName)
+        factory = WindowsNativeFactory()
     )
 
     val configDirectory: String

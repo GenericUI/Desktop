@@ -19,7 +19,7 @@ import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.style.css.CssCustomCursor
 import com.nexustools.genericui.style.css.CssLength
-import com.nexustools.genericui.style.gradient.Gradient
+import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.style.mapper.BootstrapClassMapper
 import com.nexustools.genericui.style.mapper.BootstrapStyleSnapshot
 import com.nexustools.genericui.style.transition.CssTransitionSpec
@@ -53,6 +53,12 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     private var focusedState: Boolean = false
     private var activePressedState: Boolean = false
 
+    var antialiasing: Boolean = true
+        set(value) {
+            field = value
+            nativeWidget.attributes["antialiasing"] = value
+        }
+
     protected var onClickListener: (() -> Unit)? = null
     protected var onDoubleClickListener: (() -> Unit)? = null
     protected var onContextMenuListener: ((PointerEvent) -> Unit)? = null
@@ -67,7 +73,13 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     init {
         nativeWidget.attributes["nativeImpl"] = this
+        nativeWidget.attributes["antialiasing"] = antialiasing
         syncStyleToNativeWidget()
+        nativeWidget.rebuildClassTokensCache(componentClassPrefix)
+    }
+
+    protected fun notifyTreeInvalidated() {
+        nativeWidget.notifyTreeInvalidated()
     }
 
     fun hasClickListener(): Boolean = onClickListener != null
@@ -83,6 +95,9 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes.remove(name)
         } else {
             nativeWidget.attributes[name] = value
+        }
+        if (name == "class" || name == "bootstrapClass") {
+            nativeWidget.rebuildClassTokensCache(componentClassPrefix)
         }
     }
 
@@ -105,6 +120,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     }
 
     fun dispatchPointerEnter(event: PointerEvent = PointerEvent()) {
+        if (!nativeWidget.enabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
         setHoveredState(true)
         onPointerEnterListener?.invoke(event)
     }
@@ -173,10 +189,12 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         } else {
             nativeWidget.attributes.remove("visibilityHidden")
         }
+        nativeWidget.rebuildClassTokensCache(componentClassPrefix)
     }
 
     protected open fun onStyleChanged() {
         syncStyleToNativeWidget()
+        nativeWidget.notifyTreeInvalidated()
     }
 
     open fun requestRepaintNative() {
@@ -500,13 +518,27 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     // -------------------------------------------------------------------------
 
     override fun setVisible(visible: Boolean) {
-        nativeWidget.visible = visible
+        if (nativeWidget.visible != visible) {
+            nativeWidget.visible = visible
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun isVisible(): Boolean = nativeWidget.visible
 
     override fun setEnabled(enabled: Boolean) {
-        nativeWidget.enabled = enabled
+        if (!enabled) {
+            hoveredState = false
+            focusedState = false
+            activePressedState = false
+            nativeWidget.attributes["hovered"] = false
+            nativeWidget.attributes["focused"] = false
+            nativeWidget.attributes["activePressed"] = false
+        }
+        if (nativeWidget.enabled != enabled) {
+            nativeWidget.enabled = enabled
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun isEnabled(): Boolean = nativeWidget.enabled
@@ -683,22 +715,25 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             ?: lastComputedStyle?.backgroundGradient
 
     override fun setHoveredState(hovered: Boolean) {
-        hoveredState = hovered
-        nativeWidget.attributes["hovered"] = hovered
+        val effective = hovered && nativeWidget.enabled
+        hoveredState = effective
+        nativeWidget.attributes["hovered"] = effective
     }
 
     override fun isHoveredState(): Boolean = hoveredState
 
     override fun setFocusedState(focused: Boolean) {
-        focusedState = focused
-        nativeWidget.attributes["focused"] = focused
+        val effective = focused && nativeWidget.enabled
+        focusedState = effective
+        nativeWidget.attributes["focused"] = effective
     }
 
     override fun isFocusedState(): Boolean = focusedState
 
     override fun setActivePressedState(active: Boolean) {
-        activePressedState = active
-        nativeWidget.attributes["activePressed"] = active
+        val effective = active && nativeWidget.enabled
+        activePressedState = effective
+        nativeWidget.attributes["activePressed"] = effective
     }
 
     override fun isActivePressedState(): Boolean = activePressedState

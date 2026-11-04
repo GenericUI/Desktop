@@ -17,6 +17,7 @@ kotlin {
         }
         jvmMain.dependencies {
             implementation(libs.kotlinx.coroutinesSwing)
+            implementation(libs.sqlite.jdbc)
 
             // Optional LWJGL OpenGL ES / OpenGL dependencies for GLCanvas on Java/Swing
             // Downstream projects opt in via the GenericUI Gradle Plugin (`useLwjglGL = true`) or explicit runtime dependencies

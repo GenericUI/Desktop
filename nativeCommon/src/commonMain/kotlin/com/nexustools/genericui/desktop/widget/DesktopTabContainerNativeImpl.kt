@@ -32,7 +32,17 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
     override fun addTabNative(tabImpl: TabNativeImpl<*>, contentImpl: NativeImpl<*>, index: Int) {
         val desktopTab = tabImpl as? DesktopTabNativeImpl<*>
         val title = desktopTab?.titleVal ?: ""
-        if (index < 0 || index >= tabTitles.size) {
+        val existingIdx = tabImpls.indexOfFirst { it === tabImpl }
+        if (existingIdx >= 0) {
+            tabTitles[existingIdx] = title
+            if (index in 0 until tabImpls.size && existingIdx != index) {
+                val movedImpl = tabImpls.removeAt(existingIdx)
+                val movedTitle = tabTitles.removeAt(existingIdx)
+                val targetIdx = index.coerceIn(0, tabImpls.size)
+                tabImpls.add(targetIdx, movedImpl)
+                tabTitles.add(targetIdx, movedTitle)
+            }
+        } else if (index < 0 || index >= tabTitles.size) {
             tabImpls.add(tabImpl)
             tabTitles.add(title)
         } else {
@@ -40,10 +50,13 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
             tabTitles.add(index, title)
         }
         val tabWidget = tabImpl.nativeWidget as? DesktopNativeWidget
-        if (tabWidget != null) {
-            nativeWidget.addChildWidget(tabWidget, index)
+        if (tabWidget != null && !nativeWidget.children.contains(tabWidget)) {
+            nativeWidget.addChildWidget(tabWidget, -1)
         }
-        addChildNative(contentImpl, index)
+        val contentWidget = contentImpl.nativeWidget as? DesktopNativeWidget
+        if (contentWidget == null || !nativeWidget.children.contains(contentWidget)) {
+            addChildNative(contentImpl, -1)
+        }
     }
 
     override fun addTabNative(title: String, contentImpl: NativeImpl<*>, index: Int) {
@@ -54,7 +67,10 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
             tabImpls.add(index, null)
             tabTitles.add(index, title)
         }
-        addChildNative(contentImpl, index)
+        val contentWidget = contentImpl.nativeWidget as? DesktopNativeWidget
+        if (contentWidget == null || !nativeWidget.children.contains(contentWidget)) {
+            addChildNative(contentImpl, -1)
+        }
     }
 
     override fun updateTabNative(index: Int, tabImpl: TabNativeImpl<*>) {
@@ -72,9 +88,6 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
                 nativeWidget.removeChildWidget(removedTabWidget)
             }
             tabTitles.removeAt(index)
-            if (index in childImpls.indices) {
-                removeChildNative(childImpls[index])
-            }
             selectedIndexVal = selectedIndexVal.coerceIn(0, (tabTitles.size - 1).coerceAtLeast(0))
         }
     }
@@ -90,6 +103,8 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
         tabPositionVal = position
         nativeWidget.attributes["tabPosition"] = position.name
     }
+
+    fun getTabPosition(): TabPosition = tabPositionVal
 
     override fun setTabBarStyleNative(style: TabBarStyle) {
         tabBarStyleVal = style
@@ -117,6 +132,8 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
     override fun setOnTabCloseRequested(listener: ((Int) -> Boolean)?) {
         onTabCloseRequestedListener = listener
     }
+
+    fun getTabImpls(): List<TabNativeImpl<*>?> = tabImpls.toList()
 
     fun getTabTitles(): List<String> = tabTitles.toList()
 

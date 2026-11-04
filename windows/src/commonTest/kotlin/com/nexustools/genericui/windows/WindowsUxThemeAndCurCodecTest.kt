@@ -70,7 +70,7 @@ class WindowsUxThemeAndCurCodecTest {
     @Test
     fun testDesktopBaseNativeImplUserCssClassIsolationHidesBootstrapEnumClasses() {
         GenericUI.initialize(WindowsNativeFactory())
-        val window = Window("Test Window").apply { show() }
+        val window = Window("Test Window")
 
         val button = Button("Delete Item")
         button.getBootstrap().apply {
@@ -81,6 +81,7 @@ class WindowsUxThemeAndCurCodecTest {
             marginX = SpacingScale.AUTO
         }
         window.addChild(button)
+        window.show()
 
         val impl = button.ensureNativeImpl() as DesktopBaseNativeImpl<*>
 
@@ -121,10 +122,11 @@ class WindowsUxThemeAndCurCodecTest {
         try {
             val factory = WindowsNativeFactory()
             GenericUI.initialize(factory)
-            val window = Window("Test Window").apply { show() }
+            val window = Window("Test Window")
 
             val unstyledBtn = Button("System Default")
             window.addChild(unstyledBtn)
+            window.show()
             val unstyledImpl = unstyledBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>
             assertTrue(Win32NativeWindowHost.usesNativeSystemControlRendering(unstyledImpl.nativeWidget))
             assertEquals("Explorer::BUTTON", Win32NativeWindowHost.resolveButtonThemeClassList(darkTheme = false))
@@ -162,18 +164,18 @@ class WindowsUxThemeAndCurCodecTest {
             assertEquals(18, dangerImpl.getEffectivePaddingInsets().left)
 
             // ThemeMode.AUTO detection
-            val app = Application()
+            val app = Application(com.nexustools.genericui.component.layout.Container("div"))
             app.run(factory)
             val appImpl = app.appNativeImpl as WindowsApplicationNativeImpl
             SystemThemeDetector.overrideDetectedTheme = ThemeMode.DARK
-            app.setTheme(ThemeMode.AUTO)
-            assertEquals(ThemeMode.AUTO, app.getTheme())
+            app.setThemeMode(ThemeMode.AUTO)
+            assertEquals(ThemeMode.AUTO, app.getThemeMode())
             assertEquals(ThemeMode.DARK, app.getResolvedTheme())
             assertEquals(true, appImpl.nativeApplication.attributes["dwmUseImmersiveDarkMode"])
             assertTrue(Win32NativeWindowHost.isWindowsSystemDarkTheme())
 
             SystemThemeDetector.overrideDetectedTheme = ThemeMode.LIGHT
-            app.setTheme(ThemeMode.AUTO)
+            app.setThemeMode(ThemeMode.AUTO)
             assertEquals(ThemeMode.LIGHT, app.getResolvedTheme())
             assertEquals(false, appImpl.nativeApplication.attributes["dwmUseImmersiveDarkMode"])
             assertFalse(Win32NativeWindowHost.isWindowsSystemDarkTheme())

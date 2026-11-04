@@ -21,15 +21,19 @@ open class DesktopBottomNavigationBarNativeImpl<out W : DesktopNativeWidget>(
         if (selectedId == null && items.isNotEmpty()) {
             selectedId = items.first().first
         }
+        notifyTreeInvalidated()
     }
 
     override fun setSelectedItemId(itemId: String) {
         if (selectedId != itemId) {
             selectedId = itemId
             nativeWidget.attributes["selectedItemId"] = itemId
+            notifyTreeInvalidated()
             onItemSelectedListener?.invoke(itemId)
         }
     }
+
+    fun getItems(): List<Triple<String, String, String?>> = itemsList
 
     override fun getSelectedItemId(): String? = selectedId
 

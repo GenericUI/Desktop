@@ -13,7 +13,7 @@ import platform.posix.getenv
  */
 class MacosApplicationNativeImpl :
     DesktopApplicationNativeImpl<MacosViewHandle>(
-        nativeApplication = MacosViewHandle(nsClassName = "NSApplication")
+        nativeApplication = MacosViewHandle(objcClassName = "NSApplication")
     ) {
 
     init {

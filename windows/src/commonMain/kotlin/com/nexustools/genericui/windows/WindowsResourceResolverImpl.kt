@@ -2,6 +2,10 @@
 
 package com.nexustools.genericui.windows
 
+import com.nexustools.genericui.io.ByteBuffer
+import com.nexustools.genericui.io.Readable
+import com.nexustools.genericui.io.ReadableByteBuffer
+import com.nexustools.genericui.res.Resources
 import com.nexustools.genericui.resources.DefaultResourceResolverNativeImpl
 import com.nexustools.genericui.resources.ResourceID
 import kotlinx.cinterop.ByteVar
@@ -33,6 +37,20 @@ class WindowsResourceResolverImpl : DefaultResourceResolverNativeImpl() {
             return "rc://${resId.win32ResourceId}/${resId.name}"
         }
         return super.resolveUrl(resId)
+    }
+
+    override suspend fun openResourceStream(resId: ResourceID): Readable? {
+        val rawBytes = resolveBytes(resId)
+        if (rawBytes != null) {
+            return ReadableByteBuffer(ByteBuffer.wrap(rawBytes))
+        }
+        val rawText = Resources.activeTable.getRawText(resId)
+            ?: Resources.activeTable.getStringOrNull(resId)
+            ?: Resources.activeTable.getDrawable(resId)?.svgSource
+        if (rawText != null) {
+            return ReadableByteBuffer(ByteBuffer.wrap(rawText.encodeToByteArray()))
+        }
+        return null
     }
 
     private fun hasEmbeddedWin32Resource(win32Id: Int): Boolean = try {

@@ -7,9 +7,10 @@ import javax.swing.JComponent
 /**
  * Java Swing `JButton` implementation of [ButtonNativeImpl].
  */
-class SwingButtonImpl(
-    classPrefix: String = "btn"
-) : SwingBaseNativeImpl(JButton(), classPrefix), ButtonNativeImpl<JComponent> {
+open class SwingButtonImpl(
+    classPrefix: String = "btn",
+    button: JButton = JButton()
+) : SwingBaseNativeImpl(button, classPrefix), ButtonNativeImpl<JComponent> {
     override val nativeWidget: JButton = super.nativeWidget as JButton
     private var iconVal: String? = null
 

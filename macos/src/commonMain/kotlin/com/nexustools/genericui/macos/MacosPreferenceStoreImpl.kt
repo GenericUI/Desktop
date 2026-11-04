@@ -22,7 +22,7 @@ class MacosPreferenceStoreImpl(
 
     val configDir: ConfigDirectory = ConfigDirectory(
         appName = appName,
-        nativeImplOverride = MacosConfigDirectoryImpl(appName)
+        factory = MacosNativeFactory()
     )
 
     val configDirectory: String

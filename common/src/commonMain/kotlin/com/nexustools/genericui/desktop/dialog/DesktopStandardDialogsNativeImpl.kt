@@ -3,7 +3,7 @@ package com.nexustools.genericui.desktop.dialog
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.nativeimpl.dialog.StandardDialogsNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
-import com.nexustools.genericui.style.RgbaColor
+import com.nexustools.genericui.style.color.RgbaColor
 
 /**
  * Shared desktop base implementation of [StandardDialogsNativeImpl] for native OS message boxes,

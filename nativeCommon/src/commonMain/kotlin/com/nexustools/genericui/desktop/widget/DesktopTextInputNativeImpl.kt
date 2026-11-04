@@ -20,10 +20,17 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
     protected var onValueChangedListener: ((String) -> Unit)? = null
     protected var onSubmitListener: ((String) -> Unit)? = null
 
+    init {
+        if (multiline) {
+            nativeWidget.attributes["multiline"] = true
+        }
+    }
+
     override fun setValue(value: String) {
         if (textValue != value) {
             textValue = value
             nativeWidget.attributes["value"] = value
+            nativeWidget.notifyTreeInvalidated()
             onValueChangedListener?.invoke(value)
         }
     }
@@ -42,15 +49,21 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["readOnly"] = readOnly
     }
 
+    fun isReadOnly(): Boolean = readOnlyState
+
     override fun setPasswordMode(password: Boolean) {
         passwordModeState = password
         nativeWidget.attributes["passwordMode"] = password
     }
 
+    fun isPasswordMode(): Boolean = passwordModeState
+
     override fun setMultiline(multiline: Boolean) {
         multilineState = multiline
         nativeWidget.attributes["multiline"] = multiline
     }
+
+    fun isMultiline(): Boolean = multilineState
 
     override fun setOnValueChanged(listener: ((String) -> Unit)?) {
         onValueChangedListener = listener

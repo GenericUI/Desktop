@@ -16,6 +16,7 @@ open class DesktopNavbarNativeImpl<out W : DesktopNativeWidget>(
     override fun setBrandTitle(title: String) {
         brandTitleText = title
         nativeWidget.attributes["brandTitle"] = title
+        notifyTreeInvalidated()
     }
 
     override fun getBrandTitle(): String = brandTitleText

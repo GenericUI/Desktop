@@ -17,21 +17,26 @@ import com.nexustools.genericui.desktop.widget.DesktopProgressBarNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopRangeSliderNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopSelectNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopStyledButtonNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTabContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
+import com.nexustools.genericui.enums.css.CssBorderStyle
 import com.nexustools.genericui.enums.css.CssCursor
 import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.event.KeyEvent
+import com.nexustools.genericui.event.PointerDragManager
 import com.nexustools.genericui.event.PointerEvent
 import com.nexustools.genericui.event.WheelEvent
+import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.res.Resources
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssCustomCursor
-import com.nexustools.genericui.style.gradient.Gradient
+import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.window.TitleBar
 import kotlinx.cinterop.*
@@ -55,6 +60,15 @@ object Win32NativeWindowHost {
     val panelHwnds: MutableMap<DesktopDockPanelNativeImpl<*>, HWND> = mutableMapOf()
     private val hwndToPanel: MutableMap<Long, DesktopDockPanelNativeImpl<*>> = mutableMapOf()
 
+    val dialogHwnds: MutableMap<DesktopDialogWindowNativeImpl<*>, HWND> = mutableMapOf()
+    private val hwndToDialog: MutableMap<Long, DesktopDialogWindowNativeImpl<*>> = mutableMapOf()
+
+    fun isDialogWindow(hwnd: HWND?): Boolean =
+        hwnd != null && hwndToDialog.containsKey(hwnd.toLong())
+
+    fun getDialogForHwnd(hwnd: HWND?): DesktopDialogWindowNativeImpl<*>? =
+        if (hwnd != null) hwndToDialog[hwnd.toLong()] else null
+
     fun isPanelToolWindow(hwnd: HWND?): Boolean =
         hwnd != null && (
             hwndToPanel.containsKey(hwnd.toLong()) ||
@@ -63,6 +77,7 @@ object Win32NativeWindowHost {
 
     fun hasCustomMainWindowTitleBar(): Boolean {
         val winImpl = activeWindowImpl ?: return false
+        if (activeFullscreenElementWidget != null || winImpl.isFullscreen()) return false
         if (winImpl.isToolModalWindow) return true
         val tb = winImpl.getTitleBarInstructions() ?: return false
         return tb.customTitleBar ||
@@ -130,7 +145,7 @@ object Win32NativeWindowHost {
     private val shortcutCommandHandlers = mutableMapOf<String, () -> Unit>()
     private var nextMenuCommandId = 1001
 
-    private class HitRegion(
+    internal class HitRegion(
         val left: Int,
         val top: Int,
         val right: Int,
@@ -139,12 +154,13 @@ object Win32NativeWindowHost {
         val widget: DesktopNativeWidget? = null,
         val isTextInput: Boolean = false,
         val onClick: ((mouseX: Int, mouseY: Int) -> Unit)? = null,
-        val onDrag: ((mouseX: Int, mouseY: Int) -> Unit)? = null
+        val onDrag: ((mouseX: Int, mouseY: Int) -> Unit)? = null,
+        val onRelease: ((mouseX: Int, mouseY: Int) -> Unit)? = null
     ) {
         fun contains(x: Int, y: Int): Boolean = x in left..right && y in top..bottom
     }
 
-    private class SystemThemePalette(
+    internal class SystemThemePalette(
         val isDark: Boolean,
         val bgBase: UInt,
         val bgPanel: UInt,
@@ -234,22 +250,134 @@ object Win32NativeWindowHost {
     private val hitRegions: MutableList<HitRegion>
         get() = hitRegionsByHwnd.getOrPut(currentPaintHwndKey) { mutableListOf() }
 
+    internal fun addHitRegion(region: HitRegion) {
+        hitRegions.add(region)
+    }
+
+    internal fun removeHitRegionsInRect(left: Int, top: Int, right: Int, bottom: Int) {
+        hitRegions.removeAll { r ->
+            r.left >= left - 4 && r.right <= right + 4 && r.top >= top - 4 && r.bottom <= bottom + 4
+        }
+    }
+
+    private var isPaintingWindow: Boolean = false
+    private var isDispatchingVBlank: Boolean = false
+    private var vblankTreeInvalidated: Boolean = false
+    private var isVBlankVideoStageOnlyRepaint: Boolean = false
+    internal var gdiDirtySinceLastFlush: Boolean = true
     private var activeDragRegion: HitRegion? = null
+    private var mouseDownX: Int = 0
+    private var mouseDownY: Int = 0
+    private var dragMouseMovedSinceDown: Boolean = false
+
+    internal fun isOverlayDragActive(): Boolean =
+        activeDragRegion != null || PointerDragManager.isDragging
     private var hoveredHitRegion: HitRegion? = null
-    private var hoveredWidget: DesktopNativeWidget? = null
-    private var pressedWidget: DesktopNativeWidget? = null
-    private var focusedWidget: DesktopNativeWidget? = null
+    internal var hoveredWidget: DesktopNativeWidget? = null
+        private set
+    internal var pressedWidget: DesktopNativeWidget? = null
+        private set
+    internal var focusedWidget: DesktopNativeWidget? = null
+        private set
     private var focusedTextInput: DesktopTextInputNativeImpl<*>? = null
     private var activeLazyGridImpl: DesktopLazyGridNativeImpl<*>? = null
     private var hoveredTooltip: String? = null
-    private var hoverMouseX: Int = 0
-    private var hoverMouseY: Int = 0
+    internal var hoverMouseX: Int = 0
+        private set
+    internal var hoverMouseY: Int = 0
+        private set
     private var hoverHwndKey: Long = 0L
     private var canvasViewportRect: IntArray = intArrayOf(-1, -1, -1, -1)
     private var activeCanvasImpl: DesktopBaseNativeImpl<*>? = null
     private var activeCanvasSurfaceSize: Pair<Int, Int> = 320 to 240
     private var isDraggingCanvas: Boolean = false
     private val WHITESPACE_REGEX = Regex("\\s+")
+
+    // Video Stage Pointer Activity & Auto-Hide State
+    internal var lastVideoStageMouseMoveTickMs: Long = 0L
+    internal var isPointerInVideoStage: Boolean = false
+    internal var lastRenderedVideoStageRect: IntArray = intArrayOf(-1, -1, -1, -1)
+    internal var isVideoStageHudAutoHidden: Boolean = false
+    private var mouseLeaveTrackInstalledForHwnd: Long = 0L
+
+    // Element-Level & Window Fullscreen State
+    internal var activeFullscreenElementWidget: DesktopNativeWidget? = null
+    private var isWindowFullscreenActive: Boolean = false
+    private var savedWindowStyle: Int = 0
+    private var savedWindowExStyle: Int = 0
+    private var savedWindowRect: IntArray = intArrayOf(80, 50, 1280, 800)
+
+    internal class NativeEditControlEntry(
+        val parentHwnd: HWND,
+        var childHwnd: HWND? = null,
+        val commandId: Int,
+        var inputImpl: DesktopTextInputNativeImpl<*>,
+        var widget: DesktopNativeWidget,
+        var desiredLeft: Int = 0,
+        var desiredTop: Int = 0,
+        var desiredWidth: Int = 100,
+        var desiredHeight: Int = 20,
+        var desiredFont: HFONT? = null,
+        var desiredDarkTheme: Boolean = true,
+        var left: Int = -1,
+        var top: Int = -1,
+        var width: Int = -1,
+        var height: Int = -1,
+        var visible: Boolean = false,
+        var lastPlaceholder: String = "",
+        var lastDarkTheme: Boolean? = null,
+        var visitedThisFrame: Boolean = false
+    )
+
+    private val nativeEditEntriesByWidget = mutableMapOf<Pair<Long, DesktopNativeWidget>, NativeEditControlEntry>()
+    private val nativeEditEntriesByChildHwnd = mutableMapOf<Long, NativeEditControlEntry>()
+    private val origEditWndProcByChildHwnd = mutableMapOf<Long, Long>()
+    private var nextEditControlCommandId = 30001
+    private var isSyncingFromNativeEdit = false
+    private var editBgBrushDark: HBRUSH? = null
+    private var editBgBrushLight: HBRUSH? = null
+
+    init {
+        DesktopNativeWidget.onNativeTreeInvalidated = {
+            if (isDispatchingVBlank) {
+                vblankTreeInvalidated = true
+            } else if (!isPaintingWindow && !isSyncingFromNativeEdit) {
+                syncActiveDialogWindows()
+                invalidateAllWindows()
+            }
+        }
+        DesktopNativeWidget.overlayInvalidationListener = { _ ->
+            if (isDispatchingVBlank) {
+                vblankTreeInvalidated = true
+            } else if (!isPaintingWindow && !isSyncingFromNativeEdit) {
+                markAllVideoStagesDirty()
+            }
+        }
+        DesktopDialogWindowNativeImpl.onShowDialogHook = { dialog, _ ->
+            syncActiveDialogWindows()
+            dialogHwnds[dialog]?.let { dHwnd ->
+                if (IsWindow(dHwnd) != 0) {
+                    BringWindowToTop(dHwnd)
+                    SetForegroundWindow(dHwnd)
+                    InvalidateRect(dHwnd, null, 1)
+                    UpdateWindow(dHwnd)
+                }
+            }
+            invalidateAllWindows()
+        }
+        DesktopDialogWindowNativeImpl.onCloseDialogHook = { dialog ->
+            closeNativeDialogWindow(dialog)
+            invalidateAllWindows()
+        }
+        DesktopDialogWindowNativeImpl.onTitleChangedHook = { dialog, title ->
+            dialogHwnds[dialog]?.let { dHwnd ->
+                if (IsWindow(dHwnd) != 0) {
+                    SetWindowTextW(dHwnd, title.ifBlank { "Dialog" })
+                    InvalidateRect(dHwnd, null, 0)
+                }
+            }
+        }
+    }
 
     private var cachedSystemDarkTheme: Boolean? = null
     var forcedThemeMode: ThemeMode = ThemeMode.AUTO
@@ -263,9 +391,94 @@ object Win32NativeWindowHost {
     private var cachedMainMemDc: HDC? = null
     private var cachedMainMemBmp: HBITMAP? = null
     private var cachedMainOldBmp: HGDIOBJ? = null
+    internal var cachedMainBackBufferPixels: CPointer<ByteVar>? = null
+        private set
+    internal var cachedMainBackBufferWidth: Int = 0
+        private set
+    internal var cachedMainBackBufferHeight: Int = 0
+        private set
+    private var activeBackBufferDc: HDC? = null
+    private var activeBackBufferPixels: CPointer<ByteVar>? = null
+    private var activeBackBufferWidth: Int = 0
+    private var activeBackBufferHeight: Int = 0
     private var cachedMainBufferW: Int = 0
     private var cachedMainBufferH: Int = 0
     private var cachedMainBufferHwndKey: Long = 0L
+    private var lastPaintedNonOverlayVersion: Long = -1L
+    private var lastCursorHwndKey: Long = 0L
+    private var lastCursorIdKey: Long = 0L
+
+    private var cachedScaledVideoPixels: ByteArray? = null
+    private var cachedScaledVideoW: Int = 0
+    private var cachedScaledVideoH: Int = 0
+    private var cachedScaledVideoSwapCount: Long = -2L
+    private var cachedScaledVideoWidget: DesktopNativeWidget? = null
+
+    private var cachedCardGridDc: HDC? = null
+    private var cachedCardGridBmp: HBITMAP? = null
+    private var cachedCardGridOldBmp: HGDIOBJ? = null
+    private var cachedCardGridPixels: CPointer<ByteVar>? = null
+    private var cachedCardGridAllocW: Int = 0
+    private var cachedCardGridAllocH: Int = 0
+    private var cachedCardGridWidget: DesktopNativeWidget? = null
+    private var cachedCardGridMutVer: Long = -1L
+    private var cachedCardGridW: Int = 0
+    private var cachedCardGridH: Int = 0
+    private var cachedCardGridDark: Boolean = false
+
+    private var cachedCardPageFrameHwnd: Long = 0L
+    private var cachedCardPageFrameRootVer: Long = -1L
+    private var cachedCardPageFrameW: Int = 0
+    private var cachedCardPageFrameH: Int = 0
+    private var cachedCardPageFrameBodyTop: Int = 0
+    private var cachedCardPageFrameDark: Boolean = false
+    private var cachedCardPageFramePage: DesktopNativeWidget? = null
+    private var cachedCardPageFrameHeaderBottom: Int = 0
+
+    internal fun markVideoStageDirty(hwnd: HWND?) {
+        val targetHwnd = hwnd ?: activeHwnd ?: return
+        if (IsWindow(targetHwnd) == 0) return
+        val vr = lastRenderedVideoStageRect
+        if (vr[2] > vr[0] && vr[3] > vr[1]) {
+            isVBlankVideoStageOnlyRepaint = true
+            memScoped {
+                val stageRect = alloc<RECT>()
+                stageRect.left = vr[0]
+                stageRect.top = vr[1]
+                stageRect.right = vr[2]
+                stageRect.bottom = vr[3]
+                InvalidateRect(targetHwnd, stageRect.ptr, 0)
+            }
+        } else {
+            InvalidateRect(targetHwnd, null, 0)
+        }
+    }
+
+    internal fun markAllVideoStagesDirty() {
+        val hwnd = activeHwnd ?: return
+        markVideoStageDirty(hwnd)
+    }
+
+    internal fun markNonOverlayUiDirty(hwnd: HWND?) {
+        ++DesktopNativeWidget.globalNonOverlayMutationVersion
+        val targetHwnd = hwnd ?: activeHwnd ?: return
+        if (IsWindow(targetHwnd) != 0) {
+            InvalidateRect(targetHwnd, null, 0)
+        }
+    }
+
+    private fun isPointInVideoStage(x: Int, y: Int): Boolean {
+        val vr = lastRenderedVideoStageRect
+        return vr[2] > vr[0] && vr[3] > vr[1] && x in vr[0]..vr[2] && y in vr[1]..vr[3]
+    }
+
+    private fun isHitRegionInVideoStage(region: HitRegion?): Boolean {
+        if (region == null) return false
+        val vr = lastRenderedVideoStageRect
+        if (vr[2] <= vr[0] || vr[3] <= vr[1]) return false
+        return region.left >= vr[0] - 4 && region.right <= vr[2] + 4 &&
+            region.top >= vr[1] - 4 && region.bottom <= vr[3] + 4
+    }
 
     fun invalidateSystemThemeCache() {
         cachedSystemDarkTheme = null
@@ -295,17 +508,118 @@ object Win32NativeWindowHost {
     }
 
     fun onSystemThemeChanged(hwnd: HWND?) {
+        val appsUseLight = WindowsApplicationNativeImpl.queryRegistryAppsUseLightTheme()
+        val detectedSystemTheme = if (appsUseLight) ThemeMode.LIGHT else ThemeMode.DARK
         invalidateSystemThemeCache()
+        cachedSystemDarkTheme = (detectedSystemTheme == ThemeMode.DARK)
+        SystemThemeDetector.notifySystemThemeChanged(detectedSystemTheme)
         val isDark = isWindowsSystemDarkTheme()
         if (hwnd != null) {
+            applyWindowsImmersiveTitleBarTheme(hwnd, isDark)
             Win32DwmUxThemeBridge.clearCachedHwndState(hwnd)
             Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, isDark)
+            InvalidateRect(hwnd, null, 1)
+        }
+        val mainHwnd = activeHwnd
+        if (mainHwnd != null && mainHwnd != hwnd) {
+            applyWindowsImmersiveTitleBarTheme(mainHwnd, isDark)
+            Win32DwmUxThemeBridge.clearCachedHwndState(mainHwnd)
+            Win32DwmUxThemeBridge.setControlWindowTheme(mainHwnd, isDark)
         }
         invalidateAllWindows()
     }
 
+    fun setWindowFullscreen(
+        windowImpl: WindowsWindowNativeImpl,
+        fullscreen: Boolean,
+        targetElementWidget: DesktopNativeWidget?
+    ) {
+        activeFullscreenElementWidget = if (fullscreen) targetElementWidget else null
+        val hwnd = activeHwnd
+        if (hwnd != null && activeWindowImpl === windowImpl && IsWindow(hwnd) != 0) {
+            if (fullscreen) {
+                if (!isWindowFullscreenActive) {
+                    isWindowFullscreenActive = true
+                    savedWindowStyle = GetWindowLongW(hwnd, GWL_STYLE)
+                    savedWindowExStyle = GetWindowLongW(hwnd, GWL_EXSTYLE)
+                    memScoped {
+                        val r = alloc<RECT>()
+                        if (GetWindowRect(hwnd, r.ptr) != 0) {
+                            savedWindowRect = intArrayOf(
+                                r.left,
+                                r.top,
+                                (r.right - r.left).coerceAtLeast(320),
+                                (r.bottom - r.top).coerceAtLeast(240)
+                            )
+                        }
+                    }
+                }
+                memScoped {
+                    val hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST.toUInt())
+                    val mi = alloc<MONITORINFO>()
+                    mi.cbSize = sizeOf<MONITORINFO>().toUInt()
+                    val hasMon = hMon != null && GetMonitorInfoW(hMon, mi.ptr) != 0
+                    val monLeft = if (hasMon) mi.rcMonitor.left else 0
+                    val monTop = if (hasMon) mi.rcMonitor.top else 0
+                    val monW = if (hasMon) (mi.rcMonitor.right - mi.rcMonitor.left).coerceAtLeast(640) else GetSystemMetrics(SM_CXSCREEN).coerceAtLeast(640)
+                    val monH = if (hasMon) (mi.rcMonitor.bottom - mi.rcMonitor.top).coerceAtLeast(480) else GetSystemMetrics(SM_CYSCREEN).coerceAtLeast(480)
+                    val stripMask = (WS_CAPTION or WS_THICKFRAME or WS_MINIMIZEBOX or WS_MAXIMIZEBOX or WS_SYSMENU).inv()
+                    val newStyle = (savedWindowStyle and stripMask) or WS_POPUP.toInt() or WS_VISIBLE
+                    SetWindowLongW(hwnd, GWL_STYLE, newStyle)
+                    Win32DwmUxThemeBridge.extendFrameIntoClientArea(hwnd, 0, 0, 0, 0)
+                    SetWindowPos(
+                        hwnd,
+                        HWND_TOP,
+                        monLeft,
+                        monTop,
+                        monW,
+                        monH,
+                        (SWP_FRAMECHANGED or SWP_SHOWWINDOW).toUInt()
+                    )
+                    InvalidateRect(hwnd, null, 1)
+                    UpdateWindow(hwnd)
+                }
+            } else {
+                activeFullscreenElementWidget = null
+                if (isWindowFullscreenActive) {
+                    isWindowFullscreenActive = false
+                    if (savedWindowStyle != 0) {
+                        SetWindowLongW(hwnd, GWL_STYLE, savedWindowStyle)
+                    }
+                    if (savedWindowExStyle != 0) {
+                        SetWindowLongW(hwnd, GWL_EXSTYLE, savedWindowExStyle)
+                    }
+                    Win32DwmUxThemeBridge.clearCachedHwndState(hwnd)
+                    applyWindowsImmersiveTitleBarTheme(hwnd, isWindowsSystemDarkTheme())
+                    SetWindowPos(
+                        hwnd,
+                        null,
+                        savedWindowRect[0],
+                        savedWindowRect[1],
+                        savedWindowRect[2],
+                        savedWindowRect[3],
+                        (SWP_NOZORDER or SWP_FRAMECHANGED or SWP_SHOWWINDOW).toUInt()
+                    )
+                    onMainWindowTitleBarChanged(windowImpl)
+                    handleWindowResize(hwnd)
+                    InvalidateRect(hwnd, null, 1)
+                    UpdateWindow(hwnd)
+                } else {
+                    handleWindowResize(hwnd)
+                    InvalidateRect(hwnd, null, 1)
+                    UpdateWindow(hwnd)
+                }
+            }
+        }
+    }
+
     private fun resolveAppIcons(hInstance: HINSTANCE?) = memScoped {
         if (appIconBig != null && appIconSmall != null) return@memScoped
+
+        val bigW = GetSystemMetrics(SM_CXICON).coerceAtLeast(32)
+        val bigH = GetSystemMetrics(SM_CYICON).coerceAtLeast(32)
+        val smallW = GetSystemMetrics(SM_CXSMICON).coerceAtLeast(16)
+        val smallH = GetSystemMetrics(SM_CYSMICON).coerceAtLeast(16)
 
         // 1. Try embedded PE icon resource ID 1 (compiled via windres.exe)
         val resName = (1L).toCPointer<UShortVar>()
@@ -313,16 +627,16 @@ object Win32NativeWindowHost {
             hInstance,
             resName,
             IMAGE_ICON.toUInt(),
-            32,
-            32,
+            bigW,
+            bigH,
             0u
         )?.reinterpret()
         var small: HICON? = LoadImageW(
             hInstance,
             resName,
             IMAGE_ICON.toUInt(),
-            16,
-            16,
+            smallW,
+            smallH,
             0u
         )?.reinterpret()
 
@@ -335,9 +649,11 @@ object Win32NativeWindowHost {
             val candidatePaths = buildList {
                 if (exeDir.isNotEmpty()) {
                     add("$exeDir\\icon.ico")
+                    add("$exeDir\\favicon.ico")
                     add("$exeDir\\..\\..\\..\\..\\icon.ico")
                 }
                 add("icon.ico")
+                add("favicon.ico")
             }
             for (path in candidatePaths) {
                 if (big == null) {
@@ -345,8 +661,8 @@ object Win32NativeWindowHost {
                         null,
                         path.wcstr.ptr,
                         IMAGE_ICON.toUInt(),
-                        32,
-                        32,
+                        bigW,
+                        bigH,
                         LR_LOADFROMFILE.toUInt()
                     )?.reinterpret()
                 }
@@ -355,8 +671,8 @@ object Win32NativeWindowHost {
                         null,
                         path.wcstr.ptr,
                         IMAGE_ICON.toUInt(),
-                        16,
-                        16,
+                        smallW,
+                        smallH,
                         LR_LOADFROMFILE.toUInt()
                     )?.reinterpret()
                 }
@@ -374,7 +690,7 @@ object Win32NativeWindowHost {
         appIconSmall = small
     }
 
-    private fun applyWindowsImmersiveTitleBarTheme(hwnd: HWND, dark: Boolean) = memScoped {
+    internal fun applyWindowsImmersiveTitleBarTheme(hwnd: HWND, dark: Boolean) = memScoped {
         val dwmModule = LoadLibraryW("dwmapi.dll") ?: return@memScoped
         val proc = GetProcAddress(dwmModule, "DwmSetWindowAttribute") ?: return@memScoped
         val fn = proc.reinterpret<CFunction<(HWND?, DWORD, CValuesRef<*>?, DWORD) -> HRESULT>>()
@@ -396,7 +712,8 @@ object Win32NativeWindowHost {
         if (modeAttr != null) {
             return modeAttr.contains("MULTI")
         }
-        for (child in rootWidget.children) {
+        val children = runCatching { rootWidget.children.toTypedArray() }.getOrElse { emptyArray() }
+        for (child in children) {
             if (isStudioMultiWindowMode(child)) return true
         }
         return false
@@ -459,7 +776,29 @@ object Win32NativeWindowHost {
         val toolPalettes = mutableListOf<DesktopToolPaletteNativeImpl<*>>()
         val dockPanels = mutableListOf<DesktopDockPanelNativeImpl<*>>()
         val canvases = mutableListOf<DesktopNativeWidget>()
-        collectStudioWidgets(rootWidget, toolPalettes, dockPanels, canvases)
+        if (rootWidget != null) {
+            val mutVer = rootWidget.subtreeMutationVersion
+            if (rootWidget.attributes["cachedStudioWidgetsVer"] as? Long == mutVer) {
+                @Suppress("UNCHECKED_CAST")
+                (rootWidget.attributes["cachedToolPalettes"] as? List<DesktopToolPaletteNativeImpl<*>>)?.let {
+                    toolPalettes.addAll(it)
+                }
+                @Suppress("UNCHECKED_CAST")
+                (rootWidget.attributes["cachedDockPanels"] as? List<DesktopDockPanelNativeImpl<*>>)?.let {
+                    dockPanels.addAll(it)
+                }
+                @Suppress("UNCHECKED_CAST")
+                (rootWidget.attributes["cachedStudioCanvases"] as? List<DesktopNativeWidget>)?.let {
+                    canvases.addAll(it)
+                }
+            } else {
+                collectStudioWidgets(rootWidget, toolPalettes, dockPanels, canvases)
+                rootWidget.attributes["cachedStudioWidgetsVer"] = mutVer
+                rootWidget.attributes["cachedToolPalettes"] = toolPalettes.toList()
+                rootWidget.attributes["cachedDockPanels"] = dockPanels.toList()
+                rootWidget.attributes["cachedStudioCanvases"] = canvases.toList()
+            }
+        }
         val isStudioApp = toolPalettes.isNotEmpty() || dockPanels.isNotEmpty()
         if (!isStudioApp) return
 
@@ -556,6 +895,125 @@ object Win32NativeWindowHost {
                 InvalidateRect(panelHwnd, null, 0)
             }
         }
+        for (dialogHwnd in dialogHwnds.values) {
+            if (IsWindow(dialogHwnd) != 0 && IsWindowVisible(dialogHwnd) != 0) {
+                InvalidateRect(dialogHwnd, null, 0)
+            }
+        }
+    }
+
+    private fun createNativeDialogWindow(dialog: DesktopDialogWindowNativeImpl<*>): HWND? = memScoped {
+        val ownerHwnd = activeHwnd ?: return@memScoped null
+        if (IsWindow(ownerHwnd) == 0) return@memScoped null
+        val hInstance = Win32WinMain.hInstance ?: GetModuleHandleW(null)
+        val className = "GenericUIWin32HostWindowW"
+        val ownerRect = alloc<RECT>()
+        val hasOwnerRect = GetWindowRect(ownerHwnd, ownerRect.ptr) != 0
+        val maxViewportW = if (hasOwnerRect) (ownerRect.right - ownerRect.left).coerceAtLeast(480) else 960
+        val maxViewportH = if (hasOwnerRect) (ownerRect.bottom - ownerRect.top).coerceAtLeast(360) else 720
+        val b = dialog.nativeWidget.bounds
+        val hasExplicitBounds = dialog.nativeWidget.attributes["hasExplicitBounds"] == true
+        val (dw, dh) = if (hasExplicitBounds && b.width > 0 && b.height > 0) {
+            b.width.coerceIn(220, 960) to b.height.coerceIn(140, 720)
+        } else {
+            val intrinsic = Win32GeneralComponentTreeRenderer.measureDialogIntrinsicSize(
+                dialogWidget = dialog.nativeWidget,
+                maxViewportWidth = maxViewportW,
+                maxViewportHeight = maxViewportH
+            )
+            dialog.nativeWidget.bounds = Rect(b.x, b.y, intrinsic.width, intrinsic.height)
+            intrinsic.width to intrinsic.height
+        }
+        val (dx, dy) = if (hasOwnerRect) {
+            val ow = (ownerRect.right - ownerRect.left).coerceAtLeast(dw)
+            val oh = (ownerRect.bottom - ownerRect.top).coerceAtLeast(dh)
+            (ownerRect.left + (ow - dw) / 2) to (ownerRect.top + (oh - dh) / 2)
+        } else {
+            (if (b.x > 0) b.x else 200) to (if (b.y > 0) b.y else 160)
+        }
+        val title = dialog.getTitle().ifBlank { "Dialog" }
+        val style = (WS_POPUP or WS_CAPTION.toUInt() or WS_SYSMENU.toUInt() or WS_THICKFRAME.toUInt() or WS_CLIPCHILDREN.toUInt())
+        val exStyle = Win32HwndHandle.WS_EX_DLGMODALFRAME.toUInt()
+        val created = CreateWindowExW(
+            dwExStyle = exStyle,
+            lpClassName = className,
+            lpWindowName = title,
+            dwStyle = style,
+            X = dx,
+            Y = dy,
+            nWidth = dw,
+            nHeight = dh,
+            hWndParent = ownerHwnd,
+            hMenu = null,
+            hInstance = hInstance,
+            lpParam = null
+        )
+        if (created != null) {
+            val isDark = isWindowsSystemDarkTheme()
+            applyWindowsImmersiveTitleBarTheme(created, isDark)
+            appIconSmall?.let { icon ->
+                SendMessageW(created, WM_SETICON.toUInt(), ICON_SMALL.toULong(), icon.toLong())
+            }
+            dialogHwnds[dialog] = created
+            hwndToDialog[created.toLong()] = dialog
+            ShowWindow(created, SW_SHOWNORMAL)
+            SetWindowPos(
+                created,
+                HWND_TOP,
+                dx,
+                dy,
+                dw,
+                dh,
+                (SWP_SHOWWINDOW or SWP_FRAMECHANGED).toUInt()
+            )
+            BringWindowToTop(created)
+            InvalidateRect(created, null, 1)
+            UpdateWindow(created)
+        }
+        created
+    }
+
+    internal fun closeNativeDialogWindow(dialog: DesktopDialogWindowNativeImpl<*>) {
+        val dHwnd = dialogHwnds.remove(dialog) ?: return
+        val hwndKey = dHwnd.toLong()
+        hwndToDialog.remove(hwndKey)
+        hitRegionsByHwnd.remove(hwndKey)
+        val editKeys = nativeEditEntriesByWidget.keys.filter { it.first == hwndKey }
+        for (k in editKeys) {
+            val entry = nativeEditEntriesByWidget.remove(k)
+            val ch = entry?.childHwnd
+            if (ch != null) {
+                nativeEditEntriesByChildHwnd.remove(ch.toLong())
+                origEditWndProcByChildHwnd.remove(ch.toLong())
+            }
+        }
+        if (IsWindow(dHwnd) != 0) {
+            ShowWindow(dHwnd, SW_HIDE)
+            DestroyWindow(dHwnd)
+        }
+    }
+
+    fun syncActiveDialogWindows() {
+        val ownerHwnd = activeHwnd ?: return
+        if (IsWindow(ownerHwnd) == 0) return
+        val currentActive = DesktopDialogWindowNativeImpl.activeDialogs
+            .filter { it.nativeWidget.visible && !it.nativeWidget.disposed }
+        for (existing in dialogHwnds.keys.toList()) {
+            val existingHwnd = dialogHwnds[existing]
+            if (existing !in currentActive || existingHwnd == null || IsWindow(existingHwnd) == 0) {
+                closeNativeDialogWindow(existing)
+            }
+        }
+        for (dialog in currentActive) {
+            val existingHwnd = dialogHwnds[dialog]
+            if (existingHwnd == null || IsWindow(existingHwnd) == 0) {
+                createNativeDialogWindow(dialog)
+            } else {
+                if (IsWindowVisible(existingHwnd) == 0) {
+                    ShowWindow(existingHwnd, SW_SHOWNORMAL)
+                }
+            }
+        }
     }
 
     fun updateMainWindowTitle(windowImpl: WindowsWindowNativeImpl, title: String) {
@@ -619,16 +1077,26 @@ object Win32NativeWindowHost {
                 windowClassRegistered = true
             }
 
+            val minSize = windowImpl.getMinWindowSize()
+            val attrMinW = (windowImpl.nativeWidget.attributes["minWidthPx"] as? Number)?.toInt() ?: 0
+            val attrMinH = (windowImpl.nativeWidget.attributes["minHeightPx"] as? Number)?.toInt() ?: 0
+            val minWidthPx = maxOf(minSize?.width ?: 0, attrMinW)
+            val minHeightPx = maxOf(minSize?.height ?: 0, attrMinH)
             val size = windowImpl.getWindowSize()
-            val width = size.width.coerceAtLeast(860)
-            val height = size.height.coerceAtLeast(620)
+            val width = maxOf(size.width, minWidthPx, 860)
+            val height = maxOf(size.height, minHeightPx, 620)
             val title = windowImpl.getTitle().ifBlank { "GenericUI" }
 
+            val initialStyle = if (visualTestMode) {
+                (WS_OVERLAPPEDWINDOW or WS_CLIPCHILDREN).toUInt()
+            } else {
+                (WS_OVERLAPPEDWINDOW or WS_VISIBLE or WS_CLIPCHILDREN).toUInt()
+            }
             val hwnd = CreateWindowExW(
                 dwExStyle = WS_EX_APPWINDOW.toUInt(),
                 lpClassName = className,
                 lpWindowName = title,
-                dwStyle = (WS_OVERLAPPEDWINDOW or WS_VISIBLE or WS_CLIPCHILDREN).toUInt(),
+                dwStyle = initialStyle,
                 X = 284,
                 Y = 198,
                 nWidth = width,
@@ -652,23 +1120,41 @@ object Win32NativeWindowHost {
                     SetMenu(hwnd, hMenuBar)
                     DrawMenuBar(hwnd)
                 }
-                ShowWindow(hwnd, Win32WinMain.nCmdShow)
-                ShowWindow(hwnd, SW_SHOWNORMAL)
-                syncMultiWindowDocks()
-                if (lastMultiWindowVisibilityState != true) {
-                    SetWindowPos(
-                        hwnd,
-                        HWND_TOP,
-                        80,
-                        50,
-                        width,
-                        height,
-                        (SWP_SHOWWINDOW or SWP_FRAMECHANGED).toUInt()
-                    )
+                if (visualTestMode) {
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                    syncMultiWindowDocks()
+                    syncActiveDialogWindows()
+                    if (lastMultiWindowVisibilityState != true) {
+                        SetWindowPos(
+                            hwnd,
+                            HWND_TOP,
+                            80,
+                            50,
+                            width,
+                            height,
+                            (SWP_SHOWWINDOW or SWP_FRAMECHANGED or SWP_NOACTIVATE).toUInt()
+                        )
+                    }
+                } else {
+                    ShowWindow(hwnd, Win32WinMain.nCmdShow)
+                    ShowWindow(hwnd, SW_SHOWNORMAL)
+                    syncMultiWindowDocks()
+                    syncActiveDialogWindows()
+                    if (lastMultiWindowVisibilityState != true) {
+                        SetWindowPos(
+                            hwnd,
+                            HWND_TOP,
+                            80,
+                            50,
+                            width,
+                            height,
+                            (SWP_SHOWWINDOW or SWP_FRAMECHANGED).toUInt()
+                        )
+                    }
+                    BringWindowToTop(hwnd)
+                    SetForegroundWindow(hwnd)
+                    SetFocus(hwnd)
                 }
-                BringWindowToTop(hwnd)
-                SetForegroundWindow(hwnd)
-                SetFocus(hwnd)
                 InvalidateRect(hwnd, null, 1)
                 UpdateWindow(hwnd)
             }
@@ -797,6 +1283,9 @@ object Win32NativeWindowHost {
                 if (msg.message == WM_QUIT.toUInt()) {
                     return@memScoped
                 }
+                if (preTranslateNativeEditMessage(msg)) {
+                    continue
+                }
                 TranslateMessage(msg.ptr)
                 DispatchMessageW(msg.ptr)
             }
@@ -809,6 +1298,11 @@ object Win32NativeWindowHost {
                     UpdateWindow(panelHwnd)
                 }
             }
+            for (dialogHwnd in dialogHwnds.values) {
+                if (IsWindow(dialogHwnd) != 0 && IsWindowVisible(dialogHwnd) != 0) {
+                    UpdateWindow(dialogHwnd)
+                }
+            }
             if (nowMs - startMs < durationMs) {
                 Sleep(4u)
             }
@@ -816,6 +1310,13 @@ object Win32NativeWindowHost {
     }
 
     fun closeAllVisualWindows() {
+        for (dialogHwnd in dialogHwnds.values.toList()) {
+            if (IsWindow(dialogHwnd) != 0) {
+                DestroyWindow(dialogHwnd)
+            }
+        }
+        dialogHwnds.clear()
+        hwndToDialog.clear()
         for (panelHwnd in panelHwnds.values.toList()) {
             DestroyWindow(panelHwnd)
         }
@@ -843,16 +1344,74 @@ object Win32NativeWindowHost {
         var lastFrameTimeMs = qpcCounter.QuadPart.toDouble() / ticksPerMs
 
         val msg = alloc<MSG>()
+        val nextMoveMsg = alloc<MSG>()
         var running = true
 
+        DesktopNativeWidget.overlayInvalidationListener = { _ ->
+            if (isDispatchingVBlank) {
+                vblankTreeInvalidated = true
+            } else if (!isPaintingWindow && !isSyncingFromNativeEdit) {
+                markAllVideoStagesDirty()
+            }
+        }
+
         while (running) {
+            var drainedMessages = 0
             while (PeekMessageW(msg.ptr, null, 0u, 0u, PM_REMOVE.toUInt()) != 0) {
                 if (msg.message == WM_QUIT.toUInt()) {
                     running = false
                     break
                 }
+                if (msg.message == WM_MOUSEMOVE.toUInt() && msg.hwnd != null) {
+                    while (PeekMessageW(
+                            nextMoveMsg.ptr,
+                            msg.hwnd,
+                            WM_MOUSEMOVE.toUInt(),
+                            WM_MOUSEMOVE.toUInt(),
+                            PM_REMOVE.toUInt()
+                        ) != 0
+                    ) {
+                        msg.lParam = nextMoveMsg.lParam
+                        msg.wParam = nextMoveMsg.wParam
+                        msg.pt.x = nextMoveMsg.pt.x
+                        msg.pt.y = nextMoveMsg.pt.y
+                        msg.time = nextMoveMsg.time
+                    }
+                } else if (msg.message == WM_MOUSEWHEEL.toUInt() && msg.hwnd != null) {
+                    var totalWheelDelta = ((msg.wParam.toLong() ushr 16) and 0xFFFF).toShort().toInt()
+                    val lowWord = msg.wParam.toLong() and 0xFFFF
+                    while (PeekMessageW(
+                            nextMoveMsg.ptr,
+                            msg.hwnd,
+                            WM_MOUSEWHEEL.toUInt(),
+                            WM_MOUSEWHEEL.toUInt(),
+                            PM_REMOVE.toUInt()
+                        ) != 0
+                    ) {
+                        val nextDelta = ((nextMoveMsg.wParam.toLong() ushr 16) and 0xFFFF).toShort().toInt()
+                        totalWheelDelta = (totalWheelDelta + nextDelta).coerceIn(-32768, 32767)
+                        msg.lParam = nextMoveMsg.lParam
+                        msg.pt.x = nextMoveMsg.pt.x
+                        msg.pt.y = nextMoveMsg.pt.y
+                        msg.time = nextMoveMsg.time
+                    }
+                    val packedWheel = ((totalWheelDelta.toShort().toInt() and 0xFFFF).toLong() shl 16) or lowWord
+                    msg.wParam = packedWheel.toULong()
+                }
+                if (preTranslateNativeEditMessage(msg)) {
+                    continue
+                }
                 TranslateMessage(msg.ptr)
                 DispatchMessageW(msg.ptr)
+                drainedMessages++
+                if (drainedMessages >= 64) {
+                    break
+                }
+                QueryPerformanceCounter(qpcCounter.ptr)
+                val drainNowMs = qpcCounter.QuadPart.toDouble() / ticksPerMs
+                if (drainNowMs - lastFrameTimeMs >= targetFrameIntervalMs) {
+                    break
+                }
             }
             if (!running || activeHwnd == null) break
 
@@ -862,15 +1421,33 @@ object Win32NativeWindowHost {
 
             if (elapsedMs >= targetFrameIntervalMs) {
                 lastFrameTimeMs = nowMs
-                val anyVBlankDispatched = dispatchVBlankTree(activeWindowImpl?.nativeWidget, nowMs)
-                if (anyVBlankDispatched) {
-                    InvalidateRect(hwnd, null, 0)
+                isDispatchingVBlank = true
+                vblankTreeInvalidated = false
+                val anyVBlankDispatched = try {
+                    dispatchVBlankTree(activeWindowImpl?.nativeWidget, nowMs)
+                } finally {
+                    isDispatchingVBlank = false
+                }
+                val hudTimedOut = isPointerInVideoStage && !isVideoStageHudAutoHidden &&
+                    (GetTickCount64().toLong() - lastVideoStageMouseMoveTickMs) > 5000L
+                if (anyVBlankDispatched || vblankTreeInvalidated || hudTimedOut) {
+                    val vr = lastRenderedVideoStageRect
+                    if (vr[2] > vr[0] && vr[3] > vr[1]) {
+                        if (hudTimedOut) {
+                            isVideoStageHudAutoHidden = true
+                        }
+                        markVideoStageDirty(hwnd)
+                    } else {
+                        isVBlankVideoStageOnlyRepaint = false
+                        InvalidateRect(hwnd, null, 0)
+                    }
                     UpdateWindow(hwnd)
                 }
             } else {
                 val remainingMs = targetFrameIntervalMs - elapsedMs
                 val waitMs = (remainingMs - 1.0).toInt().coerceIn(1, 16).toUInt()
-                val waitRes = MsgWaitForMultipleObjectsEx(0u, null, waitMs, QS_ALLINPUT.toUInt(), 0u)
+                // 0x0004u = MWMO_INPUTAVAILABLE so any message or WM_PAINT already in the queue wakes immediately
+                val waitRes = MsgWaitForMultipleObjectsEx(0u, null, waitMs, QS_ALLINPUT.toUInt(), 0x0004u)
                 if (waitRes == 0u && PeekMessageW(msg.ptr, null, 0u, 0u, PM_NOREMOVE.toUInt()) == 0) {
                     Sleep(1u)
                 }
@@ -893,25 +1470,414 @@ object Win32NativeWindowHost {
                 dispatched = true
             }
         }
-        val children = widget.children
-        var idx = 0
-        while (idx < children.size) {
-            val child = children.getOrNull(idx)
-            if (child != null && dispatchVBlankTree(child, timestampMs)) {
+        val children = runCatching { widget.children.toTypedArray() }.getOrElse { emptyArray() }
+        for (child in children) {
+            if (dispatchVBlankTree(child, timestampMs)) {
                 dispatched = true
             }
-            idx++
         }
         return dispatched
     }
 
-    fun handleCommand(commandId: Int) {
+    fun handleCommand(commandId: Int, notifyCode: Int = 0, childHwnd: HWND? = null) {
+        if (childHwnd != null) {
+            val editEntry = nativeEditEntriesByChildHwnd[childHwnd.toLong()]
+            if (editEntry != null) {
+                when (notifyCode) {
+                    0x0300 /* EN_CHANGE */ -> {
+                        if (!isSyncingFromNativeEdit) {
+                            val newText = readWin32WindowText(childHwnd)
+                            if (newText != editEntry.inputImpl.getValue()) {
+                                isSyncingFromNativeEdit = true
+                                try {
+                                    editEntry.inputImpl.setValue(newText)
+                                } finally {
+                                    isSyncingFromNativeEdit = false
+                                }
+                            }
+                        }
+                    }
+                    0x0100 /* EN_SETFOCUS */ -> {
+                        onNativeEditChildFocused(editEntry)
+                    }
+                    0x0200 /* EN_KILLFOCUS */ -> {
+                        onNativeEditChildBlurred(editEntry)
+                    }
+                }
+                return
+            }
+        }
         runCatching {
             menuCommandHandlers[commandId]?.invoke()
         }
     }
 
+    private fun preTranslateNativeEditMessage(msg: MSG): Boolean {
+        val targetHwnd = msg.hwnd ?: return false
+        val entry = nativeEditEntriesByChildHwnd[targetHwnd.toLong()] ?: return false
+        when (msg.message.toInt()) {
+            WM_KEYDOWN -> {
+                val vk = msg.wParam.toInt()
+                val ctrlDown = (GetKeyState(VK_CONTROL).toInt() and 0x8000) != 0
+                val shiftDown = (GetKeyState(VK_SHIFT).toInt() and 0x8000) != 0
+                if (vk == 'A'.code && ctrlDown) {
+                    SendMessageW(targetHwnd, 0x00B1u /* EM_SETSEL */, 0uL, -1L)
+                    return true
+                }
+                if (vk == VK_TAB) {
+                    focusNextNativeEditControl(targetHwnd, reverse = shiftDown)
+                    return true
+                }
+                if (vk == VK_RETURN && !entry.inputImpl.isMultiline()) {
+                    submitNativeEditControl(targetHwnd)
+                    return true
+                }
+                if (vk == VK_ESCAPE) {
+                    SetFocus(entry.parentHwnd)
+                    return true
+                }
+            }
+            WM_CHAR -> {
+                val ch = msg.wParam.toInt()
+                if (ch == 0x01 /* Ctrl+A */ || ch == '\t'.code) {
+                    return true
+                }
+                if ((ch == '\r'.code || ch == '\n'.code) && !entry.inputImpl.isMultiline()) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    internal fun submitNativeEditControl(childHwnd: HWND) {
+        val entry = nativeEditEntriesByChildHwnd[childHwnd.toLong()] ?: return
+        val newText = readWin32WindowText(childHwnd)
+        if (newText != entry.inputImpl.getValue()) {
+            isSyncingFromNativeEdit = true
+            try {
+                entry.inputImpl.setValue(newText)
+            } finally {
+                isSyncingFromNativeEdit = false
+            }
+        }
+        runCatching { entry.inputImpl.submitValue() }
+        invalidateAllWindows()
+    }
+
+    internal fun focusNextNativeEditControl(currentChildHwnd: HWND, reverse: Boolean) {
+        val curEntry = nativeEditEntriesByChildHwnd[currentChildHwnd.toLong()] ?: return
+        val parentKey = curEntry.parentHwnd.toLong()
+        val visibleEntries = nativeEditEntriesByWidget.entries
+            .filter { it.key.first == parentKey && it.value.visible && it.value.childHwnd != null && it.value.inputImpl.isEnabled() }
+            .map { it.value }
+            .sortedWith(compareBy<NativeEditControlEntry> { it.top }.thenBy { it.left })
+        if (visibleEntries.isEmpty()) return
+        val idx = visibleEntries.indexOfFirst { it.childHwnd == currentChildHwnd }
+        val nextIdx = if (idx < 0) {
+            0
+        } else if (reverse) {
+            (idx - 1 + visibleEntries.size) % visibleEntries.size
+        } else {
+            (idx + 1) % visibleEntries.size
+        }
+        val targetHwnd = visibleEntries[nextIdx].childHwnd ?: return
+        SetFocus(targetHwnd)
+        SendMessageW(targetHwnd, 0x00B1u /* EM_SETSEL */, 0uL, -1L)
+    }
+
+    private fun onNativeEditChildFocused(entry: NativeEditControlEntry) {
+        val prevFocused = focusedWidget
+        if (prevFocused !== entry.widget) {
+            (prevFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(false)
+            entry.inputImpl.setFocusedState(true)
+            focusedWidget = entry.widget
+            focusedTextInput = entry.inputImpl
+            InvalidateRect(entry.parentHwnd, null, 0)
+        }
+    }
+
+    private fun onNativeEditChildBlurred(entry: NativeEditControlEntry) {
+        entry.inputImpl.setFocusedState(false)
+        if (focusedWidget === entry.widget) {
+            focusedWidget = null
+            focusedTextInput = null
+            InvalidateRect(entry.parentHwnd, null, 0)
+        }
+    }
+
+    internal fun handleCtlColorEdit(hdcChild: HDC, childHwnd: HWND?): Long {
+        val isDark = isWindowsSystemDarkTheme()
+        val theme = if (isDark) darkSystemPalette else lightSystemPalette
+        SetTextColor(hdcChild, theme.textPrimary)
+        SetBkColor(hdcChild, theme.bgBase)
+        SetBkMode(hdcChild, OPAQUE)
+        val brush = if (isDark) {
+            editBgBrushDark ?: CreateSolidBrush(theme.bgBase).also { editBgBrushDark = it }
+        } else {
+            editBgBrushLight ?: CreateSolidBrush(theme.bgBase).also { editBgBrushLight = it }
+        }
+        return brush?.toLong() ?: 0L
+    }
+
+    private fun readWin32WindowText(hwnd: HWND): String = memScoped {
+        val len = GetWindowTextLengthW(hwnd)
+        if (len <= 0) return@memScoped ""
+        val buf = allocArray<WCHARVar>(len + 2)
+        GetWindowTextW(hwnd, buf, len + 1)
+        buf.toKString()
+    }
+
+    private fun beginPaintFrameNativeControls(hwnd: HWND) {
+        val parentKey = hwnd.toLong()
+        for ((key, entry) in nativeEditEntriesByWidget) {
+            if (key.first == parentKey) {
+                entry.visitedThisFrame = false
+            }
+        }
+    }
+
+    private fun endPaintFrameNativeControls(hwnd: HWND) {
+        if (IsWindow(hwnd) == 0) return
+        val parentKey = hwnd.toLong()
+        for ((key, entry) in nativeEditEntriesByWidget) {
+            if (key.first != parentKey) continue
+            if (!entry.visitedThisFrame) {
+                val existingHwnd = entry.childHwnd
+                if (entry.visible && existingHwnd != null && IsWindow(existingHwnd) != 0) {
+                    entry.visible = false
+                    ShowWindow(existingHwnd, SW_HIDE)
+                }
+                continue
+            }
+
+            val inputImpl = entry.inputImpl
+            val widget = entry.widget
+            val value = inputImpl.getValue()
+            val placeholder = inputImpl.getPlaceholder()
+            val editLeft = entry.desiredLeft
+            val editTop = entry.desiredTop
+            val editWidth = entry.desiredWidth
+            val editHeight = entry.desiredHeight
+            val effectiveFont = entry.desiredFont ?: cachedFontNormal
+            val isDark = entry.desiredDarkTheme
+
+            var childHwnd = entry.childHwnd
+            if (childHwnd != null && IsWindow(childHwnd) == 0) {
+                nativeEditEntriesByChildHwnd.remove(childHwnd.toLong())
+                origEditWndProcByChildHwnd.remove(childHwnd.toLong())
+                entry.childHwnd = null
+                childHwnd = null
+            }
+
+            if (childHwnd == null) {
+                val hInstance = Win32WinMain.hInstance ?: GetModuleHandleW(null)
+                val isPassword = inputImpl.isPasswordMode() ||
+                    widget.nativeClassName.contains("password", ignoreCase = true) ||
+                    (widget.attributes["inputType"] as? String)?.equals("password", ignoreCase = true) == true
+                var style = WS_CHILD or WS_TABSTOP or ES_AUTOHSCROLL
+                if (inputImpl.isMultiline()) {
+                    style = style or ES_MULTILINE or ES_AUTOVSCROLL or WS_VSCROLL or ES_WANTRETURN
+                }
+                if (isPassword) {
+                    style = style or ES_PASSWORD
+                }
+                if (inputImpl.isReadOnly()) {
+                    style = style or ES_READONLY
+                }
+                if (!inputImpl.isEnabled()) {
+                    style = style or WS_DISABLED
+                }
+                val createdHwnd = CreateWindowExW(
+                    dwExStyle = 0u,
+                    lpClassName = "EDIT",
+                    lpWindowName = null,
+                    dwStyle = style.toUInt(),
+                    X = editLeft,
+                    Y = editTop,
+                    nWidth = editWidth,
+                    nHeight = editHeight,
+                    hWndParent = hwnd,
+                    hMenu = entry.commandId.toLong().toCPointer(),
+                    hInstance = hInstance,
+                    lpParam = null
+                )
+                if (createdHwnd != null) {
+                    entry.childHwnd = createdHwnd
+                    entry.left = editLeft
+                    entry.top = editTop
+                    entry.width = editWidth
+                    entry.height = editHeight
+                    entry.lastPlaceholder = placeholder
+                    entry.lastDarkTheme = isDark
+                    nativeEditEntriesByChildHwnd[createdHwnd.toLong()] = entry
+
+                    if (effectiveFont != null) {
+                        SendMessageW(createdHwnd, WM_SETFONT.toUInt(), effectiveFont.toLong().toULong(), 0L)
+                    }
+                    Win32DwmUxThemeBridge.setControlWindowTheme(createdHwnd, isDark)
+                    if (placeholder.isNotEmpty()) {
+                        memScoped {
+                            SendMessageW(createdHwnd, 0x1501u /* EM_SETCUEBANNER */, 1uL, placeholder.wcstr.ptr.toLong())
+                        }
+                    }
+                    isSyncingFromNativeEdit = true
+                    try {
+                        SetWindowTextW(createdHwnd, value)
+                    } finally {
+                        isSyncingFromNativeEdit = false
+                    }
+                    entry.visible = true
+                    ShowWindow(createdHwnd, SW_SHOWNOACTIVATE)
+                }
+            } else {
+                if (entry.lastDarkTheme != isDark) {
+                    entry.lastDarkTheme = isDark
+                    Win32DwmUxThemeBridge.setControlWindowTheme(childHwnd, isDark)
+                }
+                if (entry.lastPlaceholder != placeholder) {
+                    entry.lastPlaceholder = placeholder
+                    memScoped {
+                        SendMessageW(childHwnd, 0x1501u /* EM_SETCUEBANNER */, 1uL, placeholder.wcstr.ptr.toLong())
+                    }
+                }
+                if (!isSyncingFromNativeEdit) {
+                    val curHwndText = readWin32WindowText(childHwnd)
+                    if (curHwndText != value) {
+                        isSyncingFromNativeEdit = true
+                        try {
+                            SetWindowTextW(childHwnd, value)
+                        } finally {
+                            isSyncingFromNativeEdit = false
+                        }
+                    }
+                }
+                EnableWindow(childHwnd, if (inputImpl.isEnabled()) 1 else 0)
+                if (entry.left != editLeft || entry.top != editTop || entry.width != editWidth || entry.height != editHeight) {
+                    entry.left = editLeft
+                    entry.top = editTop
+                    entry.width = editWidth
+                    entry.height = editHeight
+                    SetWindowPos(
+                        childHwnd,
+                        null,
+                        editLeft,
+                        editTop,
+                        editWidth,
+                        editHeight,
+                        (SWP_NOZORDER or SWP_NOACTIVATE).toUInt()
+                    )
+                }
+                if (!entry.visible) {
+                    entry.visible = true
+                    ShowWindow(childHwnd, SW_SHOWNOACTIVATE)
+                }
+            }
+        }
+    }
+
+    internal fun renderAndMountTextInputControl(
+        hwnd: HWND?,
+        hdc: HDC?,
+        theme: SystemThemePalette,
+        font: HFONT?,
+        inputImpl: DesktopTextInputNativeImpl<*>,
+        widget: DesktopNativeWidget = inputImpl.nativeWidget,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int
+    ) {
+        val isFocused = focusedWidget == widget || focusedTextInput === inputImpl
+        val isHovered = hoveredWidget == widget || (hwnd != null && isRectHovered(hwnd, left, top, right, bottom))
+        val bg = theme.bgBase
+        val border = when {
+            isFocused -> theme.accentBlueBorder
+            isHovered -> theme.borderStrong
+            else -> theme.borderSubtle
+        }
+        drawRoundedRect(hdc, left, top, right, bottom, 4, bg, border)
+
+        val value = inputImpl.getValue()
+        val placeholder = inputImpl.getPlaceholder()
+        val effectiveFont = font ?: cachedFontNormal
+
+        var targetEntry: NativeEditControlEntry? = null
+        if (hwnd != null && IsWindow(hwnd) != 0) {
+            val parentKey = hwnd.toLong()
+            val editLeft = left + 6
+            val editTop = if (inputImpl.isMultiline()) top + 4 else top + max(3, (bottom - top - 18) / 2)
+            val editWidth = max(24, (right - left) - 12)
+            val editHeight = if (inputImpl.isMultiline()) max(20, (bottom - top) - 8) else max(18, (bottom - top) - 6)
+
+            val entry = nativeEditEntriesByWidget.getOrPut(parentKey to widget) {
+                NativeEditControlEntry(
+                    parentHwnd = hwnd,
+                    childHwnd = null,
+                    commandId = nextEditControlCommandId++,
+                    inputImpl = inputImpl,
+                    widget = widget
+                )
+            }
+            entry.inputImpl = inputImpl
+            entry.widget = widget
+            entry.desiredLeft = editLeft
+            entry.desiredTop = editTop
+            entry.desiredWidth = editWidth
+            entry.desiredHeight = editHeight
+            entry.desiredFont = effectiveFont
+            entry.desiredDarkTheme = theme.isDark
+            entry.visitedThisFrame = true
+            targetEntry = entry
+        } else {
+            val display = value.ifEmpty { placeholder }
+            val fg = if (value.isEmpty()) theme.textMuted else theme.textPrimary
+            if (effectiveFont != null) {
+                SelectObject(hdc, effectiveFont)
+            }
+            drawTextInRect(hdc, display, left + 8, top + 2, right - 8, bottom - 2, fg)
+        }
+
+        addHitRegion(
+            HitRegion(
+                left = left,
+                top = top,
+                right = right,
+                bottom = bottom,
+                tooltip = inputImpl.getTooltipText(),
+                widget = widget,
+                isTextInput = true,
+                onClick = { _, _ ->
+                    setWidgetFocused(widget)
+                    val chHwnd = targetEntry?.childHwnd
+                    if (targetEntry?.visible == true && chHwnd != null && IsWindow(chHwnd) != 0) {
+                        SetFocus(chHwnd)
+                    }
+                }
+            )
+        )
+    }
+
     fun handleKeyDown(hwnd: HWND, vkCode: Int): Boolean {
+        if ((vkCode == VK_ESCAPE || vkCode == VK_F11) &&
+            (activeFullscreenElementWidget != null || isWindowFullscreenActive || activeWindowImpl?.isFullscreen() == true)
+        ) {
+            val mainWin = com.nexustools.genericui.component.shell.Application.current?.mainWindow
+            if (mainWin != null) {
+                if (mainWin.fullscreenElement != null) {
+                    mainWin.exitElementFullscreen()
+                } else {
+                    mainWin.setFullscreen(false)
+                }
+            }
+            activeWindowImpl?.let { winImpl ->
+                if (activeFullscreenElementWidget != null || isWindowFullscreenActive || winImpl.isFullscreen()) {
+                    winImpl.setFullscreen(false)
+                    setWindowFullscreen(winImpl, false, null)
+                }
+            }
+            return true
+        }
         val textInput = focusedTextInput
         if (textInput != null) {
             when (vkCode) {
@@ -1083,6 +2049,24 @@ object Win32NativeWindowHost {
         return false
     }
 
+    fun resolveMinWindowTrackSize(hwnd: HWND? = activeHwnd): Pair<Int, Int> {
+        val winImpl = activeWindowImpl
+        val minSize = winImpl?.getMinWindowSize()
+        val attrMinW = (winImpl?.nativeWidget?.attributes?.get("minWidthPx") as? Number)?.toInt() ?: 0
+        val attrMinH = (winImpl?.nativeWidget?.attributes?.get("minHeightPx") as? Number)?.toInt() ?: 0
+        val rawMinW = maxOf(320, minSize?.width ?: 0, attrMinW)
+        val rawMinH = maxOf(240, minSize?.height ?: 0, attrMinH)
+        val dpiScale = if (hwnd != null) {
+            val hdc = GetDC(hwnd)
+            if (hdc != null) {
+                val dpiX = GetDeviceCaps(hdc, LOGPIXELSX)
+                ReleaseDC(hwnd, hdc)
+                if (dpiX > 96) dpiX.toFloat() / 96f else 1f
+            } else 1f
+        } else 1f
+        return (rawMinW * dpiScale).roundToInt() to (rawMinH * dpiScale).roundToInt()
+    }
+
     fun handleWindowResize(hwnd: HWND) = memScoped {
         if (hwnd != activeHwnd) return@memScoped
         val rect = alloc<RECT>()
@@ -1093,7 +2077,7 @@ object Win32NativeWindowHost {
         }
     }
 
-    fun updateCursorForWindow(hwnd: HWND): Boolean {
+    fun updateCursorForWindow(hwnd: HWND, forceSet: Boolean = true): Boolean {
         val hit = hoveredHitRegion
         val targetWidget = hit?.widget ?: hoveredWidget
         val targetImpl = targetWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
@@ -1113,6 +2097,7 @@ object Win32NativeWindowHost {
         if (customCursor != null) {
             val hCustom = WindowsCurCodec.createWin32Cursor(customCursor)
             if (hCustom != null) {
+                lastCursorHwndKey = 0L
                 SetCursor(hCustom)
                 return true
             }
@@ -1122,6 +2107,7 @@ object Win32NativeWindowHost {
             ?: customCursor?.fallback?.cssValue
         val canvasCursor = (activeCanvasImpl?.nativeWidget?.attributes?.get("cursor") as? String)?.lowercase()
         if (hitCursor == "none") {
+            lastCursorHwndKey = 0L
             SetCursor(null)
             return true
         }
@@ -1145,18 +2131,25 @@ object Win32NativeWindowHost {
                 hoverMouseY in canvasViewportRect[1]..canvasViewportRect[3] -> IDC_CROSS
             else -> IDC_ARROW
         }
-        SetCursor(LoadCursorW(null, cursorId))
+        val hwndKey = hwnd.toLong()
+        val idKey = cursorId.toLong()
+        if (forceSet || hwndKey != lastCursorHwndKey || idKey != lastCursorIdKey) {
+            lastCursorHwndKey = hwndKey
+            lastCursorIdKey = idKey
+            SetCursor(LoadCursorW(null, cursorId))
+        }
         return true
     }
 
-    private fun setWidgetFocused(newFocused: DesktopNativeWidget?) {
+    internal fun setWidgetFocused(newFocused: DesktopNativeWidget?) {
+        val effectiveFocused = if (newFocused?.enabled == false) null else newFocused
         val prevFocused = focusedWidget
-        if (prevFocused !== newFocused) {
+        if (prevFocused !== effectiveFocused) {
             val prevTextInput = focusedTextInput
             (prevFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(false)
-            (newFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(true)
-            focusedWidget = newFocused
-            focusedTextInput = newFocused?.attributes?.get("nativeImpl") as? DesktopTextInputNativeImpl<*>
+            (effectiveFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(true)
+            focusedWidget = effectiveFocused
+            focusedTextInput = effectiveFocused?.attributes?.get("nativeImpl") as? DesktopTextInputNativeImpl<*>
             if (prevTextInput != null && prevTextInput !== focusedTextInput) {
                 runCatching { prevTextInput.submitValue() }
             }
@@ -1194,6 +2187,11 @@ object Win32NativeWindowHost {
     fun isCardScrollbarThumbDragging(): Boolean = isDraggingCardScrollbarThumb
 
     fun handleMouseWheel(hwnd: HWND, wheelDelta: Int) {
+        if (Win32GeneralComponentTreeRenderer.handleMouseWheel(hwnd, hoverMouseX, hoverMouseY, wheelDelta)) {
+            InvalidateRect(hwnd, null, 0)
+            UpdateWindow(hwnd)
+            return
+        }
         val grid = activeLazyGridImpl
         if (grid != null) {
             val totalDataRows = (grid.getTotalRowCount() - 1).coerceAtLeast(0)
@@ -1249,22 +2247,56 @@ object Win32NativeWindowHost {
     }
 
     fun handleMouseDown(hwnd: HWND, x: Int, y: Int) {
-        SetFocus(hwnd)
+        mouseDownX = x
+        mouseDownY = y
+        dragMouseMovedSinceDown = false
         val regions = hitRegionsByHwnd[hwnd.toLong()].orEmpty()
         val hit = regions.lastOrNull { it.contains(x, y) }
+        if (hit != null && hit.widget?.enabled == false) {
+            SetFocus(hwnd)
+            setWidgetFocused(null)
+            InvalidateRect(hwnd, null, 0)
+            return
+        }
+        val hitEditEntry = if (hit?.widget != null) nativeEditEntriesByWidget[hwnd.toLong() to hit.widget] else null
+        val hitEditHwnd = hitEditEntry?.childHwnd
+        if (hitEditEntry != null && hitEditEntry.visible && hitEditHwnd != null && IsWindow(hitEditHwnd) != 0) {
+            SetFocus(hitEditHwnd)
+        } else {
+            SetFocus(hwnd)
+        }
 
         setWidgetFocused(hit?.widget)
 
         if (hit != null) {
             pressedWidget = hit.widget
-            (pressedWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setActivePressedState(true)
-            if (hit.onDrag != null) {
+            hit.widget?.bounds = Rect(
+                x = hit.left,
+                y = hit.top,
+                width = max(1, hit.right - hit.left),
+                height = max(1, hit.bottom - hit.top)
+            )
+            val baseImpl = pressedWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
+            baseImpl?.setActivePressedState(true)
+            val downEv = PointerEvent(
+                x = (x - hit.left).toFloat(),
+                y = (y - hit.top).toFloat(),
+                screenX = x.toFloat(),
+                screenY = y.toFloat(),
+                button = 0,
+                buttonsMask = 1
+            )
+            runCatching { baseImpl?.dispatchPointerDown(downEv) }
+            runCatching { hit.onClick?.invoke(x, y) }
+            if (hit.onClick == null) {
+                runCatching { hit.onDrag?.invoke(x, y) }
+            }
+            if (hit.onDrag != null || hit.onRelease != null || PointerDragManager.isDragging) {
                 activeDragRegion = hit
                 SetCapture(hwnd)
             }
-            runCatching { hit.onClick?.invoke(x, y) }
-            runCatching { hit.onDrag?.invoke(x, y) }
             syncMultiWindowDocks()
+            syncActiveDialogWindows()
             invalidateAllWindows()
             UpdateWindow(hwnd)
             return
@@ -1300,9 +2332,42 @@ object Win32NativeWindowHost {
     }
 
     fun handleMouseMove(hwnd: HWND, x: Int, y: Int) {
-        hoverHwndKey = hwnd.toLong()
+        val hwndLong = hwnd.toLong()
+        if (hoverHwndKey == hwndLong && x == hoverMouseX && y == hoverMouseY && !isOverlayDragActive() && !isDraggingCanvas) {
+            return
+        }
+        hoverHwndKey = hwndLong
         hoverMouseX = x
         hoverMouseY = y
+        if (mouseLeaveTrackInstalledForHwnd != hwndLong) {
+            mouseLeaveTrackInstalledForHwnd = hwndLong
+            memScoped {
+                val tme = alloc<TRACKMOUSEEVENT>()
+                tme.cbSize = sizeOf<TRACKMOUSEEVENT>().toUInt()
+                tme.dwFlags = TME_LEAVE.toUInt()
+                tme.hwndTrack = hwnd
+                tme.dwHoverTime = 0u
+                TrackMouseEvent(tme.ptr)
+            }
+        }
+        val drag = activeDragRegion
+        val isGlobalDragActive = drag != null || PointerDragManager.isDragging
+        val inVideoStageNow = hwnd == activeHwnd && isPointInVideoStage(x, y)
+        if (hwnd == activeHwnd && lastRenderedVideoStageRect[2] > lastRenderedVideoStageRect[0]) {
+            if (inVideoStageNow || isGlobalDragActive) {
+                val wasInStage = isPointerInVideoStage
+                val wasHidden = isVideoStageHudAutoHidden
+                lastVideoStageMouseMoveTickMs = GetTickCount64().toLong()
+                isPointerInVideoStage = true
+                if (!wasInStage || wasHidden) {
+                    isVideoStageHudAutoHidden = false
+                    markVideoStageDirty(hwnd)
+                }
+            } else if (isPointerInVideoStage) {
+                isPointerInVideoStage = false
+                markVideoStageDirty(hwnd)
+            }
+        }
         if (isDraggingCanvas && hwnd == activeHwnd) {
             val canvasImpl = activeCanvasImpl
             if (canvasImpl != null) {
@@ -1312,45 +2377,137 @@ object Win32NativeWindowHost {
                         PointerEvent(
                             x = cx,
                             y = cy,
-                            button = 0
+                            screenX = x.toFloat(),
+                            screenY = y.toFloat(),
+                            button = 0,
+                            buttonsMask = 1
                         )
                     )
                 }
                 InvalidateRect(hwnd, null, 0)
-                UpdateWindow(hwnd)
                 return
             }
         }
-        val drag = activeDragRegion
-        if (drag != null && drag.onDrag != null) {
-            runCatching { drag.onDrag.invoke(x, y) }
-            InvalidateRect(hwnd, null, 0)
-            UpdateWindow(hwnd)
+        if (PointerDragManager.isDragging) {
+            runCatching {
+                PointerDragManager.notifyGlobalPointerMove(
+                    PointerEvent(
+                        x = x.toFloat(),
+                        y = y.toFloat(),
+                        screenX = x.toFloat(),
+                        screenY = y.toFloat(),
+                        button = 0,
+                        buttonsMask = 1
+                    )
+                )
+            }
+        }
+        if (x != mouseDownX || y != mouseDownY) {
+            dragMouseMovedSinceDown = true
+        }
+        if (drag != null) {
+            if (dragMouseMovedSinceDown) {
+                runCatching { drag.onDrag?.invoke(x, y) }
+            }
+            val dragImpl = drag.widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
+            if (dragImpl != null) {
+                runCatching {
+                    dragImpl.dispatchPointerMove(
+                        PointerEvent(
+                            x = (x - drag.left).toFloat(),
+                            y = (y - drag.top).toFloat(),
+                            screenX = x.toFloat(),
+                            screenY = y.toFloat(),
+                            button = 0,
+                            buttonsMask = 1
+                        )
+                    )
+                }
+            }
+            if (hwnd == activeHwnd && (inVideoStageNow || isHitRegionInVideoStage(drag))) {
+                markVideoStageDirty(hwnd)
+            } else {
+                InvalidateRect(hwnd, null, 0)
+                UpdateWindow(hwnd)
+            }
             return
         }
-        val regions = hitRegionsByHwnd[hwnd.toLong()].orEmpty()
+        if (PointerDragManager.isDragging) {
+            if (hwnd == activeHwnd && inVideoStageNow) {
+                markVideoStageDirty(hwnd)
+            } else {
+                InvalidateRect(hwnd, null, 0)
+                UpdateWindow(hwnd)
+            }
+            return
+        }
+        val regions = hitRegionsByHwnd[hwndLong].orEmpty()
         val hit = regions.lastOrNull { it.contains(x, y) }
         val prevHit = hoveredHitRegion
         val prevWidget = hoveredWidget
         val newWidget = hit?.widget
         hoveredHitRegion = hit
-        if (prevWidget !== newWidget) {
-            val prevImpl = prevWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
-            val newImpl = newWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
-            prevImpl?.setHoveredState(false)
-            prevImpl?.dispatchPointerLeave(PointerEvent(x = x.toFloat(), y = y.toFloat()))
-            newImpl?.setHoveredState(true)
-            newImpl?.dispatchPointerEnter(PointerEvent(x = x.toFloat(), y = y.toFloat()))
-            hoveredWidget = newWidget
-        }
-        updateCursorForWindow(hwnd)
 
-        val hoveredTipHit = regions.lastOrNull { it.contains(x, y) && !it.tooltip.isNullOrBlank() }
-        val newTooltip = hoveredTipHit?.tooltip
+        val hitSliderImpl = newWidget?.attributes?.get("nativeImpl") as? DesktopRangeSliderNativeImpl<*>
+        if (hit != null && hitSliderImpl != null) {
+            runCatching {
+                hitSliderImpl.dispatchPointerMove(
+                    PointerEvent(
+                        x = (x - hit.left).toFloat(),
+                        y = (y - hit.top).toFloat(),
+                        screenX = x.toFloat(),
+                        screenY = y.toFloat(),
+                        button = -1,
+                        buttonsMask = 0
+                    )
+                )
+            }
+        }
+
+        if (hit === prevHit && prevWidget === newWidget) {
+            updateCursorForWindow(hwnd, forceSet = false)
+            if (hitSliderImpl != null && hwnd == activeHwnd && (inVideoStageNow || isHitRegionInVideoStage(hit))) {
+                markVideoStageDirty(hwnd)
+            }
+            return
+        }
+
+        if (prevWidget !== newWidget) {
+            val prevChain = buildAncestorWidgetChain(prevWidget)
+            val newChain = buildAncestorWidgetChain(newWidget)
+            val pointerEv = PointerEvent(x = x.toFloat(), y = y.toFloat())
+            for (exited in prevChain) {
+                if (exited !in newChain) {
+                    val exitedImpl = exited.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                    exitedImpl?.setHoveredState(false)
+                    exitedImpl?.dispatchPointerLeave(pointerEv)
+                }
+            }
+            for (entered in newChain.asReversed()) {
+                if (entered !in prevChain && entered.enabled) {
+                    val enteredImpl = entered.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                    enteredImpl?.setHoveredState(true)
+                    enteredImpl?.dispatchPointerEnter(pointerEv)
+                }
+            }
+            hoveredWidget = if (newWidget?.enabled == false) null else newWidget
+        }
+        updateCursorForWindow(hwnd, forceSet = false)
+
+        val newTooltip = hit?.tooltip?.takeIf { it.isNotBlank() }
         if (newTooltip != hoveredTooltip || prevHit !== hit || prevWidget !== newWidget) {
             hoveredTooltip = newTooltip
-            InvalidateRect(hwnd, null, 0)
-            UpdateWindow(hwnd)
+            val bothInVideoStage = hwnd == activeHwnd &&
+                lastRenderedVideoStageRect[2] > lastRenderedVideoStageRect[0] &&
+                (prevHit == null || isHitRegionInVideoStage(prevHit)) &&
+                (hit == null || isHitRegionInVideoStage(hit)) &&
+                (prevHit != null || hit != null)
+            if (bothInVideoStage) {
+                markVideoStageDirty(hwnd)
+            } else {
+                ++DesktopNativeWidget.globalNonOverlayMutationVersion
+                InvalidateRect(hwnd, null, 0)
+            }
         }
 
         if (hit == null && hwnd == activeHwnd) {
@@ -1371,7 +2528,11 @@ object Win32NativeWindowHost {
                             )
                         )
                     }
-                    InvalidateRect(hwnd, null, 0)
+                    if (inVideoStageNow) {
+                        markVideoStageDirty(hwnd)
+                    } else {
+                        InvalidateRect(hwnd, null, 0)
+                    }
                 }
             }
         }
@@ -1381,11 +2542,65 @@ object Win32NativeWindowHost {
         val wasScrollbarDragging = isDraggingCardScrollbarThumb || isDraggingLazyGridScrollbarThumb
         isDraggingCardScrollbarThumb = false
         isDraggingLazyGridScrollbarThumb = false
-        if (pressedWidget != null || wasScrollbarDragging) {
-            (pressedWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setActivePressedState(false)
-            pressedWidget = null
-            InvalidateRect(hwnd, null, 0)
-            UpdateWindow(hwnd)
+        val drag = activeDragRegion
+        activeDragRegion = null
+        val pressed = pressedWidget
+        pressedWidget = null
+
+        if (pressed != null) {
+            (pressed.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>)?.setActivePressedState(false)
+        }
+        if (drag != null) {
+            val isSliderDrag = drag.widget?.attributes?.get("nativeImpl") is DesktopRangeSliderNativeImpl<*>
+            val relX = if (isSliderDrag && !dragMouseMovedSinceDown) mouseDownX else x
+            val relY = if (isSliderDrag && !dragMouseMovedSinceDown) mouseDownY else y
+            runCatching { drag.onRelease?.invoke(relX, relY) }
+            val dragImpl = drag.widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
+            if (dragImpl != null) {
+                runCatching {
+                    dragImpl.dispatchPointerUp(
+                        PointerEvent(
+                            x = (x - drag.left).toFloat(),
+                            y = (y - drag.top).toFloat(),
+                            screenX = x.toFloat(),
+                            screenY = y.toFloat(),
+                            button = 0,
+                            buttonsMask = 0
+                        )
+                    )
+                }
+            }
+        } else if (pressed != null) {
+            val pressedImpl = pressed.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+            if (pressedImpl != null) {
+                runCatching {
+                    pressedImpl.dispatchPointerUp(
+                        PointerEvent(
+                            x = x.toFloat(),
+                            y = y.toFloat(),
+                            screenX = x.toFloat(),
+                            screenY = y.toFloat(),
+                            button = 0,
+                            buttonsMask = 0
+                        )
+                    )
+                }
+            }
+        }
+        val hadGlobalDrag = PointerDragManager.isDragging
+        if (hadGlobalDrag) {
+            runCatching {
+                PointerDragManager.notifyGlobalPointerUp(
+                    PointerEvent(
+                        x = x.toFloat(),
+                        y = y.toFloat(),
+                        screenX = x.toFloat(),
+                        screenY = y.toFloat(),
+                        button = 0,
+                        buttonsMask = 0
+                    )
+                )
+            }
         }
         if (isDraggingCanvas) {
             isDraggingCanvas = false
@@ -1397,15 +2612,19 @@ object Win32NativeWindowHost {
                         PointerEvent(
                             x = cx,
                             y = cy,
-                            button = 0
+                            screenX = x.toFloat(),
+                            screenY = y.toFloat(),
+                            button = 0,
+                            buttonsMask = 0
                         )
                     )
                 }
-                InvalidateRect(hwnd, null, 0)
-                UpdateWindow(hwnd)
             }
         }
-        activeDragRegion = null
+        if (pressed != null || drag != null || hadGlobalDrag || wasScrollbarDragging) {
+            InvalidateRect(hwnd, null, 0)
+            UpdateWindow(hwnd)
+        }
     }
 
     private fun mapWindowPointToCanvas(winX: Int, winY: Int): Pair<Float, Float> {
@@ -1419,7 +2638,7 @@ object Win32NativeWindowHost {
         return (normX * surfW.toFloat()) to (normY * surfH.toFloat())
     }
 
-    private fun openSelectPopupMenu(hwnd: HWND, selectImpl: DesktopSelectNativeImpl<*>, x: Int, y: Int) = memScoped {
+    internal fun openSelectPopupMenu(hwnd: HWND, selectImpl: DesktopSelectNativeImpl<*>, x: Int, y: Int) = memScoped {
         val options = selectImpl.getOptions()
         if (options.isEmpty()) return@memScoped
         val hPopup = CreatePopupMenu() ?: return@memScoped
@@ -1445,7 +2664,7 @@ object Win32NativeWindowHost {
         if (chosen >= 5000) {
             val optIndex = chosen - 5000
             options.getOrNull(optIndex)?.let { (valStr, _) ->
-                selectImpl.setSelectedValue(valStr)
+                selectImpl.notifyUserSelectionChanged(valStr)
             }
         }
     }
@@ -1459,29 +2678,43 @@ object Win32NativeWindowHost {
         if (cachedFontMetricBig == null) cachedFontMetricBig = createSegoeFont(26, FW_BOLD)
     }
 
-    private fun obtainMainBackBufferDc(hdc: HDC?, hwndKey: Long, width: Int, height: Int): HDC? {
+    private fun obtainMainBackBufferDc(hdc: HDC?, hwndKey: Long, width: Int, height: Int): HDC? = memScoped {
         if (cachedMainMemDc != null &&
             cachedMainMemBmp != null &&
+            cachedMainBackBufferPixels != null &&
             cachedMainBufferHwndKey == hwndKey &&
             cachedMainBufferW == width &&
             cachedMainBufferH == height
         ) {
-            return cachedMainMemDc
+            return@memScoped cachedMainMemDc
         }
         releaseMainBackBufferDc()
-        val memDc = CreateCompatibleDC(hdc) ?: return null
-        val memBmp = CreateCompatibleBitmap(hdc, width, height)
-        if (memBmp == null) {
+        val memDc = CreateCompatibleDC(hdc) ?: return@memScoped null
+        val bmi = alloc<BITMAPINFO>()
+        bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+        bmi.bmiHeader.biWidth = width
+        bmi.bmiHeader.biHeight = -height
+        bmi.bmiHeader.biPlanes = 1u
+        bmi.bmiHeader.biBitCount = 32u
+        bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+        val bitsPtr = alloc<COpaquePointerVar>()
+        val memBmp = CreateDIBSection(hdc, bmi.ptr, DIB_RGB_COLORS.toUInt(), bitsPtr.ptr, null, 0u)
+        if (memBmp == null || bitsPtr.value == null) {
+            if (memBmp != null) DeleteObject(memBmp)
             DeleteDC(memDc)
-            return null
+            return@memScoped null
         }
         cachedMainOldBmp = SelectObject(memDc, memBmp)
         cachedMainMemDc = memDc
         cachedMainMemBmp = memBmp
+        cachedMainBackBufferPixels = bitsPtr.value?.reinterpret()
+        cachedMainBackBufferWidth = width
+        cachedMainBackBufferHeight = height
         cachedMainBufferW = width
         cachedMainBufferH = height
         cachedMainBufferHwndKey = hwndKey
-        return memDc
+        lastPaintedNonOverlayVersion = -1L
+        memDc
     }
 
     private fun releaseMainBackBufferDc() {
@@ -1500,9 +2733,78 @@ object Win32NativeWindowHost {
         cachedMainMemDc = null
         cachedMainMemBmp = null
         cachedMainOldBmp = null
+        cachedMainBackBufferPixels = null
+        cachedMainBackBufferWidth = 0
+        cachedMainBackBufferHeight = 0
         cachedMainBufferW = 0
         cachedMainBufferH = 0
         cachedMainBufferHwndKey = 0L
+        lastPaintedNonOverlayVersion = -1L
+        releaseCardGridBackBuffer()
+    }
+
+    private fun obtainCardGridBackBuffer(hdc: HDC?, width: Int, height: Int): HDC? = memScoped {
+        if (cachedCardGridDc != null &&
+            cachedCardGridBmp != null &&
+            cachedCardGridPixels != null &&
+            cachedCardGridAllocW == width &&
+            cachedCardGridAllocH >= height
+        ) {
+            return@memScoped cachedCardGridDc
+        }
+        releaseCardGridBackBuffer()
+        val memDc = CreateCompatibleDC(hdc) ?: return@memScoped null
+        val bmi = alloc<BITMAPINFO>()
+        bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+        bmi.bmiHeader.biWidth = width
+        bmi.bmiHeader.biHeight = -height
+        bmi.bmiHeader.biPlanes = 1u
+        bmi.bmiHeader.biBitCount = 32u
+        bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+        val bitsPtr = alloc<COpaquePointerVar>()
+        val memBmp = CreateDIBSection(hdc, bmi.ptr, DIB_RGB_COLORS.toUInt(), bitsPtr.ptr, null, 0u)
+        if (memBmp == null || bitsPtr.value == null) {
+            if (memBmp != null) DeleteObject(memBmp)
+            DeleteDC(memDc)
+            return@memScoped null
+        }
+        cachedCardGridOldBmp = SelectObject(memDc, memBmp)
+        cachedCardGridDc = memDc
+        cachedCardGridBmp = memBmp
+        cachedCardGridPixels = bitsPtr.value?.reinterpret()
+        cachedCardGridAllocW = width
+        cachedCardGridAllocH = height
+        cachedCardGridWidget = null
+        cachedCardGridMutVer = -1L
+        memDc
+    }
+
+    private fun releaseCardGridBackBuffer() {
+        val dc = cachedCardGridDc
+        val bmp = cachedCardGridBmp
+        val old = cachedCardGridOldBmp
+        if (dc != null && old != null) {
+            SelectObject(dc, old)
+        }
+        if (bmp != null) {
+            DeleteObject(bmp)
+        }
+        if (dc != null) {
+            DeleteDC(dc)
+        }
+        cachedCardGridDc = null
+        cachedCardGridBmp = null
+        cachedCardGridOldBmp = null
+        cachedCardGridPixels = null
+        cachedCardGridAllocW = 0
+        cachedCardGridAllocH = 0
+        cachedCardGridWidget = null
+        cachedCardGridMutVer = -1L
+        cachedCardGridW = 0
+        cachedCardGridH = 0
+        cachedCardPageFrameHwnd = 0L
+        cachedCardPageFrameRootVer = -1L
+        cachedCardPageFramePage = null
     }
 
     fun paintWindow(hwnd: HWND) = memScoped {
@@ -1518,13 +2820,31 @@ object Win32NativeWindowHost {
         var tempMemBmp: HBITMAP? = null
         var tempOldBmp: HGDIOBJ? = null
         val memDc = if (isMainWin) {
-            obtainMainBackBufferDc(hdc, hwnd.toLong(), clientW, clientH)
+            val mainDc = obtainMainBackBufferDc(hdc, hwnd.toLong(), clientW, clientH)
+            activeBackBufferDc = mainDc
+            activeBackBufferPixels = cachedMainBackBufferPixels
+            activeBackBufferWidth = cachedMainBackBufferWidth
+            activeBackBufferHeight = cachedMainBackBufferHeight
+            mainDc
         } else {
             val dc = CreateCompatibleDC(hdc)
-            val bmp = CreateCompatibleBitmap(hdc, clientW, clientH)
+            val bmi = alloc<BITMAPINFO>()
+            bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+            bmi.bmiHeader.biWidth = clientW
+            bmi.bmiHeader.biHeight = -clientH
+            bmi.bmiHeader.biPlanes = 1u
+            bmi.bmiHeader.biBitCount = 32u
+            bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+            val bitsPtr = alloc<COpaquePointerVar>()
+            val bmp = CreateDIBSection(hdc, bmi.ptr, DIB_RGB_COLORS.toUInt(), bitsPtr.ptr, null, 0u)
+                ?: CreateCompatibleBitmap(hdc, clientW, clientH)
             tempOldBmp = SelectObject(dc, bmp)
             tempMemDc = dc
             tempMemBmp = bmp
+            activeBackBufferDc = dc
+            activeBackBufferPixels = bitsPtr.value?.reinterpret()
+            activeBackBufferWidth = clientW
+            activeBackBufferHeight = clientH
             dc
         }
 
@@ -1538,18 +2858,85 @@ object Win32NativeWindowHost {
 
         val oldFont = SelectObject(memDc, fontNormal)
         SetBkMode(memDc, TRANSPARENT)
+        resetSoftClipRect()
+        gdiDirtySinceLastFlush = false
 
         fun finishPaint() {
-            BitBlt(hdc, 0, 0, clientW, clientH, memDc, 0, 0, SRCCOPY)
+            val rcL = ps.rcPaint.left.coerceIn(0, clientW)
+            val rcT = ps.rcPaint.top.coerceIn(0, clientH)
+            val rcR = ps.rcPaint.right.coerceIn(rcL, clientW)
+            val rcB = ps.rcPaint.bottom.coerceIn(rcT, clientH)
+            if (rcR > rcL && rcB > rcT) {
+                BitBlt(hdc, rcL, rcT, rcR - rcL, rcB - rcT, memDc, rcL, rcT, SRCCOPY)
+            } else {
+                BitBlt(hdc, 0, 0, clientW, clientH, memDc, 0, 0, SRCCOPY)
+            }
             SelectObject(memDc, oldFont)
             if (tempMemDc != null) {
                 SelectObject(tempMemDc, tempOldBmp)
                 if (tempMemBmp != null) DeleteObject(tempMemBmp)
                 DeleteDC(tempMemDc)
             }
+            activeBackBufferDc = cachedMainMemDc
+            activeBackBufferPixels = cachedMainBackBufferPixels
+            activeBackBufferWidth = cachedMainBackBufferWidth
+            activeBackBufferHeight = cachedMainBackBufferHeight
+            if (isMainWin) {
+                lastPaintedNonOverlayVersion = DesktopNativeWidget.globalNonOverlayMutationVersion
+                isVBlankVideoStageOnlyRepaint = false
+            }
             EndPaint(hwnd, ps.ptr)
+            runCatching { endPaintFrameNativeControls(hwnd) }
+            isPaintingWindow = false
         }
 
+        // Fast path for VBlank video-stage-only partial repaints (avoids redrawing TitleBar, Navbar, and Library LazyColumn)
+        val nonOverlayUnchanged = lastPaintedNonOverlayVersion == DesktopNativeWidget.globalNonOverlayMutationVersion
+        val vr = lastRenderedVideoStageRect
+        val rcL = ps.rcPaint.left
+        val rcT = ps.rcPaint.top
+        val rcR = ps.rcPaint.right
+        val rcB = ps.rcPaint.bottom
+        val rcInsideVideoStage = vr[2] > vr[0] && vr[3] > vr[1] &&
+            rcL >= vr[0] - 2 && rcT >= vr[1] - 2 && rcR <= vr[2] + 2 && rcB <= vr[3] + 2
+        if (isMainWin && vr[2] > vr[0] && vr[3] > vr[1] &&
+            (rcInsideVideoStage || (isVBlankVideoStageOnlyRepaint && nonOverlayUnchanged))
+        ) {
+            isPaintingWindow = true
+            isVBlankVideoStageOnlyRepaint = false
+            currentPaintHwndKey = hwnd.toLong()
+            val theme = if (isWindowsSystemDarkTheme()) darkSystemPalette else lightSystemPalette
+            val fastPathRendered = Win32GeneralComponentTreeRenderer.renderCachedVideoStageFastPath(
+                hwnd = hwnd,
+                hdc = memDc,
+                theme = theme,
+                fontSmall = fontSmall,
+                fontSmallBold = fontSmallBold,
+                fontNormal = fontNormal,
+                fontBold = fontBold,
+                fontTitle = fontTitle
+            )
+            if (fastPathRendered) {
+                if (hoverHwndKey == hwnd.toLong()) {
+                    renderHoveredTooltipOverlay(memDc, fontSmall, theme, clientW, clientH)
+                }
+                val bltL = rcL.coerceIn(0, clientW)
+                val bltT = rcT.coerceIn(0, clientH)
+                val bltR = rcR.coerceIn(bltL, clientW)
+                val bltB = rcB.coerceIn(bltT, clientH)
+                if (bltR > bltL && bltB > bltT) {
+                    BitBlt(hdc, bltL, bltT, bltR - bltL, bltB - bltT, memDc, bltL, bltT, SRCCOPY)
+                }
+                SelectObject(memDc, oldFont)
+                EndPaint(hwnd, ps.ptr)
+                isPaintingWindow = false
+                return@memScoped
+            }
+        }
+        isVBlankVideoStageOnlyRepaint = false
+
+        isPaintingWindow = true
+        beginPaintFrameNativeControls(hwnd)
         currentPaintHwndKey = hwnd.toLong()
         hitRegions.clear()
         if (hwnd == activeHwnd) {
@@ -1561,9 +2948,58 @@ object Win32NativeWindowHost {
         val toolPalettes = mutableListOf<DesktopToolPaletteNativeImpl<*>>()
         val dockPanels = mutableListOf<DesktopDockPanelNativeImpl<*>>()
         val canvases = mutableListOf<DesktopNativeWidget>()
-        collectStudioWidgets(rootWidget, toolPalettes, dockPanels, canvases)
+        if (rootWidget != null) {
+            val mutVer = rootWidget.subtreeMutationVersion
+            if (rootWidget.attributes["cachedStudioWidgetsVer"] as? Long == mutVer) {
+                @Suppress("UNCHECKED_CAST")
+                (rootWidget.attributes["cachedToolPalettes"] as? List<DesktopToolPaletteNativeImpl<*>>)?.let {
+                    toolPalettes.addAll(it)
+                }
+                @Suppress("UNCHECKED_CAST")
+                (rootWidget.attributes["cachedDockPanels"] as? List<DesktopDockPanelNativeImpl<*>>)?.let {
+                    dockPanels.addAll(it)
+                }
+                @Suppress("UNCHECKED_CAST")
+                (rootWidget.attributes["cachedStudioCanvases"] as? List<DesktopNativeWidget>)?.let {
+                    canvases.addAll(it)
+                }
+            } else {
+                collectStudioWidgets(rootWidget, toolPalettes, dockPanels, canvases)
+                rootWidget.attributes["cachedStudioWidgetsVer"] = mutVer
+                rootWidget.attributes["cachedToolPalettes"] = toolPalettes.toList()
+                rootWidget.attributes["cachedDockPanels"] = dockPanels.toList()
+                rootWidget.attributes["cachedStudioCanvases"] = canvases.toList()
+            }
+        }
 
         val theme = if (isWindowsSystemDarkTheme()) darkSystemPalette else lightSystemPalette
+
+        // Attached Native Dialog Window (DialogWindow has its own owned Win32 HWND!)
+        val dialogForHwnd = hwndToDialog[hwnd.toLong()]
+        if (dialogForHwnd != null) {
+            fillRectColor(memDc, 0, 0, clientW, clientH, theme.bgPanel)
+            drawRectBorder(memDc, 0, 0, clientW, clientH, theme.borderSubtle)
+            Win32GeneralComponentTreeRenderer.renderModalDialogBody(
+                hwnd = hwnd,
+                hdc = memDc,
+                theme = theme,
+                fontSmall = fontSmall,
+                fontNormal = fontNormal,
+                fontBold = fontBold,
+                fontTitle = fontTitle,
+                dialogWidget = dialogForHwnd.nativeWidget,
+                left = 12,
+                top = 12,
+                right = clientW - 12,
+                bottom = clientH - 12
+            )
+            if (hoverHwndKey == hwnd.toLong()) {
+                renderHoveredTooltipOverlay(memDc, fontSmall, theme, clientW, clientH)
+            }
+            finishPaint()
+            return@memScoped
+        }
+
         val toolboxDockPanel = dockPanels.firstOrNull {
             it.getTitle().contains("Toolbox", ignoreCase = true) ||
                 it.getTitle().contains("Tool", ignoreCase = true)
@@ -1649,15 +3085,34 @@ object Win32NativeWindowHost {
         }
 
         if (toolPalettes.isEmpty() && dockPanels.isEmpty()) {
-            fillRectColor(memDc, 0, 0, clientW, clientH, theme.bgBase)
-            val mainTitleBarH = renderMainWindowTitleBar(
-                hwnd = hwnd,
-                hdc = memDc,
-                theme = theme,
-                fontSmall = fontSmall,
-                fontBold = fontBold,
-                clientW = clientW
-            )
+            val isFullscreenActive = activeFullscreenElementWidget != null || isWindowFullscreenActive || activeWindowImpl?.isFullscreen() == true
+            val canSkipOuterClear = isMainWin &&
+                !isFullscreenActive &&
+                !hasCustomMainWindowTitleBar() &&
+                hoveredTooltip.isNullOrBlank() &&
+                rootWidget != null &&
+                cachedCardPageFrameHwnd == hwnd.toLong() &&
+                cachedCardPageFrameRootVer == rootWidget.subtreeMutationVersion &&
+                cachedCardPageFrameW == clientW &&
+                cachedCardPageFrameH == clientH &&
+                cachedCardPageFrameDark == theme.isDark &&
+                findBootstrapCardPageRoot(rootWidget) != null
+            if (!canSkipOuterClear) {
+                cachedCardPageFrameRootVer = -1L
+                fillRectColor(memDc, 0, 0, clientW, clientH, theme.bgBase)
+            }
+            val mainTitleBarH = if (isFullscreenActive) {
+                0
+            } else {
+                renderMainWindowTitleBar(
+                    hwnd = hwnd,
+                    hdc = memDc,
+                    theme = theme,
+                    fontSmall = fontSmall,
+                    fontBold = fontBold,
+                    clientW = clientW
+                )
+            }
             renderGeneralApplicationLayout(
                 hwnd = hwnd,
                 hdc = memDc,
@@ -1674,7 +3129,11 @@ object Win32NativeWindowHost {
                 clientH = clientH,
                 bodyTop = mainTitleBarH
             )
-            if (hoverHwndKey == hwnd.toLong()) {
+            if (isMainWin) {
+                lastPaintedNonOverlayVersion = DesktopNativeWidget.globalNonOverlayMutationVersion
+            }
+            if (hoverHwndKey == hwnd.toLong() && !hoveredTooltip.isNullOrBlank()) {
+                cachedCardPageFrameRootVer = -1L
                 renderHoveredTooltipOverlay(memDc, fontSmall, theme, clientW, clientH)
             }
             finishPaint()
@@ -1708,7 +3167,7 @@ object Win32NativeWindowHost {
 
             fillRectColor(memDc, 6, topBarH + 6, clientW - 6, bodyBottom - 6, theme.bgCard)
             drawRectBorder(memDc, 6, topBarH + 6, clientW - 6, bodyBottom - 6, theme.borderSubtle)
-            renderCenterCanvas2D(
+            renderCenterSurfaceViewport(
                 hwnd = hwnd,
                 hdc = memDc,
                 theme = theme,
@@ -1728,8 +3187,6 @@ object Win32NativeWindowHost {
             fillRectColor(memDc, 0, bodyBottom, clientW, clientH, theme.bgPanel)
             drawLineColor(memDc, 0, bodyBottom, clientW, bodyBottom, theme.borderSubtle)
             renderStudioStatusBar(memDc, theme, fontSmall, rootWidget, dockPanels, clientW, bodyBottom, clientH)
-
-            renderActiveModalOverlay(hwnd, memDc, theme, fontSmall, fontNormal, fontBold, fontTitle, clientW, clientH)
 
             if (hoverHwndKey == hwnd.toLong()) {
                 renderHoveredTooltipOverlay(memDc, fontSmall, theme, clientW, clientH)
@@ -1809,7 +3266,7 @@ object Win32NativeWindowHost {
         // 4. Center Below Timeline: Hybrid Vector + Raster Canvas Viewport
         fillRectColor(memDc, centerLeft, canvasTop, centerRight, canvasBottom, theme.bgCard)
         drawRectBorder(memDc, centerLeft, canvasTop, centerRight, canvasBottom, theme.borderSubtle)
-        renderCenterCanvas2D(
+        renderCenterSurfaceViewport(
             hwnd = hwnd,
             hdc = memDc,
             theme = theme,
@@ -1849,10 +3306,7 @@ object Win32NativeWindowHost {
         drawLineColor(memDc, 0, bodyBottom, clientW, bodyBottom, theme.borderSubtle)
         renderStudioStatusBar(memDc, theme, fontSmall, rootWidget, dockPanels, clientW, bodyBottom, clientH)
 
-        // 7. Active Modal Dialog Overlay (if any Modal is open)
-        renderActiveModalOverlay(hwnd, memDc, theme, fontSmall, fontNormal, fontBold, fontTitle, clientW, clientH)
-
-        // 8. Native Hover Tooltip Popup Overlay
+        // 7. Native Hover Tooltip Popup Overlay
         if (hoverHwndKey == hwnd.toLong()) {
             renderHoveredTooltipOverlay(memDc, fontSmall, theme, clientW, clientH)
         }
@@ -1868,28 +3322,39 @@ object Win32NativeWindowHost {
             DEFAULT_PITCH.toUInt(), "Segoe UI"
         )
 
-    private fun widgetHasClass(widget: DesktopNativeWidget?, className: String): Boolean {
-        if (widget == null) return false
-        val impl = widget.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
-        if (impl != null) {
-            return impl.hasClass(className)
+    internal fun widgetHasClass(widget: DesktopNativeWidget?, className: String): Boolean {
+        if (widget == null || className.isEmpty()) return false
+        if (widget.cachedAllClassTokens.isEmpty() &&
+            (widget.styleProperties["class"] != null ||
+                widget.attributes["class"] != null ||
+                widget.attributes["bootstrapClass"] != null ||
+                widget.attributes["enumClasses"] != null ||
+                widget.attributes["nativeImpl"] != null)
+        ) {
+            widget.rebuildClassTokensCache(
+                (widget.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>)?.componentClassPrefix ?: ""
+            )
         }
-        val clsStr = (widget.attributes["bootstrapClass"] as? String).orEmpty()
-        if (clsStr.isEmpty()) return false
-        return clsStr.split(WHITESPACE_REGEX).contains(className)
+        return className in widget.cachedAllClassTokens
     }
 
-    private fun findWidgetByClass(root: DesktopNativeWidget?, className: String): DesktopNativeWidget? {
+    internal fun findWidgetByClass(root: DesktopNativeWidget?, className: String): DesktopNativeWidget? {
         if (root == null || !root.visible || root.disposed) return null
         if (widgetHasClass(root, className)) return root
-        for (child in root.children) {
-            val found = findWidgetByClass(child, className)
-            if (found != null) return found
+        val list = root.children
+        var i = 0
+        while (i < list.size) {
+            val child = list.getOrNull(i)
+            if (child != null) {
+                val found = findWidgetByClass(child, className)
+                if (found != null) return found
+            }
+            i++
         }
         return null
     }
 
-    private fun findWidgetsByClass(
+    internal fun findWidgetsByClass(
         root: DesktopNativeWidget?,
         className: String,
         out: MutableList<DesktopNativeWidget> = mutableListOf()
@@ -1898,49 +3363,68 @@ object Win32NativeWindowHost {
         if (widgetHasClass(root, className)) {
             out.add(root)
         }
-        for (child in root.children) {
-            findWidgetsByClass(child, className, out)
+        val list = root.children
+        var i = 0
+        while (i < list.size) {
+            val child = list.getOrNull(i)
+            if (child != null) {
+                findWidgetsByClass(child, className, out)
+            }
+            i++
         }
         return out
     }
 
-    private fun extractWidgetText(widget: DesktopNativeWidget?): String {
+    internal fun extractWidgetText(widget: DesktopNativeWidget?): String {
         if (widget == null) return ""
         val impl = widget.attributes["nativeImpl"]
         if (impl is DesktopTextNativeImpl<*>) return impl.getText()
         if (impl is DesktopButtonNativeImpl<*>) return impl.getText()
-        for (child in widget.children) {
-            val t = extractWidgetText(child)
-            if (t.isNotEmpty()) return t
+        val list = widget.children
+        var i = 0
+        while (i < list.size) {
+            val child = list.getOrNull(i)
+            if (child != null) {
+                val t = extractWidgetText(child)
+                if (t.isNotEmpty()) return t
+            }
+            i++
         }
         return ""
     }
 
-    private fun extractProgressBarValue(widget: DesktopNativeWidget?): Float {
+    internal fun extractProgressBarValue(widget: DesktopNativeWidget?): Float {
         if (widget == null) return 0f
         val impl = widget.attributes["nativeImpl"]
         if (impl is DesktopProgressBarNativeImpl<*>) return impl.getProgress()
-        for (child in widget.children) {
-            val childImpl = child.attributes["nativeImpl"]
+        val list = widget.children
+        var i = 0
+        while (i < list.size) {
+            val child = list.getOrNull(i)
+            val childImpl = child?.attributes?.get("nativeImpl")
             if (childImpl is DesktopProgressBarNativeImpl<*>) return childImpl.getProgress()
+            i++
         }
         return 0f
     }
 
     private fun findBootstrapCardPageRoot(rootWidget: DesktopNativeWidget?): DesktopNativeWidget? {
         if (rootWidget == null) return null
-        if (findWidgetByClass(rootWidget, "menu") != null) return null
-        val pageHost = findWidgetByClass(rootWidget, "page-host")
-        if (pageHost != null && findWidgetByClass(pageHost, "card") != null) {
-            return rootWidget
+        val mutVer = rootWidget.subtreeMutationVersion
+        if (rootWidget.attributes["cachedBootstrapCardPageRootVer"] as? Long == mutVer) {
+            return if (rootWidget.attributes["cachedBootstrapCardPageRootMatch"] == true) rootWidget else null
         }
-        if (findWidgetByClass(rootWidget, "card-body") != null) {
-            return rootWidget
-        }
-        return null
+        val matched = findWidgetByClass(rootWidget, "menu") == null &&
+            findWidgetByClass(rootWidget, "hybrid-column-layout") == null &&
+            findWidgetByClass(rootWidget, "episodecaster-navbar") == null &&
+            (findWidgetByClass(rootWidget, "page-host")?.let { findWidgetByClass(it, "card") != null } == true ||
+                findWidgetByClass(rootWidget, "card-body") != null)
+        rootWidget.attributes["cachedBootstrapCardPageRootVer"] = mutVer
+        rootWidget.attributes["cachedBootstrapCardPageRootMatch"] = matched
+        return if (matched) rootWidget else null
     }
 
-    private fun collectTitleBarWidgetSet(vararg titleBars: TitleBar?): Set<DesktopNativeWidget> {
+    internal fun collectTitleBarWidgetSet(vararg titleBars: TitleBar?): Set<DesktopNativeWidget> {
         val result = mutableSetOf<DesktopNativeWidget>()
         for (tb in titleBars) {
             if (tb == null) continue
@@ -1954,7 +3438,7 @@ object Win32NativeWindowHost {
         return result
     }
 
-    private fun isWidgetMountedInTitleBar(
+    internal fun isWidgetMountedInTitleBar(
         widget: DesktopNativeWidget?,
         titleBarWidgets: Set<DesktopNativeWidget> = emptySet()
     ): Boolean {
@@ -1963,6 +3447,46 @@ object Win32NativeWindowHost {
         if (widget.attributes["mountedInTitleBar"] == true) return true
         if (widget.attributes["data-mounted-in-titlebar"] == "true") return true
         return false
+    }
+
+    /**
+     * Returns the single full-window canvas widget ONLY when the application root
+     * (after unwrapping single-child shell wrappers) is a standalone full-window surface
+     * (such as an Alien application or a single-canvas demo), and NEVER when a canvas
+     * is an embedded widget inside a native UI component hierarchy.
+     */
+    private fun findFullWindowCanvasWidget(
+        rootWidget: DesktopNativeWidget?,
+        titleBarWidgets: Set<DesktopNativeWidget>
+    ): DesktopNativeWidget? {
+        var cur: DesktopNativeWidget? = rootWidget ?: return null
+        var depth = 0
+        while (cur != null && depth < 12) {
+            if (!cur.visible || cur.disposed) return null
+            if (cur.attributes.containsKey("captureRgba") || cur.attributes.containsKey("captureBgra")) {
+                return cur
+            }
+            if (widgetHasClass(cur, "hybrid-column-layout") ||
+                widgetHasClass(cur, "gui-hybrid-split-navigation") ||
+                widgetHasClass(cur, "gui-collapsible-bottom-dock") ||
+                widgetHasClass(cur, "episodecaster-navbar") ||
+                widgetHasClass(cur, "navbar") ||
+                widgetHasClass(cur, "card")
+            ) {
+                return null
+            }
+            val snapshot = runCatching { cur.children.toTypedArray() }.getOrElse { emptyArray() }
+            val visibleChildren = snapshot.filter {
+                it.visible && !it.disposed && !isWidgetMountedInTitleBar(it, titleBarWidgets) &&
+                    it.attributes["nativeImpl"] !is DesktopDialogWindowNativeImpl<*>
+            }
+            if (visibleChildren.size != 1) {
+                return null
+            }
+            cur = visibleChildren.first()
+            depth++
+        }
+        return null
     }
 
     /**
@@ -1984,20 +3508,33 @@ object Win32NativeWindowHost {
         clientH: Int,
         bodyTop: Int = 0
     ) {
-        collectTitleBarWidgetSet(activeWindowImpl?.getTitleBarInstructions())
-        if (canvases.isNotEmpty() && rootWidget?.attributes?.get("alienHostContainer") == "true") {
-            renderGeneralCanvas2DViewport(
-                hdc = hdc,
-                canvasWidget = canvases.first(),
-                clientW = clientW,
-                clientH = clientH,
-                bodyTop = bodyTop
-            )
-            return
-        }
+        val titleBarWidgets = collectTitleBarWidgetSet(activeWindowImpl?.getTitleBarInstructions())
 
-        val dataEditorRoot = findWidgetByClass(rootWidget, "data-editor-root")
-            ?: findWidgetByClass(rootWidget, "lazy-grid-tree")
+        val rootMutVer = rootWidget?.subtreeMutationVersion ?: -1L
+        val cachedLayoutScanVer = rootWidget?.attributes?.get("cachedGeneralLayoutScanVer") as? Long
+        val dataEditorRoot: DesktopNativeWidget?
+        val appHeader: DesktopNativeWidget?
+        val metricsStrip: DesktopNativeWidget?
+        val queuesContainer: DesktopNativeWidget?
+        if (rootWidget != null && cachedLayoutScanVer == rootMutVer) {
+            dataEditorRoot = rootWidget.attributes["cachedDataEditorRoot"] as? DesktopNativeWidget
+            appHeader = rootWidget.attributes["cachedAppHeader"] as? DesktopNativeWidget
+            metricsStrip = rootWidget.attributes["cachedMetricsStrip"] as? DesktopNativeWidget
+            queuesContainer = rootWidget.attributes["cachedQueuesContainer"] as? DesktopNativeWidget
+        } else {
+            dataEditorRoot = findWidgetByClass(rootWidget, "data-editor-root")
+                ?: findWidgetByClass(rootWidget, "lazy-grid-tree")
+            appHeader = if (dataEditorRoot == null) findWidgetByClass(rootWidget, "app-header") else null
+            metricsStrip = if (appHeader != null) findWidgetByClass(rootWidget, "metrics-strip") else null
+            queuesContainer = if (appHeader != null) findWidgetByClass(rootWidget, "queues-container") else null
+            if (rootWidget != null) {
+                rootWidget.attributes["cachedGeneralLayoutScanVer"] = rootMutVer
+                if (dataEditorRoot != null) rootWidget.attributes["cachedDataEditorRoot"] = dataEditorRoot else rootWidget.attributes.remove("cachedDataEditorRoot")
+                if (appHeader != null) rootWidget.attributes["cachedAppHeader"] = appHeader else rootWidget.attributes.remove("cachedAppHeader")
+                if (metricsStrip != null) rootWidget.attributes["cachedMetricsStrip"] = metricsStrip else rootWidget.attributes.remove("cachedMetricsStrip")
+                if (queuesContainer != null) rootWidget.attributes["cachedQueuesContainer"] = queuesContainer else rootWidget.attributes.remove("cachedQueuesContainer")
+            }
+        }
         if (dataEditorRoot != null) {
             renderDataEditorLazyGridTreeLayout(
                 hwnd = hwnd,
@@ -2013,10 +3550,6 @@ object Win32NativeWindowHost {
             )
             return
         }
-
-        val appHeader = findWidgetByClass(rootWidget, "app-header")
-        val metricsStrip = findWidgetByClass(rootWidget, "metrics-strip")
-        val queuesContainer = findWidgetByClass(rootWidget, "queues-container")
 
         if (appHeader != null && metricsStrip != null && queuesContainer != null) {
             renderHeaderMetricsQueuesLayout(
@@ -2037,17 +3570,6 @@ object Win32NativeWindowHost {
             return
         }
 
-        if (canvases.isNotEmpty()) {
-            renderGeneralCanvas2DViewport(
-                hdc = hdc,
-                canvasWidget = canvases.first(),
-                clientW = clientW,
-                clientH = clientH,
-                bodyTop = bodyTop
-            )
-            return
-        }
-
         val cardPageRoot = findBootstrapCardPageRoot(rootWidget)
         if (cardPageRoot != null) {
             renderBootstrapCardPageLayout(
@@ -2061,6 +3583,18 @@ object Win32NativeWindowHost {
                 fontTitle = fontTitle,
                 fontMetricBig = fontMetricBig,
                 cardPageRoot = cardPageRoot,
+                clientW = clientW,
+                clientH = clientH,
+                bodyTop = bodyTop
+            )
+            return
+        }
+
+        val fullWindowCanvas = findFullWindowCanvasWidget(rootWidget, titleBarWidgets)
+        if (fullWindowCanvas != null) {
+            renderGeneralSurfaceViewport(
+                hdc = hdc,
+                canvasWidget = fullWindowCanvas,
                 clientW = clientW,
                 clientH = clientH,
                 bodyTop = bodyTop
@@ -2088,72 +3622,330 @@ object Win32NativeWindowHost {
             return
         }
 
-        // Generic application fallback
-        val buttons = mutableListOf<DesktopButtonNativeImpl<*>>()
-        val checkboxes = mutableListOf<DesktopCheckboxNativeImpl<*>>()
-        val selects = mutableListOf<DesktopSelectNativeImpl<*>>()
-        val sliders = mutableListOf<DesktopRangeSliderNativeImpl<*>>()
-        val texts = mutableListOf<DesktopTextNativeImpl<*>>()
-        collectPanelControls(rootWidget, buttons, checkboxes, selects, sliders, texts)
+        Win32GeneralComponentTreeRenderer.renderGeneralComponentTree(
+            hwnd = hwnd,
+            hdc = hdc,
+            theme = theme,
+            fontSmall = fontSmall,
+            fontSmallBold = fontSmallBold,
+            fontNormal = fontNormal,
+            fontBold = fontBold,
+            fontTitle = fontTitle,
+            fontMetricBig = fontMetricBig,
+            rootWidget = rootWidget,
+            titleBarWidgets = titleBarWidgets,
+            clientW = clientW,
+            clientH = clientH,
+            bodyTop = bodyTop
+        )
+    }
 
-        val leftW = if (canvases.isNotEmpty()) min(460, clientW / 2) else clientW - 32
-        var y = 16
-        val leftX = 16
-        val rightX = leftX + leftW
-
-        SelectObject(hdc, fontNormal)
-        for (txt in texts.map { it.getText().trim() }.filter { it.isNotEmpty() }.distinct().take(10)) {
-            if (y + 22 > clientH - 16) break
-            drawTextInRect(hdc, txt, leftX, y, rightX, y + 20, theme.textSecondary)
-            y += 22
+    private fun blitScaledBgraToHdc(
+        hdc: HDC?,
+        left: Int,
+        top: Int,
+        drawW: Int,
+        drawH: Int,
+        bgra: ByteArray
+    ) {
+        if (drawW <= 0 || drawH <= 0 || bgra.size < drawW * drawH * 4) return
+        val bufPixels = when {
+            hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null -> activeBackBufferPixels
+            else -> cachedMainBackBufferPixels
         }
-        y += 8
+        val bufW = when {
+            hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null -> activeBackBufferWidth
+            else -> cachedMainBackBufferWidth
+        }
+        val bufH = when {
+            hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null -> activeBackBufferHeight
+            else -> cachedMainBackBufferHeight
+        }
+        if (bufPixels != null && left >= 0 && top >= 0 && left + drawW <= bufW && top + drawH <= bufH) {
+            if (gdiDirtySinceLastFlush) {
+                GdiFlush()
+                gdiDirtySinceLastFlush = false
+            }
+            bgra.usePinned { pinned ->
+                val srcBase = pinned.addressOf(0)
+                val rowBytes = (drawW * 4).toULong()
+                for (row in 0 until drawH) {
+                    val dstRowPtr = bufPixels + ((top + row) * bufW + left) * 4
+                    val srcRowPtr = srcBase + (row * drawW * 4)
+                    platform.posix.memcpy(dstRowPtr, srcRowPtr, rowBytes)
+                }
+            }
+            return
+        }
+        memScoped {
+            val bmi = alloc<BITMAPINFO>()
+            bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+            bmi.bmiHeader.biWidth = drawW
+            bmi.bmiHeader.biHeight = -drawH
+            bmi.bmiHeader.biPlanes = 1u
+            bmi.bmiHeader.biBitCount = 32u
+            bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+            SetStretchBltMode(hdc, HALFTONE)
+            SetBrushOrgEx(hdc, 0, 0, null)
+            bgra.usePinned { pinned ->
+                StretchDIBits(
+                    hdc,
+                    left,
+                    top,
+                    drawW,
+                    drawH,
+                    0,
+                    0,
+                    drawW,
+                    drawH,
+                    pinned.addressOf(0),
+                    bmi.ptr,
+                    DIB_RGB_COLORS.toUInt(),
+                    SRCCOPY
+                )
+            }
+        }
+    }
 
-        if (buttons.isNotEmpty()) {
-            val cols = if (leftW > 640) 4 else 2
-            val gap = 8
-            val btnW = (leftW - gap * (cols - 1)) / cols
-            buttons.take(24).forEachIndexed { idx, btn ->
-                val col = idx % cols
-                val bx = leftX + col * (btnW + gap)
-                if (y + 28 < clientH - 16) {
-                    val iconSpec = btn.getIcon()
-                    val labelStr = if (!iconSpec.isNullOrBlank()) btn.getText() else btn.getText().ifBlank { "Button ${idx + 1}" }
-                    drawRoundedButton(
-                        hdc = hdc,
-                        font = fontNormal,
-                        label = labelStr,
-                        icon = iconSpec,
-                        left = bx,
-                        top = y,
-                        right = bx + btnW,
-                        bottom = y + 28,
-                        bg = theme.bgCard,
-                        border = theme.borderSubtle,
-                        fg = theme.textPrimary,
-                        radius = 2
-                    )
-                    val ry = y
-                    hitRegions.add(
-                        HitRegion(
-                            left = bx,
-                            top = ry,
-                            right = bx + btnW,
-                            bottom = ry + 28,
-                            tooltip = btn.getTooltipText(),
-                            onClick = { _, _ -> btn.dispatchClick() }
-                        )
-                    )
-                }
-                if (col == cols - 1 || idx == min(23, buttons.lastIndex)) {
-                    y += 34
-                }
+    private fun resampleBgraBilinearFromPtr(
+        srcPtr: CPointer<ByteVar>,
+        srcW: Int,
+        srcH: Int,
+        dstW: Int,
+        dstH: Int,
+        out: ByteArray
+    ) {
+        val x0Arr = IntArray(dstW)
+        val x1Arr = IntArray(dstW)
+        val wxArr = IntArray(dstW)
+        val maxSrcX = (srcW - 1).coerceAtLeast(0)
+        val maxSrcY = (srcH - 1).coerceAtLeast(0)
+        for (dx in 0 until dstW) {
+            val srcXf = ((dx + 0.5f) * srcW.toFloat() / dstW.toFloat() - 0.5f).coerceIn(0f, maxSrcX.toFloat())
+            val x0 = srcXf.toInt().coerceIn(0, maxSrcX)
+            val x1 = (x0 + 1).coerceAtMost(maxSrcX)
+            x0Arr[dx] = x0 * 4
+            x1Arr[dx] = x1 * 4
+            wxArr[dx] = ((srcXf - x0) * 256f).toInt().coerceIn(0, 256)
+        }
+        var dstIdx = 0
+        for (dy in 0 until dstH) {
+            val srcYf = ((dy + 0.5f) * srcH.toFloat() / dstH.toFloat() - 0.5f).coerceIn(0f, maxSrcY.toFloat())
+            val y0 = srcYf.toInt().coerceIn(0, maxSrcY)
+            val y1 = (y0 + 1).coerceAtMost(maxSrcY)
+            val wy = ((srcYf - y0) * 256f).toInt().coerceIn(0, 256)
+            val invWy = 256 - wy
+            val row0Off = y0 * srcW * 4
+            val row1Off = y1 * srcW * 4
+            for (dx in 0 until dstW) {
+                val wx = wxArr[dx]
+                val invWx = 256 - wx
+                val w00 = invWx * invWy
+                val w10 = wx * invWy
+                val w01 = invWx * wy
+                val w11 = wx * wy
+                val p00 = row0Off + x0Arr[dx]
+                val p10 = row0Off + x1Arr[dx]
+                val p01 = row1Off + x0Arr[dx]
+                val p11 = row1Off + x1Arr[dx]
+
+                val b00 = srcPtr[p00].toInt() and 0xFF
+                val g00 = srcPtr[p00 + 1].toInt() and 0xFF
+                val r00 = srcPtr[p00 + 2].toInt() and 0xFF
+                val b10 = srcPtr[p10].toInt() and 0xFF
+                val g10 = srcPtr[p10 + 1].toInt() and 0xFF
+                val r10 = srcPtr[p10 + 2].toInt() and 0xFF
+                val b01 = srcPtr[p01].toInt() and 0xFF
+                val g01 = srcPtr[p01 + 1].toInt() and 0xFF
+                val r01 = srcPtr[p01 + 2].toInt() and 0xFF
+                val b11 = srcPtr[p11].toInt() and 0xFF
+                val g11 = srcPtr[p11 + 1].toInt() and 0xFF
+                val r11 = srcPtr[p11 + 2].toInt() and 0xFF
+
+                out[dstIdx] = ((b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11 + 32768) ushr 16).toByte()
+                out[dstIdx + 1] = ((g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11 + 32768) ushr 16).toByte()
+                out[dstIdx + 2] = ((r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11 + 32768) ushr 16).toByte()
+                out[dstIdx + 3] = 255.toByte()
+                dstIdx += 4
             }
         }
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun renderGeneralCanvas2DViewport(
+    internal fun renderInlineCanvasSurface(
+        hdc: HDC?,
+        canvasWidget: DesktopNativeWidget,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        theme: SystemThemePalette,
+        registerAsPrimaryCanvas: Boolean = false
+    ) {
+        val drawW = (right - left).coerceAtLeast(1)
+        val drawH = (bottom - top).coerceAtLeast(1)
+        val surfWFn = canvasWidget.attributes["surfaceWidth"] as? (() -> Int)
+        val surfHFn = canvasWidget.attributes["surfaceHeight"] as? (() -> Int)
+        val resizeFn = canvasWidget.attributes["resizeSurface"] as? ((Int, Int) -> Unit)
+        val captureBgraPtrFn = canvasWidget.attributes["captureBgraPtr"] as? (() -> Pair<COpaquePointer?, Int>)
+        val captureBgraFn = canvasWidget.attributes["captureBgra"] as? (() -> ByteArray)
+
+        if (registerAsPrimaryCanvas) {
+            val curW = (surfWFn?.invoke() ?: drawW).coerceAtLeast(1)
+            val curH = (surfHFn?.invoke() ?: drawH).coerceAtLeast(1)
+            if (curW != drawW || curH != drawH) {
+                runCatching { resizeFn?.invoke(drawW, drawH) }
+            }
+        }
+
+        val surfW = (surfWFn?.invoke() ?: drawW).coerceAtLeast(1)
+        val surfH = (surfHFn?.invoke() ?: drawH).coerceAtLeast(1)
+        if (registerAsPrimaryCanvas || activeCanvasImpl == null) {
+            activeCanvasImpl = canvasWidget.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+            activeCanvasSurfaceSize = surfW to surfH
+            canvasViewportRect = intArrayOf(left, top, right, bottom)
+        }
+
+        val swapCount: Long = when (val sc = canvasWidget.attributes["swapCount"]) {
+            is Number -> sc.toLong()
+            is Function0<*> -> (sc.invoke() as? Number)?.toLong() ?: -1L
+            else -> -1L
+        }
+        val useAntialiasing = (canvasWidget.attributes["antialiasing"] as? Boolean) != false
+
+        val cachedScaled = cachedScaledVideoPixels
+        if (swapCount >= 0L &&
+            canvasWidget === cachedScaledVideoWidget &&
+            swapCount == cachedScaledVideoSwapCount &&
+            drawW == cachedScaledVideoW &&
+            drawH == cachedScaledVideoH &&
+            cachedScaled != null &&
+            cachedScaled.size >= drawW * drawH * 4
+        ) {
+            blitScaledBgraToHdc(hdc, left, top, drawW, drawH, cachedScaled)
+            drawRectBorder(hdc, left, top, right, bottom, theme.borderSubtle)
+            return
+        }
+
+        if (captureBgraPtrFn != null) {
+            val (bgraPtr, byteLen) = runCatching { captureBgraPtrFn.invoke() }.getOrNull() ?: (null to 0)
+            if (bgraPtr != null && byteLen >= surfW * surfH * 4) {
+                if (useAntialiasing && drawW in 1..4096 && drawH in 1..4096) {
+                    val neededBytes = drawW * drawH * 4
+                    val targetArray = if (cachedScaled != null && cachedScaled.size == neededBytes) {
+                        cachedScaled
+                    } else {
+                        ByteArray(neededBytes).also { cachedScaledVideoPixels = it }
+                    }
+                    val srcBytePtr = bgraPtr.reinterpret<ByteVar>()
+                    if (drawW == surfW && drawH == surfH) {
+                        targetArray.usePinned { pinned ->
+                            platform.posix.memcpy(pinned.addressOf(0), srcBytePtr, neededBytes.toULong())
+                        }
+                    } else {
+                        resampleBgraBilinearFromPtr(srcBytePtr, surfW, surfH, drawW, drawH, targetArray)
+                    }
+                    cachedScaledVideoWidget = canvasWidget
+                    cachedScaledVideoSwapCount = swapCount
+                    cachedScaledVideoW = drawW
+                    cachedScaledVideoH = drawH
+                    blitScaledBgraToHdc(hdc, left, top, drawW, drawH, targetArray)
+                    drawRectBorder(hdc, left, top, right, bottom, theme.borderSubtle)
+                    return
+                }
+                memScoped {
+                    val bmi = alloc<BITMAPINFO>()
+                    bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+                    bmi.bmiHeader.biWidth = surfW
+                    bmi.bmiHeader.biHeight = -surfH
+                    bmi.bmiHeader.biPlanes = 1u
+                    bmi.bmiHeader.biBitCount = 32u
+                    bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+
+                    SetStretchBltMode(hdc, HALFTONE)
+                    SetBrushOrgEx(hdc, 0, 0, null)
+                    StretchDIBits(
+                        hdc,
+                        left,
+                        top,
+                        drawW,
+                        drawH,
+                        0,
+                        0,
+                        surfW,
+                        surfH,
+                        bgraPtr,
+                        bmi.ptr,
+                        DIB_RGB_COLORS.toUInt(),
+                        SRCCOPY
+                    )
+                }
+                drawRectBorder(hdc, left, top, right, bottom, theme.borderSubtle)
+                return
+            }
+        }
+
+        val bgra = runCatching { captureBgraFn?.invoke() }.getOrNull()
+        if (bgra != null && bgra.size >= surfW * surfH * 4) {
+            if (useAntialiasing && drawW in 1..4096 && drawH in 1..4096) {
+                val neededBytes = drawW * drawH * 4
+                val targetArray = if (cachedScaled != null && cachedScaled.size == neededBytes) {
+                    cachedScaled
+                } else {
+                    ByteArray(neededBytes).also { cachedScaledVideoPixels = it }
+                }
+                if (drawW == surfW && drawH == surfH) {
+                    bgra.copyInto(targetArray, 0, 0, neededBytes)
+                } else {
+                    bgra.usePinned { pinned ->
+                        resampleBgraBilinearFromPtr(pinned.addressOf(0), surfW, surfH, drawW, drawH, targetArray)
+                    }
+                }
+                cachedScaledVideoWidget = canvasWidget
+                cachedScaledVideoSwapCount = swapCount
+                cachedScaledVideoW = drawW
+                cachedScaledVideoH = drawH
+                blitScaledBgraToHdc(hdc, left, top, drawW, drawH, targetArray)
+                drawRectBorder(hdc, left, top, right, bottom, theme.borderSubtle)
+                return
+            }
+            memScoped {
+                val bmi = alloc<BITMAPINFO>()
+                bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+                bmi.bmiHeader.biWidth = surfW
+                bmi.bmiHeader.biHeight = -surfH
+                bmi.bmiHeader.biPlanes = 1u
+                bmi.bmiHeader.biBitCount = 32u
+                bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+
+                SetStretchBltMode(hdc, HALFTONE)
+                SetBrushOrgEx(hdc, 0, 0, null)
+                bgra.usePinned { pinned ->
+                    StretchDIBits(
+                        hdc,
+                        left,
+                        top,
+                        drawW,
+                        drawH,
+                        0,
+                        0,
+                        surfW,
+                        surfH,
+                        pinned.addressOf(0),
+                        bmi.ptr,
+                        DIB_RGB_COLORS.toUInt(),
+                        SRCCOPY
+                    )
+                }
+            }
+        } else {
+            fillRectColor(hdc, left, top, right, bottom, rgb(14, 18, 24))
+        }
+        drawRectBorder(hdc, left, top, right, bottom, theme.borderSubtle)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun renderGeneralSurfaceViewport(
         hdc: HDC?,
         canvasWidget: DesktopNativeWidget,
         clientW: Int,
@@ -2165,7 +3957,7 @@ object Win32NativeWindowHost {
         val surfWFn = canvasWidget.attributes["surfaceWidth"] as? (() -> Int)
         val surfHFn = canvasWidget.attributes["surfaceHeight"] as? (() -> Int)
         val resizeFn = canvasWidget.attributes["resizeSurface"] as? ((Int, Int) -> Unit)
-        val vblankFn = canvasWidget.attributes["vblankDispatch"] as? ((Double?) -> Unit)
+        val captureBgraPtrFn = canvasWidget.attributes["captureBgraPtr"] as? (() -> Pair<COpaquePointer?, Int>)
         val captureBgraFn = canvasWidget.attributes["captureBgra"] as? (() -> ByteArray)
 
         val curW = (surfWFn?.invoke() ?: clientW).coerceAtLeast(1)
@@ -2173,12 +3965,45 @@ object Win32NativeWindowHost {
         if (curW != clientW || curH != viewportH) {
             runCatching { resizeFn?.invoke(clientW, viewportH) }
         }
-        runCatching { vblankFn?.invoke(null) }
 
         val surfW = (surfWFn?.invoke() ?: clientW).coerceAtLeast(1)
         val surfH = (surfHFn?.invoke() ?: viewportH).coerceAtLeast(1)
         activeCanvasSurfaceSize = surfW to surfH
         canvasViewportRect = intArrayOf(0, bodyTop, clientW, clientH)
+
+        if (captureBgraPtrFn != null) {
+            val (bgraPtr, byteLen) = runCatching { captureBgraPtrFn.invoke() }.getOrNull() ?: (null to 0)
+            if (bgraPtr != null && byteLen >= surfW * surfH * 4) {
+                memScoped {
+                    val bmi = alloc<BITMAPINFO>()
+                    bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+                    bmi.bmiHeader.biWidth = surfW
+                    bmi.bmiHeader.biHeight = -surfH
+                    bmi.bmiHeader.biPlanes = 1u
+                    bmi.bmiHeader.biBitCount = 32u
+                    bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+
+                    SetStretchBltMode(hdc, HALFTONE)
+                    SetBrushOrgEx(hdc, 0, 0, null)
+                    StretchDIBits(
+                        hdc,
+                        0,
+                        bodyTop,
+                        clientW,
+                        viewportH,
+                        0,
+                        0,
+                        surfW,
+                        surfH,
+                        bgraPtr,
+                        bmi.ptr,
+                        DIB_RGB_COLORS.toUInt(),
+                        SRCCOPY
+                    )
+                }
+                return
+            }
+        }
 
         val bgra = captureBgraFn?.invoke()
         if (bgra != null && bgra.size >= surfW * surfH * 4) {
@@ -2192,6 +4017,7 @@ object Win32NativeWindowHost {
                 bmi.bmiHeader.biCompression = BI_RGB.toUInt()
 
                 SetStretchBltMode(hdc, HALFTONE)
+                SetBrushOrgEx(hdc, 0, 0, null)
                 bgra.usePinned { pinned ->
                     StretchDIBits(
                         hdc,
@@ -2215,38 +4041,61 @@ object Win32NativeWindowHost {
 
     private fun findFirstScrollView(root: DesktopNativeWidget?): DesktopScrollViewNativeImpl<*>? {
         if (root == null || !root.visible || root.disposed) return null
+        val mutVer = root.subtreeMutationVersion
+        if (root.attributes["cachedScrollViewVer"] as? Long == mutVer) {
+            return root.attributes["cachedScrollViewRef"] as? DesktopScrollViewNativeImpl<*>
+        }
+        val found = findFirstScrollViewUncached(root)
+        root.attributes["cachedScrollViewVer"] = mutVer
+        if (found != null) {
+            root.attributes["cachedScrollViewRef"] = found
+        } else {
+            root.attributes.remove("cachedScrollViewRef")
+        }
+        return found
+    }
+
+    private fun findFirstScrollViewUncached(root: DesktopNativeWidget?): DesktopScrollViewNativeImpl<*>? {
+        if (root == null || !root.visible || root.disposed) return null
         val impl = root.attributes["nativeImpl"]
         if (impl is DesktopScrollViewNativeImpl<*>) return impl
-        for (child in root.children) {
-            val found = findFirstScrollView(child)
-            if (found != null) return found
+        val list = root.children
+        var i = 0
+        while (i < list.size) {
+            val child = list.getOrNull(i)
+            if (child != null) {
+                val found = findFirstScrollViewUncached(child)
+                if (found != null) return found
+            }
+            i++
         }
         return null
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun getCachedDirectOrNestedTexts(widget: DesktopNativeWidget): List<DesktopTextNativeImpl<*>> {
-        val childCount = widget.children.size
-        val cachedCount = widget.attributes["cachedTextsChildCount"] as? Int
+        val mutVer = widget.subtreeMutationVersion
+        val cachedVer = widget.attributes["cachedTextsMutVer"] as? Long
         val cachedList = widget.attributes["cachedTextsList"] as? List<DesktopTextNativeImpl<*>>
-        if (cachedCount == childCount && cachedList != null) {
+        if (cachedVer == mutVer && cachedList != null) {
             return cachedList
         }
         val collected = collectDirectOrNestedTexts(widget)
-        widget.attributes["cachedTextsChildCount"] = childCount
+        widget.attributes["cachedTextsMutVer"] = mutVer
         widget.attributes["cachedTextsList"] = collected
         return collected
     }
 
     @Suppress("UNCHECKED_CAST")
     private fun getCachedFirstButton(widget: DesktopNativeWidget): DesktopButtonNativeImpl<*>? {
-        val childCount = widget.children.size
-        val cachedCount = widget.attributes["cachedFirstBtnChildCount"] as? Int
-        if (cachedCount == childCount && widget.attributes.containsKey("cachedFirstBtnRef")) {
+        val mutVer = widget.subtreeMutationVersion
+        val cachedVer = widget.attributes["cachedFirstBtnMutVer"] as? Long
+        if (cachedVer == mutVer && widget.attributes.containsKey("cachedFirstBtnPresent")) {
             return widget.attributes["cachedFirstBtnRef"] as? DesktopButtonNativeImpl<*>
         }
         val firstBtn = collectDirectOrNestedButtons(widget).firstOrNull()
-        widget.attributes["cachedFirstBtnChildCount"] = childCount
+        widget.attributes["cachedFirstBtnMutVer"] = mutVer
+        widget.attributes["cachedFirstBtnPresent"] = firstBtn != null
         if (firstBtn != null) {
             widget.attributes["cachedFirstBtnRef"] = firstBtn
         } else {
@@ -2281,10 +4130,41 @@ object Win32NativeWindowHost {
             }
         }
 
-        val pageHost = findWidgetByClass(cardPageRoot, "page-host") ?: cardPageRoot
-        val currentPage = pageHost.children.lastOrNull { it.visible && !it.disposed } ?: pageHost
-        val outerCard = currentPage.children.firstOrNull { widgetHasClass(it, "card") } ?: currentPage
-        val cardBody = outerCard.children.firstOrNull { widgetHasClass(it, "card-body") } ?: outerCard
+        val rootMutVer = cardPageRoot.subtreeMutationVersion
+        val pageHost: DesktopNativeWidget
+        val currentPage: DesktopNativeWidget
+        val outerCard: DesktopNativeWidget
+        val cardBody: DesktopNativeWidget
+        val cachedNodesVer = cardPageRoot.attributes["cachedCardPageNodesVer"] as? Long
+        val cachedPageHost = cardPageRoot.attributes["cachedPageHostRef"] as? DesktopNativeWidget
+        val cachedCurrentPage = cardPageRoot.attributes["cachedCurrentPageRef"] as? DesktopNativeWidget
+        val cachedOuterCard = cardPageRoot.attributes["cachedOuterCardRef"] as? DesktopNativeWidget
+        val cachedCardBody = cardPageRoot.attributes["cachedCardBodyRef"] as? DesktopNativeWidget
+        if (cachedNodesVer == rootMutVer &&
+            cachedPageHost != null &&
+            cachedCurrentPage != null &&
+            cachedOuterCard != null &&
+            cachedCardBody != null
+        ) {
+            pageHost = cachedPageHost
+            currentPage = cachedCurrentPage
+            outerCard = cachedOuterCard
+            cardBody = cachedCardBody
+        } else {
+            pageHost = findWidgetByClass(cardPageRoot, "page-host") ?: cardPageRoot
+            currentPage = pageHost.children.lastOrNull { it.visible && !it.disposed } ?: pageHost
+            outerCard = currentPage.children.firstOrNull { widgetHasClass(it, "card") }
+                ?: findWidgetByClass(currentPage, "card")
+                ?: currentPage
+            cardBody = outerCard.children.firstOrNull { widgetHasClass(it, "card-body") }
+                ?: findWidgetByClass(outerCard, "card-body")
+                ?: outerCard
+            cardPageRoot.attributes["cachedCardPageNodesVer"] = rootMutVer
+            cardPageRoot.attributes["cachedPageHostRef"] = pageHost
+            cardPageRoot.attributes["cachedCurrentPageRef"] = currentPage
+            cardPageRoot.attributes["cachedOuterCardRef"] = outerCard
+            cardPageRoot.attributes["cachedCardBodyRef"] = cardBody
+        }
 
         val pageKey = "${currentPage.hashCode()}:${(currentPage.attributes["bootstrapClass"] as? String).orEmpty()}"
         if (pageKey != cardPageLastKey) {
@@ -2300,22 +4180,41 @@ object Win32NativeWindowHost {
         val outerTop = bodyTop + 12
         val outerBottom = clientH - 12
 
-        drawRoundedRect(
-            hdc = hdc,
-            left = outerLeft,
-            top = outerTop,
-            right = outerRight,
-            bottom = outerBottom,
-            radius = 8,
-            fillColor = theme.bgPanel,
-            borderColor = theme.borderSubtle
-        )
-
         val innerLeft = outerLeft + 20
         val scrollRailW = 18
         val innerRight = outerRight - 20 - scrollRailW
         val innerW = max(240, innerRight - innerLeft)
-        var headerBottom = outerTop + 14
+
+        // Case A: Inner Cards Grid (Index, AssetManager, ItemMenu, DBMenu, Templates)
+        val bodyMutVer = cardBody.subtreeMutationVersion
+        val cachedInnerCardsVer = cardBody.attributes["cachedInnerCardsVer"] as? Long
+        val cachedInnerCards = cardBody.attributes["cachedInnerCardsList"] as? List<DesktopNativeWidget>
+        val innerCards: List<DesktopNativeWidget> = if (cachedInnerCardsVer == bodyMutVer && cachedInnerCards != null) {
+            cachedInnerCards
+        } else {
+            val rawInnerCards = mutableListOf<DesktopNativeWidget>()
+            fun collectRawInnerCards(node: DesktopNativeWidget) {
+                if (!node.visible || node.disposed) return
+                if (node !== outerCard && widgetHasClass(node, "card")) {
+                    rawInnerCards.add(node)
+                    return
+                }
+                for (c in node.children) collectRawInnerCards(c)
+            }
+            collectRawInnerCards(cardBody)
+
+            val isMenuTileGrid = rawInnerCards.isNotEmpty() && rawInnerCards.all { cardNode ->
+                findFirstTextInput(cardNode) == null &&
+                    findFirstSelect(cardNode) == null &&
+                    findFirstCheckbox(cardNode) == null &&
+                    findFirstPixelSurface(cardNode) == null &&
+                    collectDirectOrNestedButtons(cardNode).size <= 1
+            }
+            val resolved = if (isMenuTileGrid) rawInnerCards else emptyList()
+            cardBody.attributes["cachedInnerCardsVer"] = bodyMutVer
+            cardBody.attributes["cachedInnerCardsList"] = resolved
+            resolved
+        }
 
         // Extract direct header texts (h1, h5) from cardBody
         var mainHeading: String? = null
@@ -2331,41 +4230,97 @@ object Win32NativeWindowHost {
                 }
             }
         }
-        if (!mainHeading.isNullOrEmpty()) {
-            SelectObject(hdc, fontMetricBig)
-            drawTextInRect(
+
+        val alertModal = cardPageRoot.children.firstOrNull { widgetHasClass(it, "modal") && it.visible }
+        val outerFrameValid = hwnd == activeHwnd &&
+            hdc == cachedMainMemDc &&
+            activeBackBufferPixels != null &&
+            alertModal == null &&
+            hoveredTooltip.isNullOrBlank() &&
+            innerCards.isNotEmpty() &&
+            cachedCardPageFrameHwnd == hwnd.toLong() &&
+            cachedCardPageFrameRootVer == rootMutVer &&
+            cachedCardPageFrameW == clientW &&
+            cachedCardPageFrameH == clientH &&
+            cachedCardPageFrameBodyTop == bodyTop &&
+            cachedCardPageFrameDark == theme.isDark &&
+            cachedCardPageFramePage === currentPage
+
+        var headerBottom = outerTop + 14
+        if (outerFrameValid) {
+            headerBottom = cachedCardPageFrameHeaderBottom
+        } else {
+            drawRoundedRect(
                 hdc = hdc,
-                text = mainHeading,
-                left = innerLeft,
-                top = headerBottom,
-                right = innerRight,
-                bottom = headerBottom + 32,
-                colorRef = theme.textPrimary,
-                center = true
+                left = outerLeft,
+                top = outerTop,
+                right = outerRight,
+                bottom = outerBottom,
+                radius = 8,
+                fillColor = theme.bgPanel,
+                borderColor = theme.borderSubtle
             )
-            headerBottom += 34
+            if (!mainHeading.isNullOrEmpty()) {
+                SelectObject(hdc, fontMetricBig)
+                drawTextInRect(
+                    hdc = hdc,
+                    text = mainHeading,
+                    left = innerLeft,
+                    top = headerBottom,
+                    right = innerRight,
+                    bottom = headerBottom + 32,
+                    colorRef = theme.textPrimary,
+                    center = true
+                )
+                headerBottom += 34
+            }
+            if (!subHeading.isNullOrEmpty()) {
+                SelectObject(hdc, fontNormal)
+                drawTextInRect(
+                    hdc = hdc,
+                    text = subHeading,
+                    left = innerLeft,
+                    top = headerBottom,
+                    right = innerRight,
+                    bottom = headerBottom + 22,
+                    colorRef = theme.textSecondary,
+                    center = true
+                )
+                headerBottom += 26
+            }
+            drawLineColor(hdc, innerLeft, headerBottom, innerRight, headerBottom, theme.borderSubtle)
+            if (hwnd == activeHwnd && hdc == cachedMainMemDc && alertModal == null && hoveredTooltip.isNullOrBlank() && innerCards.isNotEmpty()) {
+                cachedCardPageFrameHwnd = hwnd.toLong()
+                cachedCardPageFrameRootVer = rootMutVer
+                cachedCardPageFrameW = clientW
+                cachedCardPageFrameH = clientH
+                cachedCardPageFrameBodyTop = bodyTop
+                cachedCardPageFrameDark = theme.isDark
+                cachedCardPageFramePage = currentPage
+                cachedCardPageFrameHeaderBottom = headerBottom
+            } else {
+                cachedCardPageFrameRootVer = -1L
+            }
         }
-        if (!subHeading.isNullOrEmpty()) {
-            SelectObject(hdc, fontNormal)
-            drawTextInRect(
-                hdc = hdc,
-                text = subHeading,
-                left = innerLeft,
-                top = headerBottom,
-                right = innerRight,
-                bottom = headerBottom + 22,
-                colorRef = theme.textSecondary,
-                center = true
-            )
-            headerBottom += 26
-        }
-        drawLineColor(hdc, innerLeft, headerBottom, innerRight, headerBottom, theme.borderSubtle)
         val viewportTop = headerBottom + 10
         val viewportBottom = outerBottom - 12
         val viewportH = max(80, viewportBottom - viewportTop)
 
-        val savedDc = SaveDC(hdc)
-        IntersectClipRect(hdc, innerLeft - 4, viewportTop, innerRight + 4, viewportBottom)
+        if (outerFrameValid) {
+            fillRectColor(hdc, innerRight, viewportTop, outerRight - 2, viewportBottom, theme.bgPanel)
+        }
+
+        val useGdiViewportClip = innerCards.isEmpty()
+        val savedDc = if (useGdiViewportClip) {
+            pushClipRect(hdc, innerLeft - 4, viewportTop, innerRight + 4, viewportBottom)
+        } else {
+            softClipDepth = 1
+            softClipLeft = innerLeft - 4
+            softClipTop = viewportTop
+            softClipRight = innerRight + 4
+            softClipBottom = viewportBottom
+            0
+        }
 
         var contentY = viewportTop - cardPageScrollY
         val renderedWidgets = mutableSetOf<DesktopNativeWidget>()
@@ -2396,18 +4351,6 @@ object Win32NativeWindowHost {
             }
         }
 
-        // Case A: Inner Cards Grid (Index, AssetManager, ItemMenu, DBMenu, Templates)
-        val innerCards = mutableListOf<DesktopNativeWidget>()
-        fun findInnerCards(node: DesktopNativeWidget) {
-            if (!node.visible || node.disposed) return
-            if (node !== outerCard && widgetHasClass(node, "card")) {
-                innerCards.add(node)
-                return
-            }
-            for (c in node.children) findInnerCards(c)
-        }
-        findInnerCards(cardBody)
-
         if (innerCards.isNotEmpty()) {
             val cols = when {
                 innerW >= 780 -> 3
@@ -2417,96 +4360,369 @@ object Win32NativeWindowHost {
             val gap = 12
             val cardW = (innerW - gap * (cols - 1)) / cols
             val cardH = 128
+            val rowStride = cardH + gap
+            val totalRows = (innerCards.size + cols - 1) / cols
+            val totalCardGridH = totalRows * rowStride
 
-            innerCards.forEachIndexed { idx, cardWidget ->
-                val col = idx % cols
-                val row = idx / cols
-                val cx = innerLeft + col * (cardW + gap)
-                val cy = contentY + row * (cardH + gap)
+            val canUseGridSurfaceCache = totalCardGridH in 1..8192 && innerW in 64..4096 && activeBackBufferPixels != null
+            var blittedFromCache = false
+            if (canUseGridSurfaceCache) {
+                val cacheValid = cachedCardGridWidget === cardBody &&
+                    cachedCardGridMutVer == bodyMutVer &&
+                    cachedCardGridW == innerW &&
+                    cachedCardGridH == totalCardGridH &&
+                    cachedCardGridDark == theme.isDark &&
+                    cachedCardGridPixels != null
+                if (!cacheValid) {
+                    val gridDc = obtainCardGridBackBuffer(hdc, innerW, totalCardGridH)
+                    val gridPixels = cachedCardGridPixels
+                    if (gridDc != null && gridPixels != null) {
+                        val prevDc = activeBackBufferDc
+                        val prevPixels = activeBackBufferPixels
+                        val prevW = activeBackBufferWidth
+                        val prevH = activeBackBufferHeight
+                        val prevClipDepth = softClipDepth
+                        val prevClipL = softClipLeft
+                        val prevClipT = softClipTop
+                        val prevClipR = softClipRight
+                        val prevClipB = softClipBottom
 
-                if (cy + cardH >= viewportTop - 20 && cy <= viewportBottom + 20) {
-                    drawRoundedRect(
-                        hdc = hdc,
-                        left = cx,
-                        top = cy,
-                        right = cx + cardW,
-                        bottom = cy + cardH,
-                        radius = 6,
-                        fillColor = theme.bgCard,
-                        borderColor = theme.borderSubtle
-                    )
-                    val cardTextImpls = getCachedDirectOrNestedTexts(cardWidget)
-                    var cTitle = ""
-                    var cDesc = ""
-                    for (tImpl in cardTextImpls) {
-                        val str = tImpl.getText().trim()
-                        if (str.isNotEmpty()) {
-                            if (cTitle.isEmpty()) {
-                                cTitle = str
-                            } else if (cDesc.isEmpty()) {
-                                cDesc = str
-                                break
+                        activeBackBufferDc = gridDc
+                        activeBackBufferPixels = gridPixels
+                        activeBackBufferWidth = innerW
+                        activeBackBufferHeight = totalCardGridH
+                        resetSoftClipRect()
+                        val oldGridFont = SelectObject(gridDc, fontNormal)
+                        SetBkMode(gridDc, TRANSPARENT)
+                        gdiDirtySinceLastFlush = false
+
+                        fillRectColor(gridDc, 0, 0, innerW, totalCardGridH, theme.bgPanel)
+
+                        // Pass 1 on offscreen surface: all card & unhovered button backgrounds
+                        innerCards.forEachIndexed { idx, cardWidget ->
+                            val col = idx % cols
+                            val row = idx / cols
+                            val cx = col * (cardW + gap)
+                            val cy = row * rowStride
+                            drawRoundedRect(
+                                hdc = gridDc,
+                                left = cx,
+                                top = cy,
+                                right = cx + cardW,
+                                bottom = cy + cardH,
+                                radius = 6,
+                                fillColor = theme.bgCard,
+                                borderColor = theme.borderSubtle
+                            )
+                            val cardBtn = getCachedFirstButton(cardWidget)
+                            if (cardBtn != null) {
+                                val btnTop = cy + cardH - 38
+                                val btnBottom = cy + cardH - 10
+                                drawRoundedRect(
+                                    hdc = gridDc,
+                                    left = cx + 12,
+                                    top = btnTop,
+                                    right = cx + cardW - 12,
+                                    bottom = btnBottom,
+                                    radius = 5,
+                                    fillColor = theme.accentBlue,
+                                    borderColor = theme.accentBlueBorder
+                                )
+                            }
+                        }
+
+                        // Pass 2 on offscreen surface: all card titles, descriptions, & button labels
+                        innerCards.forEachIndexed { idx, cardWidget ->
+                            val col = idx % cols
+                            val row = idx / cols
+                            val cx = col * (cardW + gap)
+                            val cy = row * rowStride
+                            val cardTextImpls = getCachedDirectOrNestedTexts(cardWidget)
+                            var cTitle = ""
+                            var cDesc = ""
+                            for (tImpl in cardTextImpls) {
+                                val str = tImpl.getText().trim()
+                                if (str.isNotEmpty()) {
+                                    if (cTitle.isEmpty()) {
+                                        cTitle = str
+                                    } else if (cDesc.isEmpty()) {
+                                        cDesc = str
+                                        break
+                                    }
+                                }
+                            }
+                            if (cTitle.isNotEmpty()) {
+                                SelectObject(gridDc, fontBold)
+                                drawTextInRect(
+                                    hdc = gridDc,
+                                    text = cTitle,
+                                    left = cx + 10,
+                                    top = cy + 10,
+                                    right = cx + cardW - 10,
+                                    bottom = cy + 32,
+                                    colorRef = theme.textPrimary,
+                                    center = true
+                                )
+                            }
+                            if (cDesc.isNotEmpty()) {
+                                SelectObject(gridDc, fontSmall)
+                                drawTextInRect(
+                                    hdc = gridDc,
+                                    text = cDesc,
+                                    left = cx + 10,
+                                    top = cy + 36,
+                                    right = cx + cardW - 10,
+                                    bottom = cy + 78,
+                                    colorRef = theme.textSecondary,
+                                    center = true
+                                )
+                            }
+                            val cardBtn = getCachedFirstButton(cardWidget)
+                            if (cardBtn != null) {
+                                val btnTop = cy + cardH - 38
+                                val btnBottom = cy + cardH - 10
+                                drawRoundedButtonForeground(
+                                    hdc = gridDc,
+                                    font = fontSmallBold,
+                                    label = cardBtn.getText().ifBlank { "Open" },
+                                    left = cx + 12,
+                                    top = btnTop,
+                                    right = cx + cardW - 12,
+                                    bottom = btnBottom,
+                                    fg = rgb(255, 255, 255)
+                                )
+                            }
+                        }
+
+                        GdiFlush()
+                        gdiDirtySinceLastFlush = false
+                        SelectObject(gridDc, oldGridFont)
+
+                        activeBackBufferDc = prevDc
+                        activeBackBufferPixels = prevPixels
+                        activeBackBufferWidth = prevW
+                        activeBackBufferHeight = prevH
+                        softClipDepth = prevClipDepth
+                        softClipLeft = prevClipL
+                        softClipTop = prevClipT
+                        softClipRight = prevClipR
+                        softClipBottom = prevClipB
+
+                        cachedCardGridWidget = cardBody
+                        cachedCardGridMutVer = bodyMutVer
+                        cachedCardGridW = innerW
+                        cachedCardGridH = totalCardGridH
+                        cachedCardGridDark = theme.isDark
+                    }
+                }
+
+                val srcPixels = cachedCardGridPixels
+                val dstPixels = activeBackBufferPixels
+                val dstW = activeBackBufferWidth
+                val dstH = activeBackBufferHeight
+                if (srcPixels != null && dstPixels != null && dstW > 0 && dstH > 0) {
+                    val visTop = max(viewportTop, contentY).coerceIn(0, dstH)
+                    val visBottom = min(viewportBottom, contentY + totalCardGridH).coerceIn(visTop, dstH)
+                    val copyLeft = innerLeft.coerceIn(0, dstW)
+                    val copyRight = (innerLeft + innerW).coerceIn(copyLeft, dstW)
+                    val copyW = copyRight - copyLeft
+                    if (visBottom > visTop && copyW > 0) {
+                        if (gdiDirtySinceLastFlush) {
+                            GdiFlush()
+                            gdiDirtySinceLastFlush = false
+                        }
+                        val srcStartRow = (visTop - contentY).coerceIn(0, totalCardGridH)
+                        val rowCount = (visBottom - visTop).coerceAtMost(totalCardGridH - srcStartRow)
+                        val rowBytes = (copyW * 4).toULong()
+                        for (r in 0 until rowCount) {
+                            platform.posix.memcpy(
+                                dstPixels + (((visTop + r) * dstW + copyLeft) * 4),
+                                srcPixels + (((srcStartRow + r) * innerW) * 4),
+                                rowBytes
+                            )
+                        }
+                        if (visBottom < viewportBottom) {
+                            fillRectColor(hdc, copyLeft, visBottom, copyRight, viewportBottom, theme.bgPanel)
+                        }
+                    } else if (outerFrameValid) {
+                        fillRectColor(hdc, copyLeft, viewportTop, copyRight, viewportBottom, theme.bgPanel)
+                    }
+
+                    val firstVisRow = ((viewportTop - 20 - contentY) / rowStride).coerceAtLeast(0)
+                    val lastVisRow = ((viewportBottom + 20 - contentY) / rowStride).coerceAtMost(totalRows - 1)
+                    if (lastVisRow >= firstVisRow) {
+                        val startIdx = firstVisRow * cols
+                        val endIdxExclusive = min(innerCards.size, (lastVisRow + 1) * cols)
+                        for (idx in startIdx until endIdxExclusive) {
+                            val cardWidget = innerCards[idx]
+                            val col = idx % cols
+                            val row = idx / cols
+                            val cx = innerLeft + col * (cardW + gap)
+                            val cy = contentY + row * rowStride
+                            val cardBtn = getCachedFirstButton(cardWidget)
+                            if (cardBtn != null) {
+                                val btnLeft = cx + 12
+                                val btnRight = cx + cardW - 12
+                                val btnTop = cy + cardH - 38
+                                val btnBottom = cy + cardH - 10
+                                addClippedHitRegion(
+                                    left = btnLeft,
+                                    top = btnTop,
+                                    right = btnRight,
+                                    bottom = btnBottom,
+                                    widget = cardBtn.nativeWidget,
+                                    onClick = { _, _ -> cardBtn.dispatchClick() }
+                                )
+                                val btnWidget = cardBtn.nativeWidget
+                                val isBtnHovered = hoveredWidget == btnWidget ||
+                                    isRectHovered(hwnd, btnLeft, btnTop, btnRight, btnBottom)
+                                val isBtnPressed = pressedWidget == btnWidget
+                                if (isBtnHovered || isBtnPressed) {
+                                    val needsGdiClip = btnTop < viewportTop || btnBottom > viewportBottom
+                                    val btnClipDc = if (needsGdiClip && hdc != null) {
+                                        val s = SaveDC(hdc)
+                                        IntersectClipRect(hdc, innerLeft - 4, viewportTop, innerRight + 4, viewportBottom)
+                                        s
+                                    } else 0
+                                    drawRoundedButton(
+                                        hdc = hdc,
+                                        font = fontSmallBold,
+                                        label = cardBtn.getText().ifBlank { "Open" },
+                                        left = btnLeft,
+                                        top = btnTop,
+                                        right = btnRight,
+                                        bottom = btnBottom,
+                                        bg = theme.accentBlue,
+                                        border = theme.accentBlueBorder,
+                                        fg = rgb(255, 255, 255),
+                                        radius = 5,
+                                        widget = btnWidget,
+                                        hwndForHover = hwnd
+                                    )
+                                    if (btnClipDc != 0 && hdc != null) {
+                                        RestoreDC(hdc, btnClipDc)
+                                    }
+                                }
                             }
                         }
                     }
-                    if (cTitle.isNotEmpty()) {
-                        SelectObject(hdc, fontBold)
-                        drawTextInRect(
+                    blittedFromCache = true
+                }
+            }
+
+            if (!blittedFromCache) {
+                // Fallback direct 2-pass rendering when surface cache is not applicable
+                innerCards.forEachIndexed { idx, cardWidget ->
+                    val col = idx % cols
+                    val row = idx / cols
+                    val cx = innerLeft + col * (cardW + gap)
+                    val cy = contentY + row * rowStride
+
+                    if (cy + cardH >= viewportTop - 20 && cy <= viewportBottom + 20) {
+                        drawRoundedRect(
                             hdc = hdc,
-                            text = cTitle,
-                            left = cx + 10,
-                            top = cy + 10,
-                            right = cx + cardW - 10,
-                            bottom = cy + 32,
-                            colorRef = theme.textPrimary,
-                            center = true
+                            left = cx,
+                            top = cy,
+                            right = cx + cardW,
+                            bottom = cy + cardH,
+                            radius = 6,
+                            fillColor = theme.bgCard,
+                            borderColor = theme.borderSubtle
                         )
+                        val cardBtn = getCachedFirstButton(cardWidget)
+                        if (cardBtn != null) {
+                            val btnTop = cy + cardH - 38
+                            val btnBottom = cy + cardH - 10
+                            drawRoundedButtonBackground(
+                                hdc = hdc,
+                                left = cx + 12,
+                                top = btnTop,
+                                right = cx + cardW - 12,
+                                bottom = btnBottom,
+                                bg = theme.accentBlue,
+                                border = theme.accentBlueBorder,
+                                radius = 5,
+                                widget = cardBtn.nativeWidget,
+                                hwndForHover = hwnd
+                            )
+                            addClippedHitRegion(
+                                left = cx + 12,
+                                top = btnTop,
+                                right = cx + cardW - 12,
+                                bottom = btnBottom,
+                                widget = cardBtn.nativeWidget,
+                                onClick = { _, _ -> cardBtn.dispatchClick() }
+                            )
+                        }
                     }
-                    if (cDesc.isNotEmpty()) {
-                        SelectObject(hdc, fontSmall)
-                        drawTextInRect(
-                            hdc = hdc,
-                            text = cDesc,
-                            left = cx + 10,
-                            top = cy + 36,
-                            right = cx + cardW - 10,
-                            bottom = cy + 78,
-                            colorRef = theme.textSecondary,
-                            center = true
-                        )
-                    }
-                    val cardBtn = getCachedFirstButton(cardWidget)
-                    if (cardBtn != null) {
-                        val btnTop = cy + cardH - 38
-                        val btnBottom = cy + cardH - 10
-                        drawRoundedButton(
-                            hdc = hdc,
-                            font = fontSmallBold,
-                            label = cardBtn.getText().ifBlank { "Open" },
-                            left = cx + 12,
-                            top = btnTop,
-                            right = cx + cardW - 12,
-                            bottom = btnBottom,
-                            bg = theme.accentBlue,
-                            border = theme.accentBlueBorder,
-                            fg = rgb(255, 255, 255),
-                            radius = 5,
-                            widget = cardBtn.nativeWidget,
-                            hwndForHover = hwnd
-                        )
-                        addClippedHitRegion(
-                            left = cx + 12,
-                            top = btnTop,
-                            right = cx + cardW - 12,
-                            bottom = btnBottom,
-                            widget = cardBtn.nativeWidget,
-                            onClick = { _, _ -> cardBtn.dispatchClick() }
-                        )
+                }
+
+                innerCards.forEachIndexed { idx, cardWidget ->
+                    val col = idx % cols
+                    val row = idx / cols
+                    val cx = innerLeft + col * (cardW + gap)
+                    val cy = contentY + row * rowStride
+
+                    if (cy + cardH >= viewportTop - 20 && cy <= viewportBottom + 20) {
+                        val cardTextImpls = getCachedDirectOrNestedTexts(cardWidget)
+                        var cTitle = ""
+                        var cDesc = ""
+                        for (tImpl in cardTextImpls) {
+                            val str = tImpl.getText().trim()
+                            if (str.isNotEmpty()) {
+                                if (cTitle.isEmpty()) {
+                                    cTitle = str
+                                } else if (cDesc.isEmpty()) {
+                                    cDesc = str
+                                    break
+                                }
+                            }
+                        }
+                        if (cTitle.isNotEmpty()) {
+                            SelectObject(hdc, fontBold)
+                            drawTextInRect(
+                                hdc = hdc,
+                                text = cTitle,
+                                left = cx + 10,
+                                top = cy + 10,
+                                right = cx + cardW - 10,
+                                bottom = cy + 32,
+                                colorRef = theme.textPrimary,
+                                center = true
+                            )
+                        }
+                        if (cDesc.isNotEmpty()) {
+                            SelectObject(hdc, fontSmall)
+                            drawTextInRect(
+                                hdc = hdc,
+                                text = cDesc,
+                                left = cx + 10,
+                                top = cy + 36,
+                                right = cx + cardW - 10,
+                                bottom = cy + 78,
+                                colorRef = theme.textSecondary,
+                                center = true
+                            )
+                        }
+                        val cardBtn = getCachedFirstButton(cardWidget)
+                        if (cardBtn != null) {
+                            val btnTop = cy + cardH - 38
+                            val btnBottom = cy + cardH - 10
+                            drawRoundedButtonForeground(
+                                hdc = hdc,
+                                font = fontSmallBold,
+                                label = cardBtn.getText().ifBlank { "Open" },
+                                left = cx + 12,
+                                top = btnTop,
+                                right = cx + cardW - 12,
+                                bottom = btnBottom,
+                                fg = rgb(255, 255, 255)
+                            )
+                        }
                     }
                 }
             }
-            val totalRows = (innerCards.size + cols - 1) / cols
-            contentY += totalRows * (cardH + gap)
+            contentY += totalCardGridH
         }
 
         // Case B: DataSheet Table (.data-sheet)
@@ -2722,47 +4938,236 @@ object Win32NativeWindowHost {
                 }
             }
 
+            val embeddedCanvas = findFirstPixelSurface(cardBody)
+            if (embeddedCanvas != null) {
+                activeCanvasImpl = embeddedCanvas.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                val surfWFn = embeddedCanvas.attributes["surfaceWidth"] as? (() -> Int)
+                val surfHFn = embeddedCanvas.attributes["surfaceHeight"] as? (() -> Int)
+                val vblankFn = embeddedCanvas.attributes["vblankDispatch"] as? ((Double?) -> Unit)
+                val renderHookFn = embeddedCanvas.attributes["surfaceRenderHook"] as? (() -> Unit)
+                val captureBgraFn = embeddedCanvas.attributes["captureBgra"] as? (() -> ByteArray)
+                val captureRgbaFn = embeddedCanvas.attributes["captureRgba"] as? (() -> ByteArray)
+
+                runCatching { renderHookFn?.invoke() }
+                runCatching { vblankFn?.invoke(null) }
+
+                val surfW = (surfWFn?.invoke() ?: embeddedCanvas.bounds.width.toInt().takeIf { it > 0 } ?: 240).coerceAtLeast(1)
+                val surfH = (surfHFn?.invoke() ?: embeddedCanvas.bounds.height.toInt().takeIf { it > 0 } ?: 240).coerceAtLeast(1)
+                activeCanvasSurfaceSize = surfW to surfH
+
+                val boxH = 200
+                val boxTop = contentY
+                val boxBottom = boxTop + boxH
+                val scale = min((innerW - 24).toFloat() / surfW.toFloat(), (boxH - 16).toFloat() / surfH.toFloat())
+                    .coerceAtLeast(0.1f)
+                val drawW = (surfW * scale).roundToInt().coerceAtLeast(1)
+                val drawH = (surfH * scale).roundToInt().coerceAtLeast(1)
+                val drawLeft = innerLeft + (innerW - drawW) / 2
+                val drawTop = boxTop + (boxH - drawH) / 2
+                canvasViewportRect = intArrayOf(drawLeft, drawTop, drawLeft + drawW, drawTop + drawH)
+
+                if (boxBottom >= viewportTop - 20 && boxTop <= viewportBottom + 20) {
+                    drawRoundedRect(
+                        hdc = hdc,
+                        left = innerLeft,
+                        top = boxTop,
+                        right = innerRight,
+                        bottom = boxBottom,
+                        radius = 6,
+                        fillColor = theme.bgCard,
+                        borderColor = theme.borderSubtle
+                    )
+                    val bgra = captureBgraFn?.invoke() ?: captureRgbaFn?.invoke()?.let { rgba ->
+                        val out = ByteArray(rgba.size)
+                        var i = 0
+                        while (i + 3 < rgba.size) {
+                            out[i] = rgba[i + 2]
+                            out[i + 1] = rgba[i + 1]
+                            out[i + 2] = rgba[i]
+                            out[i + 3] = rgba[i + 3]
+                            i += 4
+                        }
+                        out
+                    }
+                    if (bgra != null && bgra.size >= surfW * surfH * 4) {
+                        memScoped {
+                            val bmi = alloc<BITMAPINFO>()
+                            bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+                            bmi.bmiHeader.biWidth = surfW
+                            bmi.bmiHeader.biHeight = -surfH
+                            bmi.bmiHeader.biPlanes = 1u
+                            bmi.bmiHeader.biBitCount = 32u
+                            bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+
+                            SetStretchBltMode(hdc, HALFTONE)
+                            bgra.usePinned { pinned ->
+                                StretchDIBits(
+                                    hdc,
+                                    drawLeft,
+                                    drawTop,
+                                    drawW,
+                                    drawH,
+                                    0,
+                                    0,
+                                    surfW,
+                                    surfH,
+                                    pinned.addressOf(0),
+                                    bmi.ptr,
+                                    DIB_RGB_COLORS.toUInt(),
+                                    SRCCOPY
+                                )
+                            }
+                        }
+                    } else {
+                        fillRectColor(hdc, drawLeft, drawTop, drawLeft + drawW, drawTop + drawH, theme.bgBase)
+                    }
+                    drawRectBorder(hdc, drawLeft - 1, drawTop - 1, drawLeft + drawW + 1, drawTop + drawH + 1, theme.accentBlueBorder)
+                }
+                contentY += boxH + 12
+            }
+
             class FormFieldRenderItem(
                 val label: String,
                 val textInput: DesktopTextInputNativeImpl<*>?,
                 val select: DesktopSelectNativeImpl<*>?,
                 val checkbox: DesktopCheckboxNativeImpl<*>?,
-                val buttons: List<DesktopButtonNativeImpl<*>>
+                val buttons: List<DesktopButtonNativeImpl<*>>,
+                val readOnlyText: String? = null
             )
 
             val fieldItems = mutableListOf<FormFieldRenderItem>()
             val actionButtons = mutableListOf<DesktopButtonNativeImpl<*>>()
+            var pendingOrphanLabel = ""
+
+            fun isFieldColWidget(w: DesktopNativeWidget): Boolean =
+                widgetHasClass(w, "col-lg-4") ||
+                    widgetHasClass(w, "col-lg-6") ||
+                    widgetHasClass(w, "col-md-6") ||
+                    widgetHasClass(w, "col-12") ||
+                    widgetHasClass(w, "form-group")
+
+            fun countLeafControlInputs(w: DesktopNativeWidget): Int {
+                if (!w.visible || w.disposed) return 0
+                val impl = w.attributes["nativeImpl"]
+                var total = if (
+                    impl is DesktopTextInputNativeImpl<*> ||
+                    impl is DesktopSelectNativeImpl<*> ||
+                    impl is DesktopCheckboxNativeImpl<*>
+                ) 1 else 0
+                for (c in w.children) {
+                    total += countLeafControlInputs(c)
+                }
+                return total
+            }
+
+            fun hasDescendantFieldCol(w: DesktopNativeWidget): Boolean {
+                for (c in w.children) {
+                    if (!c.visible || c.disposed) continue
+                    if (isFieldColWidget(c) || hasDescendantFieldCol(c)) return true
+                }
+                return false
+            }
 
             fun collectFormNodes(node: DesktopNativeWidget) {
-                if (!node.visible || node.disposed || widgetHasClass(node, "alert")) return
-                val isFieldCol = widgetHasClass(node, "col-lg-4") ||
-                    widgetHasClass(node, "col-lg-6") ||
-                    widgetHasClass(node, "form-group")
-                if (isFieldCol) {
+                if (!node.visible || node.disposed || widgetHasClass(node, "alert") || isPixelSurfaceWidget(node)) return
+                val isLeafFieldCol = isFieldColWidget(node) &&
+                    !widgetHasClass(node, "row") &&
+                    !hasDescendantFieldCol(node) &&
+                    countLeafControlInputs(node) <= 1
+                if (isLeafFieldCol) {
                     val tInput = findFirstTextInput(node)
                     val sel = findFirstSelect(node)
                     val chk = findFirstCheckbox(node)
                     val btns = collectDirectOrNestedButtons(node)
-                    val lbl = getCachedDirectOrNestedTexts(node)
+                    val nonEmptyTexts = getCachedDirectOrNestedTexts(node)
                         .map { it.getText().trim() }
-                        .firstOrNull { it.isNotEmpty() } ?: ""
-                    if (tInput != null || sel != null || chk != null || btns.isNotEmpty()) {
+                        .filter { it.isNotEmpty() }
+                    val lbl = nonEmptyTexts.firstOrNull() ?: pendingOrphanLabel
+                    val isActionBtnBar = tInput == null && sel == null && chk == null && btns.size > 1 && nonEmptyTexts.isEmpty()
+                    if (!isActionBtnBar) {
+                        if (tInput != null || sel != null || chk != null || btns.isNotEmpty()) {
+                            pendingOrphanLabel = ""
+                            fieldItems.add(
+                                FormFieldRenderItem(
+                                    label = lbl,
+                                    textInput = tInput,
+                                    select = sel,
+                                    checkbox = chk,
+                                    buttons = btns
+                                )
+                            )
+                            return
+                        }
+                        if (findFirstPixelSurface(node) == null && nonEmptyTexts.size >= 2) {
+                            pendingOrphanLabel = ""
+                            fieldItems.add(
+                                FormFieldRenderItem(
+                                    label = nonEmptyTexts.first(),
+                                    textInput = null,
+                                    select = null,
+                                    checkbox = null,
+                                    buttons = emptyList(),
+                                    readOnlyText = nonEmptyTexts.drop(1).joinToString(" ")
+                                )
+                            )
+                            return
+                        }
+                    }
+                }
+                when (val impl = node.attributes["nativeImpl"]) {
+                    is DesktopButtonNativeImpl<*> -> {
+                        actionButtons.add(impl)
+                        return
+                    }
+                    is DesktopTextInputNativeImpl<*> -> {
+                        val lbl = pendingOrphanLabel.ifEmpty { impl.getPlaceholder() }
+                        pendingOrphanLabel = ""
                         fieldItems.add(
                             FormFieldRenderItem(
                                 label = lbl,
-                                textInput = tInput,
-                                select = sel,
-                                checkbox = chk,
-                                buttons = btns
+                                textInput = impl,
+                                select = null,
+                                checkbox = null,
+                                buttons = emptyList()
                             )
                         )
                         return
                     }
-                }
-                val directBtn = node.attributes["nativeImpl"] as? DesktopButtonNativeImpl<*>
-                if (directBtn != null) {
-                    actionButtons.add(directBtn)
-                    return
+                    is DesktopSelectNativeImpl<*> -> {
+                        val lbl = pendingOrphanLabel
+                        pendingOrphanLabel = ""
+                        fieldItems.add(
+                            FormFieldRenderItem(
+                                label = lbl,
+                                textInput = null,
+                                select = impl,
+                                checkbox = null,
+                                buttons = emptyList()
+                            )
+                        )
+                        return
+                    }
+                    is DesktopCheckboxNativeImpl<*> -> {
+                        val lbl = pendingOrphanLabel.ifEmpty { impl.getLabel() }
+                        pendingOrphanLabel = ""
+                        fieldItems.add(
+                            FormFieldRenderItem(
+                                label = lbl,
+                                textInput = null,
+                                select = null,
+                                checkbox = impl,
+                                buttons = emptyList()
+                            )
+                        )
+                        return
+                    }
+                    is DesktopTextNativeImpl<*> -> {
+                        val t = impl.getText().trim()
+                        if (t.isNotEmpty() && t != mainHeading && t != subHeading) {
+                            pendingOrphanLabel = t
+                        }
+                        return
+                    }
                 }
                 for (c in node.children) collectFormNodes(c)
             }
@@ -2793,8 +5198,46 @@ object Win32NativeWindowHost {
                         )
                         val ctrlTop = fy + 22
                         val ctrlBottom = fy + 52
+
+                        fun renderInlineFieldButtons(btns: List<DesktopButtonNativeImpl<*>>, leftLimit: Int, rightEdge: Int): Int {
+                            if (btns.isEmpty()) return rightEdge
+                            var curRight = rightEdge
+                            for (btn in btns.asReversed()) {
+                                val bLabel = btn.getText().trim().ifBlank { "..." }
+                                val bW = (bLabel.length * 7 + 16).coerceIn(36, 78)
+                                val bLeft = curRight - bW
+                                if (bLeft <= leftLimit + 60) break
+                                drawRoundedButton(
+                                    hdc = hdc,
+                                    font = fontSmallBold,
+                                    label = bLabel,
+                                    left = bLeft,
+                                    top = ctrlTop,
+                                    right = curRight,
+                                    bottom = ctrlBottom,
+                                    bg = theme.accentBlue,
+                                    border = theme.accentBlueBorder,
+                                    fg = rgb(255, 255, 255),
+                                    radius = 4,
+                                    widget = btn.nativeWidget,
+                                    hwndForHover = hwnd
+                                )
+                                addClippedHitRegion(
+                                    left = bLeft,
+                                    top = ctrlTop,
+                                    right = curRight,
+                                    bottom = ctrlBottom,
+                                    widget = btn.nativeWidget,
+                                    onClick = { _, _ -> btn.dispatchClick() }
+                                )
+                                curRight = bLeft - 4
+                            }
+                            return curRight
+                        }
+
                         when {
                             item.textInput != null -> {
+                                val ctrlRight = renderInlineFieldButtons(item.buttons, fx, fx + colW)
                                 val tIn = item.textInput
                                 val isFocused = focusedTextInput === tIn
                                 val valStr = tIn.getValue()
@@ -2803,7 +5246,7 @@ object Win32NativeWindowHost {
                                     hdc = hdc,
                                     left = fx,
                                     top = ctrlTop,
-                                    right = fx + colW,
+                                    right = ctrlRight,
                                     bottom = ctrlBottom,
                                     radius = 4,
                                     fillColor = theme.bgBase,
@@ -2815,20 +5258,21 @@ object Win32NativeWindowHost {
                                     text = disp,
                                     left = fx + 8,
                                     top = ctrlTop + 5,
-                                    right = fx + colW - 8,
+                                    right = ctrlRight - 8,
                                     bottom = ctrlBottom - 4,
                                     colorRef = theme.textPrimary
                                 )
                                 addClippedHitRegion(
                                     left = fx,
                                     top = ctrlTop,
-                                    right = fx + colW,
+                                    right = ctrlRight,
                                     bottom = ctrlBottom,
                                     widget = tIn.nativeWidget,
                                     isTextInput = true
                                 )
                             }
                             item.select != null -> {
+                                val ctrlRight = renderInlineFieldButtons(item.buttons, fx, fx + colW)
                                 val sel = item.select
                                 val selectedVal = sel.getSelectedValue() ?: ""
                                 val selectedLabel = sel.getOptions()
@@ -2840,7 +5284,7 @@ object Win32NativeWindowHost {
                                     label = "$selectedLabel  ▾",
                                     left = fx,
                                     top = ctrlTop,
-                                    right = fx + colW,
+                                    right = ctrlRight,
                                     bottom = ctrlBottom,
                                     bg = theme.bgCard,
                                     border = theme.borderSubtle,
@@ -2852,13 +5296,14 @@ object Win32NativeWindowHost {
                                 addClippedHitRegion(
                                     left = fx,
                                     top = ctrlTop,
-                                    right = fx + colW,
+                                    right = ctrlRight,
                                     bottom = ctrlBottom,
                                     widget = sel.nativeWidget,
                                     onClick = { mx, my -> openSelectPopupMenu(hwnd, sel, mx, my) }
                                 )
                             }
                             item.checkbox != null -> {
+                                val ctrlRight = renderInlineFieldButtons(item.buttons, fx, fx + colW)
                                 val chk = item.checkbox
                                 val checked = chk.isChecked()
                                 drawRoundedButton(
@@ -2867,7 +5312,7 @@ object Win32NativeWindowHost {
                                     label = if (checked) "☑ Enabled" else "☐ Disabled",
                                     left = fx,
                                     top = ctrlTop,
-                                    right = fx + colW,
+                                    right = ctrlRight,
                                     bottom = ctrlBottom,
                                     bg = if (checked) theme.accentBlueSoftBg else theme.bgCard,
                                     border = if (checked) theme.accentBlueBorder else theme.borderSubtle,
@@ -2879,36 +5324,64 @@ object Win32NativeWindowHost {
                                 addClippedHitRegion(
                                     left = fx,
                                     top = ctrlTop,
-                                    right = fx + colW,
+                                    right = ctrlRight,
                                     bottom = ctrlBottom,
                                     widget = chk.nativeWidget,
                                     onClick = { _, _ -> chk.setChecked(!chk.isChecked()) }
                                 )
                             }
                             item.buttons.isNotEmpty() -> {
-                                val btn = item.buttons.first()
-                                drawRoundedButton(
+                                val bCount = item.buttons.size
+                                val bGap = 6
+                                val bW = (colW - bGap * (bCount - 1)).coerceAtLeast(32) / bCount
+                                item.buttons.forEachIndexed { bIdx, btn ->
+                                    val bLeft = fx + bIdx * (bW + bGap)
+                                    val bRight = if (bIdx == bCount - 1) fx + colW else bLeft + bW
+                                    drawRoundedButton(
+                                        hdc = hdc,
+                                        font = fontSmallBold,
+                                        label = btn.getText().ifBlank { item.label.ifBlank { "Action" } },
+                                        left = bLeft,
+                                        top = ctrlTop,
+                                        right = bRight,
+                                        bottom = ctrlBottom,
+                                        bg = theme.bgCard,
+                                        border = theme.borderSubtle,
+                                        fg = theme.textPrimary,
+                                        radius = 4,
+                                        widget = btn.nativeWidget,
+                                        hwndForHover = hwnd
+                                    )
+                                    addClippedHitRegion(
+                                        left = bLeft,
+                                        top = ctrlTop,
+                                        right = bRight,
+                                        bottom = ctrlBottom,
+                                        widget = btn.nativeWidget,
+                                        onClick = { _, _ -> btn.dispatchClick() }
+                                    )
+                                }
+                            }
+                            item.readOnlyText != null -> {
+                                drawRoundedRect(
                                     hdc = hdc,
-                                    font = fontSmallBold,
-                                    label = btn.getText().ifBlank { item.label },
                                     left = fx,
                                     top = ctrlTop,
                                     right = fx + colW,
                                     bottom = ctrlBottom,
-                                    bg = theme.bgCard,
-                                    border = theme.borderSubtle,
-                                    fg = theme.textPrimary,
                                     radius = 4,
-                                    widget = btn.nativeWidget,
-                                    hwndForHover = hwnd
+                                    fillColor = theme.bgCard,
+                                    borderColor = theme.borderSubtle
                                 )
-                                addClippedHitRegion(
-                                    left = fx,
-                                    top = ctrlTop,
-                                    right = fx + colW,
-                                    bottom = ctrlBottom,
-                                    widget = btn.nativeWidget,
-                                    onClick = { _, _ -> btn.dispatchClick() }
+                                SelectObject(hdc, fontSmall)
+                                drawTextInRect(
+                                    hdc = hdc,
+                                    text = item.readOnlyText,
+                                    left = fx + 8,
+                                    top = ctrlTop + 5,
+                                    right = fx + colW - 8,
+                                    bottom = ctrlBottom - 4,
+                                    colorRef = theme.textPrimary
                                 )
                             }
                         }
@@ -2967,7 +5440,11 @@ object Win32NativeWindowHost {
             scrollViewImpl?.updateScrollPositionFromHost(0, cardPageScrollY)
         }
 
-        RestoreDC(hdc, savedDc)
+        if (useGdiViewportClip) {
+            popClipRect(hdc, savedDc)
+        } else {
+            resetSoftClipRect()
+        }
 
         // Interactive Vertical Scrollbar Rail, Arrow Buttons, & Thumb with Hover/Active State
         if (cardPageMaxScrollY > 0) {
@@ -2997,20 +5474,20 @@ object Win32NativeWindowHost {
                 borderColor = if (isRailHovered) theme.borderStrong else theme.borderSubtle
             )
 
+            val upBtnTop = viewportTop + 1
+            val upBtnBottom = viewportTop + arrowBtnH
+            val downBtnTop = viewportBottom - arrowBtnH
+            val downBtnBottom = viewportBottom - 1
+
             if (showArrowButtons) {
-                val upBtnTop = viewportTop + 1
-                val upBtnBottom = viewportTop + arrowBtnH
-                drawRoundedButton(
+                drawRoundedButtonBackground(
                     hdc = hdc,
-                    font = fontSmallBold,
-                    label = "▲",
                     left = railLeft + 1,
                     top = upBtnTop,
                     right = railRight - 1,
                     bottom = upBtnBottom,
                     bg = theme.bgCard,
                     border = theme.borderSubtle,
-                    fg = theme.textPrimary,
                     radius = 3,
                     widget = cardScrollbarUpBtnWidget,
                     hwndForHover = hwnd
@@ -3021,7 +5498,6 @@ object Win32NativeWindowHost {
                         top = viewportTop,
                         right = railRight,
                         bottom = upBtnBottom,
-                        tooltip = "Scroll up",
                         widget = cardScrollbarUpBtnWidget,
                         onClick = { _, _ ->
                             val next = (cardPageScrollY - 96).coerceIn(0, cardPageMaxScrollY)
@@ -3031,19 +5507,14 @@ object Win32NativeWindowHost {
                     )
                 )
 
-                val downBtnTop = viewportBottom - arrowBtnH
-                val downBtnBottom = viewportBottom - 1
-                drawRoundedButton(
+                drawRoundedButtonBackground(
                     hdc = hdc,
-                    font = fontSmallBold,
-                    label = "▼",
                     left = railLeft + 1,
                     top = downBtnTop,
                     right = railRight - 1,
                     bottom = downBtnBottom,
                     bg = theme.bgCard,
                     border = theme.borderSubtle,
-                    fg = theme.textPrimary,
                     radius = 3,
                     widget = cardScrollbarDownBtnWidget,
                     hwndForHover = hwnd
@@ -3054,7 +5525,6 @@ object Win32NativeWindowHost {
                         top = downBtnTop,
                         right = railRight,
                         bottom = viewportBottom,
-                        tooltip = "Scroll down",
                         widget = cardScrollbarDownBtnWidget,
                         onClick = { _, _ ->
                             val next = (cardPageScrollY + 96).coerceIn(0, cardPageMaxScrollY)
@@ -3117,6 +5587,21 @@ object Win32NativeWindowHost {
                 drawLineColor(hdc, gripLeft, gripMidY + 3, gripRight, gripMidY + 3, gripColor)
             }
 
+            if (showArrowButtons) {
+                val arrowCx = (railLeft + railRight) / 2
+                val upMidY = (upBtnTop + upBtnBottom) / 2
+                for (row in 0..3) {
+                    val y = upMidY - 2 + row
+                    fillRectColor(hdc, arrowCx - row, y, arrowCx + row + 1, y + 1, theme.textPrimary)
+                }
+                val downMidY = (downBtnTop + downBtnBottom) / 2
+                for (row in 0..3) {
+                    val halfSpan = 3 - row
+                    val y = downMidY - 1 + row
+                    fillRectColor(hdc, arrowCx - halfSpan, y, arrowCx + halfSpan + 1, y + 1, theme.textPrimary)
+                }
+            }
+
             val maxScrollSnapshot = cardPageMaxScrollY
             val applyScrollFromMouseY: (Int) -> Unit = { mouseY ->
                 val newThumbTop = (mouseY - cardScrollbarDragGrabOffsetY).coerceIn(trackTop, trackTop + trackRange)
@@ -3174,8 +5659,8 @@ object Win32NativeWindowHost {
         }
 
         // Modal Overlay
-        val alertModal = cardPageRoot.children.firstOrNull { widgetHasClass(it, "modal") && it.visible }
         if (alertModal != null) {
+            cachedCardPageFrameRootVer = -1L
             val modalW = min(460, clientW - 60)
             val modalH = 200
             val mLeft = (clientW - modalW) / 2
@@ -3953,6 +6438,25 @@ object Win32NativeWindowHost {
         return null
     }
 
+    private fun isPixelSurfaceWidget(widget: DesktopNativeWidget?): Boolean {
+        if (widget == null || !widget.visible || widget.disposed) return false
+        return widget.attributes.containsKey("captureRgba") ||
+            widget.attributes.containsKey("captureBgra") ||
+            widget.attributes.containsKey("frameBufferRgba") ||
+            widget.attributes.containsKey("frameBufferBgra") ||
+            widget.attributes.containsKey("surfaceRenderHook")
+    }
+
+    private fun findFirstPixelSurface(root: DesktopNativeWidget?): DesktopNativeWidget? {
+        if (root == null || !root.visible || root.disposed) return null
+        if (isPixelSurfaceWidget(root)) return root
+        for (child in root.children) {
+            val found = findFirstPixelSurface(child)
+            if (found != null) return found
+        }
+        return null
+    }
+
     private fun findFirstTabContainer(root: DesktopNativeWidget?): DesktopTabContainerNativeImpl<*>? {
         if (root == null || !root.visible || root.disposed) return null
         val impl = root.attributes["nativeImpl"]
@@ -4178,7 +6682,6 @@ object Win32NativeWindowHost {
                         top = closeTop,
                         right = closeRight,
                         bottom = closeBottom,
-                        tooltip = "Close tab",
                         onClick = { _, _ -> tabContainer.requestCloseTab(capturedIdx) }
                     )
                 )
@@ -4562,7 +7065,7 @@ object Win32NativeWindowHost {
                                 top = tTop,
                                 right = capR,
                                 bottom = tBottom,
-                                tooltip = "Expand / Collapse Branch",
+                                tooltip = toggleBtnImpl.getTooltipText(),
                                 widget = toggleBtnImpl.nativeWidget,
                                 onClick = { _, _ -> toggleBtnImpl.dispatchClick() }
                             )
@@ -4634,7 +7137,7 @@ object Win32NativeWindowHost {
                                 top = kTop,
                                 right = kRight,
                                 bottom = kBottom,
-                                tooltip = "Click to edit key name (press Enter or click away to apply)",
+                                tooltip = keyInput.getTooltipText(),
                                 widget = keyInput.nativeWidget,
                                 isTextInput = true
                             )
@@ -4656,7 +7159,7 @@ object Win32NativeWindowHost {
                                     top = rTop + 4,
                                     right = colRights[0] - 6,
                                     bottom = rBottom - 4,
-                                    tooltip = "Select node ''",
+                                    tooltip = selectBtn.getTooltipText(),
                                     widget = selectBtn.nativeWidget,
                                     onClick = { _, _ -> selectBtn.dispatchClick() }
                                 )
@@ -4698,7 +7201,7 @@ object Win32NativeWindowHost {
                                     top = c1Top,
                                     right = c1Right,
                                     bottom = c1Bottom,
-                                    tooltip = "Click to edit leaf value inline",
+                                    tooltip = valInput.getTooltipText(),
                                     widget = valInput.nativeWidget,
                                     isTextInput = true
                                 )
@@ -4725,7 +7228,7 @@ object Win32NativeWindowHost {
                                     top = c1Top,
                                     right = c1Right,
                                     bottom = c1Bottom,
-                                    tooltip = "Click to toggle boolean value",
+                                    tooltip = boolCheck.getTooltipText(),
                                     widget = boolCheck.nativeWidget,
                                     onClick = { _, _ ->
                                         val next = !boolCheck.isChecked()
@@ -4774,7 +7277,7 @@ object Win32NativeWindowHost {
                                 top = c2Top,
                                 right = c2Right,
                                 bottom = c2Bottom,
-                                tooltip = "Click to change node DataType (12 supported types)",
+                                tooltip = selectImpl.getTooltipText(),
                                 widget = selectImpl.nativeWidget,
                                 onClick = { _, _ ->
                                     openSelectPopupMenu(hwnd, selectImpl, c2Left, c2Bottom)
@@ -4886,7 +7389,6 @@ object Win32NativeWindowHost {
                     top = upBtnTop,
                     right = railRight - 2,
                     bottom = upBtnBottom,
-                    tooltip = "Scroll tree up",
                     onClick = { _, _ ->
                         gridImpl.firstVisibleDataRow = (gridImpl.firstVisibleDataRow - 2).coerceAtLeast(0)
                     }
@@ -4912,7 +7414,6 @@ object Win32NativeWindowHost {
                     top = downBtnTop,
                     right = railRight - 2,
                     bottom = downBtnBottom,
-                    tooltip = "Scroll tree down",
                     onClick = { _, _ ->
                         gridImpl.firstVisibleDataRow = (gridImpl.firstVisibleDataRow + 2).coerceAtMost(maxFirstRow)
                     }
@@ -5595,7 +8096,8 @@ object Win32NativeWindowHost {
         if (widget.attributes.containsKey("captureRgba")) {
             canvases.add(widget)
         }
-        for (child in widget.children) {
+        val children = runCatching { widget.children.toTypedArray() }.getOrElse { emptyArray() }
+        for (child in children) {
             collectStudioWidgets(child, toolPalettes, dockPanels, canvases)
         }
     }
@@ -5616,7 +8118,8 @@ object Win32NativeWindowHost {
             is DesktopRangeSliderNativeImpl<*> -> sliders.add(impl)
             is DesktopTextNativeImpl<*> -> texts.add(impl)
         }
-        for (child in widget.children) {
+        val children = runCatching { widget.children.toTypedArray() }.getOrElse { emptyArray() }
+        for (child in children) {
             collectPanelControls(child, buttons, checkboxes, selects, sliders, texts)
         }
     }
@@ -5826,12 +8329,7 @@ object Win32NativeWindowHost {
             val by = y + row * (btnH + gap)
             if (by + btnH < bottom - 80) {
                 val isSelected = item.id == activeToolId
-                val shortcutSuffix = item.shortcut?.key?.let { " ($it)" } ?: ""
-                val fullTooltip = if (item.tooltip.isNotBlank() && item.tooltip != item.name) {
-                    "${item.name}$shortcutSuffix — ${item.tooltip}"
-                } else {
-                    "${item.name}$shortcutSuffix"
-                }
+                val fullTooltip = item.tooltip?.takeIf { it.isNotBlank() }
                 val iconKey = item.iconSvgOrPath.ifBlank { item.id }
                 drawButtonControl(
                     hdc = hdc,
@@ -5883,7 +8381,6 @@ object Win32NativeWindowHost {
                     top = swatchOriginY,
                     right = swatchOriginX + 52,
                     bottom = swatchOriginY + 44,
-                    tooltip = "FG: RGB(${fg.r},${fg.g},${fg.b}) / BG: RGB(${bg.r},${bg.g},${bg.b}) — Click to swap FG/BG (X)",
                     onClick = { _, _ -> toolPalette.dispatchSwapColors() }
                 )
             )
@@ -5908,7 +8405,6 @@ object Win32NativeWindowHost {
                     top = sy,
                     right = swatchOriginX + 86,
                     bottom = sy + 22,
-                    tooltip = "Swap Foreground & Background Colors (X)",
                     onClick = { _, _ -> toolPalette.dispatchSwapColors() }
                 )
             )
@@ -5932,7 +8428,6 @@ object Win32NativeWindowHost {
                     top = sy + 24,
                     right = swatchOriginX + 86,
                     bottom = sy + 44,
-                    tooltip = "Reset Foreground/Background to Default Black & White (D)",
                     onClick = { _, _ ->
                         toolPalette.setForegroundColor(RgbaColor(0, 0, 0, 255))
                         toolPalette.setBackgroundColor(RgbaColor(255, 255, 255, 255))
@@ -5986,7 +8481,7 @@ object Win32NativeWindowHost {
                             top = sTop,
                             right = sRight,
                             bottom = sBottom,
-                            tooltip = slider.getTooltipText() ?: title,
+                            tooltip = slider.getTooltipText(),
                             widget = slider.nativeWidget,
                             onClick = { mx, _ ->
                                 slider.setNormalizedFraction((mx - sLeft).toDouble() / max(1, sRight - sLeft).toDouble())
@@ -6003,7 +8498,7 @@ object Win32NativeWindowHost {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun renderCenterCanvas2D(
+    private fun renderCenterSurfaceViewport(
         hwnd: HWND,
         hdc: HDC?,
         theme: SystemThemePalette,
@@ -6209,7 +8704,6 @@ object Win32NativeWindowHost {
                     top = top + 2,
                     right = selectRight,
                     bottom = bottom,
-                    tooltip = "$title — Click to switch tab",
                     onClick = { _, _ -> tabContainer?.requestSelectTab(capturedIdx) }
                 )
             )
@@ -6219,7 +8713,6 @@ object Win32NativeWindowHost {
                     top = closeTop,
                     right = closeRight,
                     bottom = closeBottom,
-                    tooltip = "Close $title (Ctrl+W)",
                     onClick = { _, _ -> tabContainer?.requestCloseTab(capturedIdx) }
                 )
             )
@@ -6250,7 +8743,6 @@ object Win32NativeWindowHost {
                     top = top + 3,
                     right = plusRight,
                     bottom = bottom - 3,
-                    tooltip = "New Canvas Tab (Ctrl+N)",
                     onClick = { _, _ -> onNewFn?.invoke() }
                 )
             )
@@ -6382,7 +8874,6 @@ object Win32NativeWindowHost {
                 top = btnTop,
                 right = newBtnLeft + btnW,
                 bottom = btnTop + btnH,
-                tooltip = "Create a New Document (Ctrl+N)",
                 onClick = { _, _ -> onNewFn?.invoke() }
             )
         )
@@ -6405,7 +8896,6 @@ object Win32NativeWindowHost {
                 top = btnTop,
                 right = openBtnLeft + btnW,
                 bottom = btnTop + btnH,
-                tooltip = "Open an Existing Document (Ctrl+O)",
                 onClick = { _, _ -> onOpenFn?.invoke() }
             )
         )
@@ -6667,7 +9157,7 @@ object Win32NativeWindowHost {
                 top = top,
                 right = right,
                 bottom = bottom,
-                tooltip = "Click to ${if (collapsed) "expand" else "collapse"} ${panel.getTitle()}",
+                tooltip = panel.getTooltipText(),
                 widget = panel.nativeWidget,
                 onClick = { _, _ -> panel.toggleCollapsed() }
             )
@@ -6802,39 +9292,17 @@ object Win32NativeWindowHost {
         )
 
         fun renderTextInputWidget(inputImpl: DesktopTextInputNativeImpl<*>, xL: Int, xR: Int, rowTop: Int, rowH: Int) {
-            val isFocused = focusedWidget == inputImpl.nativeWidget
-            val inputHovered = isRectHovered(hwnd, xL, rowTop, xR, rowTop + rowH)
-            val border = when {
-                isFocused -> theme.accentBlueBorder
-                inputHovered -> theme.borderStrong
-                else -> theme.borderSubtle
-            }
-            fillRectColor(hdc, xL, rowTop, xR, rowTop + rowH, theme.bgCard)
-            drawRectBorder(hdc, xL, rowTop, xR, rowTop + rowH, border)
-            SelectObject(hdc, fontSmall)
-            val typed = inputImpl.getValue()
-            val placeholder = inputImpl.getPlaceholder()
-            val display = if (typed.isEmpty()) {
-                if (isFocused) "|" else placeholder
-            } else {
-                if (isFocused) "$typed|" else typed
-            }
-            val fg = if (typed.isEmpty() && !isFocused) theme.textMuted else theme.textPrimary
-            drawTextInRect(hdc, display, xL + 6, rowTop + 1, xR - 6, rowTop + rowH - 1, fg)
-            hitRegions.add(
-                HitRegion(
-                    left = xL,
-                    top = rowTop,
-                    right = xR,
-                    bottom = rowTop + rowH,
-                    tooltip = placeholder.ifBlank { "Click to edit text" },
-                    widget = inputImpl.nativeWidget,
-                    isTextInput = true,
-                    onClick = { _, _ ->
-                        setWidgetFocused(inputImpl.nativeWidget)
-                        InvalidateRect(hwnd, null, 0)
-                    }
-                )
+            renderAndMountTextInputControl(
+                hwnd = hwnd,
+                hdc = hdc,
+                theme = theme,
+                font = fontSmall,
+                inputImpl = inputImpl,
+                widget = inputImpl.nativeWidget,
+                left = xL,
+                top = rowTop,
+                right = xR,
+                bottom = rowTop + rowH
             )
         }
 
@@ -7132,7 +9600,7 @@ object Win32NativeWindowHost {
                                     top = sTop,
                                     right = sliderRight,
                                     bottom = sBottom,
-                                    tooltip = impl.getTooltipText() ?: valStr,
+                                    tooltip = impl.getTooltipText(),
                                     widget = child,
                                     onClick = { mx, _ ->
                                         impl.setNormalizedFraction((mx - sLeft).toDouble() / max(1, sliderRight - sLeft).toDouble())
@@ -7197,211 +9665,6 @@ object Win32NativeWindowHost {
 
         walkContainer(panel.nativeWidget)
         return y
-    }
-
-    /**
-     * Renders any active [DesktopDialogWindowNativeImpl] (`Modal`) as an interactive centered modal dialog
-     * overlay on top of [hwnd].
-     */
-    private fun renderActiveModalOverlay(
-        hwnd: HWND,
-        hdc: HDC?,
-        theme: SystemThemePalette,
-        fontSmall: HFONT?,
-        fontNormal: HFONT?,
-        fontBold: HFONT?,
-        fontTitle: HFONT?,
-        clientW: Int,
-        clientH: Int
-    ) {
-        val dialog = DesktopDialogWindowNativeImpl.activeDialogs.lastOrNull { it.nativeWidget.visible && !it.nativeWidget.disposed }
-            ?: return
-        val cardW = min(520, clientW - 40).coerceAtLeast(260)
-        val cardH = min(440, clientH - 40).coerceAtLeast(200)
-        val cardLeft = (clientW - cardW) / 2
-        val cardTop = (clientH - cardH) / 2
-        val cardRight = cardLeft + cardW
-        val cardBottom = cardTop + cardH
-
-        // Swallow background clicks behind modal
-        hitRegions.add(
-            HitRegion(
-                left = 0,
-                top = 0,
-                right = clientW,
-                bottom = clientH,
-                onClick = { _, _ -> }
-            )
-        )
-
-        drawRoundedRect(hdc, cardLeft, cardTop, cardRight, cardBottom, 8, theme.bgPanel, theme.accentBlueBorder)
-        Win32NativeTitleBarRenderer.renderWindowTitleBar(
-            hwnd = hwnd,
-            targetHdc = hdc,
-            left = cardLeft + 1,
-            top = cardTop + 1,
-            right = cardRight - 1,
-            titleBarHeight = 32,
-            windowTitle = dialog.getTitle().ifBlank { "Dialog" },
-            titleBar = null,
-            isToolWindow = false,
-            isInWindowModalHeader = true,
-            kind = Win32TitleBarKind.DIALOG_WINDOW,
-            appIcon = null,
-            headerActions = emptyList(),
-            fontSmall = fontSmall,
-            fontCaption = fontBold ?: fontSmall,
-            hoveredWidget = hoveredWidget,
-            pressedWidget = pressedWidget,
-            isRectHoveredFn = { l, t, r, b -> isRectHovered(hwnd, l, t, r, b) },
-            registerHitRegionFn = { l, t, r, b, tip, widget, onClick ->
-                hitRegions.add(
-                    HitRegion(
-                        left = l,
-                        top = t,
-                        right = r,
-                        bottom = b,
-                        tooltip = tip,
-                        widget = widget,
-                        onClick = onClick
-                    )
-                )
-            },
-            openSelectPopupFn = { selectImpl, mx, my ->
-                openSelectPopupMenu(hwnd, selectImpl, mx, my)
-            },
-            onCloseClicked = {
-                dialog.closeDialog()
-            }
-        )
-
-        val buttons = mutableListOf<DesktopButtonNativeImpl<*>>()
-        val checkboxes = mutableListOf<DesktopCheckboxNativeImpl<*>>()
-        val selects = mutableListOf<DesktopSelectNativeImpl<*>>()
-        val sliders = mutableListOf<DesktopRangeSliderNativeImpl<*>>()
-        val texts = mutableListOf<DesktopTextNativeImpl<*>>()
-        val textInputs = mutableListOf<DesktopTextInputNativeImpl<*>>()
-
-        fun collectModalControls(w: DesktopNativeWidget?) {
-            if (w == null || !w.visible || w.disposed) return
-            when (val impl = w.attributes["nativeImpl"]) {
-                is DesktopButtonNativeImpl<*> -> buttons.add(impl)
-                is DesktopCheckboxNativeImpl<*> -> checkboxes.add(impl)
-                is DesktopSelectNativeImpl<*> -> selects.add(impl)
-                is DesktopRangeSliderNativeImpl<*> -> sliders.add(impl)
-                is DesktopTextNativeImpl<*> -> texts.add(impl)
-                is DesktopTextInputNativeImpl<*> -> textInputs.add(impl)
-            }
-            for (c in w.children) collectModalControls(c)
-        }
-        collectModalControls(dialog.nativeWidget)
-
-        var y = cardTop + 42
-        val bodyLeft = cardLeft + 14
-        val bodyRight = cardRight - 14
-        val bodyBottomLimit = cardBottom - 44
-
-        SelectObject(hdc, fontSmall)
-        for (txt in texts.take(5)) {
-            val t = txt.getText().trim()
-            if (t.isNotEmpty() && y + 18 <= bodyBottomLimit) {
-                drawTextInRect(hdc, t, bodyLeft, y, bodyRight, y + 17, theme.textSecondary)
-                y += 19
-            }
-        }
-        for (sel in selects.take(4)) {
-            if (y + 24 <= bodyBottomLimit) {
-                val curVal = sel.getSelectedValue() ?: ""
-                val curLabel = sel.getOptions().firstOrNull { it.first == curVal }?.second ?: curVal
-                drawSelectControl(hdc, theme, curLabel.ifBlank { "Select..." }, bodyLeft, y, bodyRight, y + 24, sel.nativeWidget, hwnd)
-                val sy = y
-                hitRegions.add(
-                    HitRegion(
-                        left = bodyLeft,
-                        top = sy,
-                        right = bodyRight,
-                        bottom = sy + 24,
-                        tooltip = sel.getTooltipText(),
-                        widget = sel.nativeWidget,
-                        onClick = { mx, my -> openSelectPopupMenu(hwnd, sel, mx, my) }
-                    )
-                )
-                y += 28
-            }
-        }
-        for (inp in textInputs.take(4)) {
-            if (y + 24 <= bodyBottomLimit) {
-                val isFocused = focusedWidget == inp.nativeWidget
-                fillRectColor(hdc, bodyLeft, y, bodyRight, y + 24, theme.bgCard)
-                drawRectBorder(hdc, bodyLeft, y, bodyRight, y + 24, if (isFocused) theme.accentBlueBorder else theme.borderSubtle)
-                val typed = inp.getValue()
-                val placeholder = inp.getPlaceholder()
-                val display = if (typed.isEmpty()) placeholder else typed
-                drawTextInRect(hdc, display, bodyLeft + 6, y + 2, bodyRight - 6, y + 22, if (typed.isEmpty()) theme.textMuted else theme.textPrimary)
-                val iy = y
-                hitRegions.add(
-                    HitRegion(
-                        left = bodyLeft,
-                        top = iy,
-                        right = bodyRight,
-                        bottom = iy + 24,
-                        widget = inp.nativeWidget,
-                        isTextInput = true,
-                        onClick = { _, _ -> setWidgetFocused(inp.nativeWidget) }
-                    )
-                )
-                y += 28
-            }
-        }
-        for (cb in checkboxes.take(4)) {
-            if (y + 20 <= bodyBottomLimit) {
-                drawCheckboxControl(hdc, theme, cb.getLabel(), cb.isChecked(), bodyLeft, y, bodyRight, y + 18, cb.nativeWidget, hwnd)
-                val cy = y
-                hitRegions.add(
-                    HitRegion(
-                        left = bodyLeft,
-                        top = cy,
-                        right = bodyRight,
-                        bottom = cy + 18,
-                        widget = cb.nativeWidget,
-                        onClick = { _, _ -> cb.setChecked(!cb.isChecked()) }
-                    )
-                )
-                y += 22
-            }
-        }
-        if (buttons.isNotEmpty()) {
-            val btnY = cardBottom - 34
-            val cols = buttons.size.coerceAtLeast(1)
-            val gap = 8
-            val btnW = ((bodyRight - bodyLeft) - gap * (cols - 1)) / cols
-            buttons.forEachIndexed { idx, btn ->
-                val bx = bodyLeft + idx * (btnW + gap)
-                drawButtonControl(
-                    hdc = hdc,
-                    theme = theme,
-                    label = btn.getText(),
-                    icon = btn.getIcon(),
-                    left = bx,
-                    top = btnY,
-                    right = bx + btnW,
-                    bottom = btnY + 26,
-                    primary = idx == buttons.lastIndex,
-                    widget = btn.nativeWidget,
-                    hwndForHover = hwnd
-                )
-                hitRegions.add(
-                    HitRegion(
-                        left = bx,
-                        top = btnY,
-                        right = bx + btnW,
-                        bottom = btnY + 26,
-                        widget = btn.nativeWidget,
-                        onClick = { _, _ -> btn.dispatchClick() }
-                    )
-                )
-            }
-        }
     }
 
     /**
@@ -7552,7 +9815,7 @@ object Win32NativeWindowHost {
                     top = sTop,
                     right = right - 8,
                     bottom = sBottom,
-                    tooltip = playhead.getTooltipText() ?: "Timeline Playhead Scrubber",
+                    tooltip = playhead.getTooltipText(),
                     widget = playhead.nativeWidget,
                     onClick = { mx, _ ->
                         playhead.setNormalizedFraction((mx - (left + 8)).toDouble() / max(1, (right - 8) - (left + 8)).toDouble())
@@ -7614,7 +9877,154 @@ object Win32NativeWindowHost {
         drawTextInRect(hdc, tip, tx + 8, ty + 2, tx + tipW - 8, ty + tipH - 2, theme.textPrimary)
     }
 
-    private fun drawRoundedButton(
+    private val softClipStack = IntArray(32)
+    private var softClipDepth: Int = 0
+    private var softClipLeft: Int = 0
+    private var softClipTop: Int = 0
+    private var softClipRight: Int = Int.MAX_VALUE
+    private var softClipBottom: Int = Int.MAX_VALUE
+
+    internal fun resetSoftClipRect() {
+        softClipDepth = 0
+        softClipLeft = 0
+        softClipTop = 0
+        softClipRight = Int.MAX_VALUE
+        softClipBottom = Int.MAX_VALUE
+    }
+
+    internal fun pushClipRect(hdc: HDC?, left: Int, top: Int, right: Int, bottom: Int): Int {
+        val savedDc = if (hdc != null) SaveDC(hdc) else 0
+        if (hdc != null) {
+            IntersectClipRect(hdc, left, top, right, bottom)
+        }
+        val stackIdx = softClipDepth * 4
+        if (stackIdx + 3 < softClipStack.size) {
+            softClipStack[stackIdx] = softClipLeft
+            softClipStack[stackIdx + 1] = softClipTop
+            softClipStack[stackIdx + 2] = softClipRight
+            softClipStack[stackIdx + 3] = softClipBottom
+        }
+        if (softClipDepth == 0) {
+            softClipLeft = left
+            softClipTop = top
+            softClipRight = right
+            softClipBottom = bottom
+        } else {
+            softClipLeft = max(softClipLeft, left)
+            softClipTop = max(softClipTop, top)
+            softClipRight = min(softClipRight, right)
+            softClipBottom = min(softClipBottom, bottom)
+        }
+        softClipDepth++
+        return savedDc
+    }
+
+    internal fun popClipRect(hdc: HDC?, savedDc: Int) {
+        if (hdc != null && savedDc != 0) {
+            RestoreDC(hdc, savedDc)
+        }
+        if (softClipDepth > 0) {
+            softClipDepth--
+            val stackIdx = softClipDepth * 4
+            if (softClipDepth == 0) {
+                softClipLeft = 0
+                softClipTop = 0
+                softClipRight = Int.MAX_VALUE
+                softClipBottom = Int.MAX_VALUE
+            } else if (stackIdx + 3 < softClipStack.size) {
+                softClipLeft = softClipStack[stackIdx]
+                softClipTop = softClipStack[stackIdx + 1]
+                softClipRight = softClipStack[stackIdx + 2]
+                softClipBottom = softClipStack[stackIdx + 3]
+            }
+        }
+    }
+
+    internal fun colorRefToBgraWord(colorRef: UInt): UInt {
+        val r = colorRef and 0xFFu
+        val g = (colorRef shr 8) and 0xFFu
+        val b = (colorRef shr 16) and 0xFFu
+        return 0xFF000000u or (r shl 16) or (g shl 8) or b
+    }
+
+    private val sharedScratchRect: RECT = nativeHeap.alloc<RECT>()
+    private val singleWordScratch: UIntVar = nativeHeap.alloc<UIntVar>()
+    private val singleWordScratchPtr: CPointer<UIntVar> = singleWordScratch.ptr
+
+    private fun readBackBufferWord(bufPixels: CPointer<ByteVar>, wordIndex: Int): UInt {
+        platform.posix.memcpy(singleWordScratchPtr, bufPixels + (wordIndex * 4), 4uL)
+        return singleWordScratch.value
+    }
+
+    private fun writeBackBufferWord(bufPixels: CPointer<ByteVar>, wordIndex: Int, value: UInt) {
+        singleWordScratch.value = value
+        platform.posix.memcpy(bufPixels + (wordIndex * 4), singleWordScratchPtr, 4uL)
+    }
+
+    private fun fillBackBufferSpanWords(
+        bufPixels: CPointer<ByteVar>,
+        startWordIndex: Int,
+        wordCount: Int,
+        packedBgra: UInt
+    ) {
+        if (wordCount <= 0) return
+        val basePtr = (bufPixels + (startWordIndex * 4))!!
+        singleWordScratch.value = packedBgra
+        platform.posix.memcpy(basePtr, singleWordScratchPtr, 4uL)
+        var filled = 1
+        while (filled < wordCount) {
+            val copyWords = min(filled, wordCount - filled)
+            platform.posix.memcpy(
+                basePtr + (filled * 4),
+                basePtr,
+                (copyWords * 4).toULong()
+            )
+            filled += copyWords
+        }
+    }
+
+    internal fun drawRoundedButtonBackground(
+        hdc: HDC?,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        bg: UInt,
+        border: UInt,
+        radius: Int = 6,
+        widget: DesktopNativeWidget? = null,
+        hwndForHover: HWND? = null
+    ) {
+        val isHovered = (widget != null && hoveredWidget == widget) ||
+            (hwndForHover != null && isRectHovered(hwndForHover, left, top, right, bottom))
+        val isPressed = widget != null && pressedWidget == widget
+        val effectiveBg = when {
+            isPressed -> lightenColorRef(bg, -16)
+            isHovered -> lightenColorRef(bg, 16)
+            else -> bg
+        }
+        val effectiveBorder = if (isHovered) lightenColorRef(border, 24) else border
+        drawRoundedRect(hdc, left, top, right, bottom, radius, effectiveBg, effectiveBorder)
+    }
+
+    internal fun drawRoundedButtonForeground(
+        hdc: HDC?,
+        font: HFONT?,
+        label: String,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        fg: UInt,
+        icon: String? = null
+    ) {
+        if (font != null) {
+            SelectObject(hdc, font)
+        }
+        drawButtonLabelAndIcon(hdc, label, icon, left, top, right, bottom, fg)
+    }
+
+    internal fun drawRoundedButton(
         hdc: HDC?,
         font: HFONT?,
         label: String,
@@ -7630,23 +10040,330 @@ object Win32NativeWindowHost {
         widget: DesktopNativeWidget? = null,
         hwndForHover: HWND? = null
     ) {
-        val isHovered = (widget != null && hoveredWidget == widget) ||
-            (hwndForHover != null && isRectHovered(hwndForHover, left, top, right, bottom))
-        val isPressed = widget != null && pressedWidget == widget
-        val effectiveBg = when {
-            isPressed -> lightenColorRef(bg, -16)
-            isHovered -> lightenColorRef(bg, 16)
-            else -> bg
-        }
-        val effectiveBorder = if (isHovered) lightenColorRef(border, 24) else border
-        drawRoundedRect(hdc, left, top, right, bottom, radius, effectiveBg, effectiveBorder)
-        if (font != null) {
-            SelectObject(hdc, font)
-        }
-        drawButtonLabelAndIcon(hdc, label, icon, left, top, right, bottom, fg)
+        drawRoundedButtonBackground(
+            hdc = hdc,
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+            bg = bg,
+            border = border,
+            radius = radius,
+            widget = widget,
+            hwndForHover = hwndForHover
+        )
+        drawRoundedButtonForeground(
+            hdc = hdc,
+            font = font,
+            label = label,
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+            fg = fg,
+            icon = icon
+        )
     }
 
-    private fun drawRoundedRect(
+    internal fun colorRefToRgba(colorRef: UInt, alpha: Int = 255): RgbaColor =
+        RgbaColor(
+            r = colorRef.toInt() and 0xFF,
+            g = (colorRef.toInt() ushr 8) and 0xFF,
+            b = (colorRef.toInt() ushr 16) and 0xFF,
+            a = alpha.coerceIn(0, 255)
+        )
+
+    /**
+     * Analytical Signed Distance Field (SDF) sub-pixel antialiased rounded-rectangle and border
+     * rasterizer with true 32-bit backbuffer alpha blending and active clip-box respect.
+     */
+    internal fun drawAntialiasedRoundedRectRgba(
+        hdc: HDC?,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        radiusPx: Float,
+        fillColor: RgbaColor?,
+        borderColor: RgbaColor?,
+        borderWidthPx: Float = 1f,
+        opacity: Float = 1f,
+        gradient: Gradient? = null
+    ) {
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0 || h <= 0) return
+        val effOpacity = opacity.coerceIn(0f, 1f)
+        if (effOpacity <= 0.001f) return
+
+        val isActiveDc = hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null
+        val bufPixels = if (isActiveDc) activeBackBufferPixels else cachedMainBackBufferPixels
+        val bufW = if (isActiveDc) activeBackBufferWidth else cachedMainBackBufferWidth
+        val bufH = if (isActiveDc) activeBackBufferHeight else cachedMainBackBufferHeight
+
+        if (bufPixels == null || bufW <= 0 || bufH <= 0) {
+            val fallbackFill = fillColor?.let { rgbaToColorRef(it) } ?: rgb(45, 45, 48)
+            val fallbackBorder = borderColor?.let { rgbaToColorRef(it) } ?: fallbackFill
+            val brush = CreateSolidBrush(fallbackFill)
+            val pen = CreatePen(PS_SOLID, borderWidthPx.roundToInt().coerceAtLeast(1), fallbackBorder)
+            val oldBrush = SelectObject(hdc, brush)
+            val oldPen = SelectObject(hdc, pen)
+            val rInt = radiusPx.roundToInt().coerceAtLeast(0)
+            RoundRect(hdc, left, top, right, bottom, rInt * 2, rInt * 2)
+            SelectObject(hdc, oldBrush)
+            SelectObject(hdc, oldPen)
+            DeleteObject(brush)
+            DeleteObject(pen)
+            gdiDirtySinceLastFlush = true
+            return
+        }
+
+        val clipL: Int
+        val clipT: Int
+        val clipR: Int
+        val clipB: Int
+        if (softClipDepth > 0) {
+            clipL = softClipLeft.coerceIn(0, bufW)
+            clipT = softClipTop.coerceIn(0, bufH)
+            clipR = softClipRight.coerceIn(clipL, bufW)
+            clipB = softClipBottom.coerceIn(clipT, bufH)
+        } else {
+            clipL = 0
+            clipT = 0
+            clipR = bufW
+            clipB = bufH
+        }
+
+        val x0 = max(left, clipL)
+        val y0 = max(top, clipT)
+        val x1 = min(right, clipR)
+        val y1 = min(bottom, clipB)
+        if (x1 <= x0 || y1 <= y0) return
+
+        if (gdiDirtySinceLastFlush) {
+            GdiFlush()
+            gdiDirtySinceLastFlush = false
+        }
+
+        val halfW = w * 0.5f
+        val halfH = h * 0.5f
+        val cx = left + halfW
+        val cy = top + halfH
+        val r = radiusPx.coerceIn(0f, min(halfW, halfH))
+        val innerBoxX = halfW - r
+        val innerBoxY = halfH - r
+        val bw = if (borderColor != null && borderColor.a > 0 && borderWidthPx > 0f) borderWidthPx else 0f
+
+        val hasFill = (fillColor != null && fillColor.a > 0) || gradient != null
+        val fillR = fillColor?.r ?: 0
+        val fillG = fillColor?.g ?: 0
+        val fillB = fillColor?.b ?: 0
+        val fillBaseAlpha = if (fillColor != null) (fillColor.a / 255f) * effOpacity else 0f
+        val fillAInt = (fillBaseAlpha * 255f).roundToInt().coerceIn(0, 255)
+
+        val hasBorder = bw > 0f && borderColor != null && borderColor.a > 0
+        val borderR = borderColor?.r ?: 0
+        val borderG = borderColor?.g ?: 0
+        val borderB = borderColor?.b ?: 0
+        val borderBaseAlpha = if (borderColor != null) (borderColor.a / 255f) * effOpacity else 0f
+        val borderAInt = (borderBaseAlpha * 255f).roundToInt().coerceIn(0, 255)
+
+        if (!hasFill && !hasBorder) return
+
+        val packedOpaqueFill = 0xFF000000u or (fillR.toUInt() shl 16) or (fillG.toUInt() shl 8) or fillB.toUInt()
+        val packedOpaqueBorder = 0xFF000000u or (borderR.toUInt() shl 16) or (borderG.toUInt() shl 8) or borderB.toUInt()
+        val isStandardOpaque1PxBorder = gradient == null && fillAInt >= 255 &&
+            (!hasBorder || (bw == 1f && borderAInt >= 255))
+
+        val spanHalfX = innerBoxX - bw - 0.5f
+        val invW = 1f / w.toFloat()
+        val invH = 1f / h.toFloat()
+
+        fun blendSdfPixel(px: Int, py: Int, qy: Float, rowWordOffset: Int) {
+            val dx = kotlin.math.abs((px + 0.5f) - cx)
+            val qx = dx - innerBoxX
+            val dOuter = if (qy <= 0f) {
+                if (qx >= 0f) qx - r else max(qx, qy) - r
+            } else if (qx <= 0f) {
+                qy - r
+            } else {
+                kotlin.math.sqrt(qx * qx + qy * qy) - r
+            }
+            val aOuter = (0.5f - dOuter).coerceIn(0f, 1f)
+            if (aOuter <= 0.001f) return
+
+            val aInner = if (hasBorder) (0.5f - (dOuter + bw)).coerceIn(0f, 1f) else aOuter
+            val aBorder = aOuter - aInner
+
+            var fR = fillR
+            var fG = fillG
+            var fB = fillB
+            var fBaseA = fillBaseAlpha
+            if (gradient != null && aInner > 0.001f) {
+                val u = ((px + 0.5f - left) * invW).coerceIn(0f, 1f)
+                val v = ((py + 0.5f - top) * invH).coerceIn(0f, 1f)
+                val gc = gradient.sampleAt(u, v)
+                fR = gc.r
+                fG = gc.g
+                fB = gc.b
+                fBaseA = (gc.a / 255f) * effOpacity
+            }
+
+            val srcFillA = fBaseA * aInner
+            val srcBorderA = borderBaseAlpha * aBorder
+            val totalSrcA = (srcFillA + srcBorderA).coerceIn(0f, 1f)
+            if (totalSrcA <= 0.001f) return
+
+            val wordIdx = rowWordOffset + px
+            val dstWord = readBackBufferWord(bufPixels, wordIdx).toInt()
+            val dstB = dstWord and 0xFF
+            val dstG = (dstWord ushr 8) and 0xFF
+            val dstR = (dstWord ushr 16) and 0xFF
+            val invA = 1f - totalSrcA
+            val outR = (fR * srcFillA + borderR * srcBorderA + dstR * invA).roundToInt().coerceIn(0, 255)
+            val outG = (fG * srcFillA + borderG * srcBorderA + dstG * invA).roundToInt().coerceIn(0, 255)
+            val outB = (fB * srcFillA + borderB * srcBorderA + dstB * invA).roundToInt().coerceIn(0, 255)
+            writeBackBufferWord(
+                bufPixels,
+                wordIdx,
+                0xFF000000u or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+            )
+        }
+
+        var cachedMidRowOffsetBytes: Int = -1
+        val midRowSpanBytes: ULong = ((x1 - x0) * 4).toULong()
+
+        for (py in y0 until y1) {
+            val dy = kotlin.math.abs((py + 0.5f) - cy)
+            val qy = dy - innerBoxY
+            val rowWordOffset = py * bufW
+            if (gradient == null && qy <= -bw - 0.5f) {
+                if (isStandardOpaque1PxBorder && hasFill && w >= 2) {
+                    val curRowByteOffset = (rowWordOffset + x0) * 4
+                    if (cachedMidRowOffsetBytes >= 0) {
+                        platform.posix.memcpy(
+                            bufPixels + curRowByteOffset,
+                            bufPixels + cachedMidRowOffsetBytes,
+                            midRowSpanBytes
+                        )
+                    } else {
+                        if (hasBorder) {
+                            if (left in x0 until x1) {
+                                writeBackBufferWord(bufPixels, rowWordOffset + left, packedOpaqueBorder)
+                            }
+                            val fillStart = max(x0, left + 1)
+                            val fillEnd = min(x1, right - 1)
+                            if (fillEnd > fillStart) {
+                                fillBackBufferSpanWords(
+                                    bufPixels = bufPixels,
+                                    startWordIndex = rowWordOffset + fillStart,
+                                    wordCount = fillEnd - fillStart,
+                                    packedBgra = packedOpaqueFill
+                                )
+                            }
+                            if (right - 1 in x0 until x1 && right - 1 > left) {
+                                writeBackBufferWord(bufPixels, rowWordOffset + right - 1, packedOpaqueBorder)
+                            }
+                        } else {
+                            fillBackBufferSpanWords(
+                                bufPixels = bufPixels,
+                                startWordIndex = rowWordOffset + x0,
+                                wordCount = x1 - x0,
+                                packedBgra = packedOpaqueFill
+                            )
+                        }
+                        cachedMidRowOffsetBytes = curRowByteOffset
+                    }
+                    continue
+                }
+                if (spanHalfX > 1f) {
+                    val spanStart = max(x0, kotlin.math.ceil(cx - spanHalfX - 0.5f).toInt())
+                    val spanEnd = min(x1, kotlin.math.floor(cx + spanHalfX - 0.5f).toInt() + 1)
+                    if (spanEnd > spanStart) {
+                        for (px in x0 until spanStart) {
+                            blendSdfPixel(px, py, qy, rowWordOffset)
+                        }
+                        if (hasFill && fillAInt > 0) {
+                            if (fillAInt >= 255) {
+                                fillBackBufferSpanWords(
+                                    bufPixels = bufPixels,
+                                    startWordIndex = rowWordOffset + spanStart,
+                                    wordCount = spanEnd - spanStart,
+                                    packedBgra = packedOpaqueFill
+                                )
+                            } else {
+                                val invAInt = 255 - fillAInt
+                                val premulR = fillR * fillAInt
+                                val premulG = fillG * fillAInt
+                                val premulB = fillB * fillAInt
+                                var wIdx = rowWordOffset + spanStart
+                                val wEnd = rowWordOffset + spanEnd
+                                while (wIdx < wEnd) {
+                                    val dstWord = readBackBufferWord(bufPixels, wIdx).toInt()
+                                    val dstB = dstWord and 0xFF
+                                    val dstG = (dstWord ushr 8) and 0xFF
+                                    val dstR = (dstWord ushr 16) and 0xFF
+                                    val outB = ((premulB + dstB * invAInt) / 255).toUInt()
+                                    val outG = ((premulG + dstG * invAInt) / 255).toUInt()
+                                    val outR = ((premulR + dstR * invAInt) / 255).toUInt()
+                                    writeBackBufferWord(
+                                        bufPixels,
+                                        wIdx,
+                                        0xFF000000u or (outR shl 16) or (outG shl 8) or outB
+                                    )
+                                    wIdx++
+                                }
+                            }
+                        }
+                        for (px in spanEnd until x1) {
+                            blendSdfPixel(px, py, qy, rowWordOffset)
+                        }
+                        continue
+                    }
+                }
+            }
+            if (isStandardOpaque1PxBorder && hasFill && spanHalfX > 1f) {
+                val spanStart = max(x0, kotlin.math.ceil(cx - spanHalfX - 0.5f).toInt())
+                val spanEnd = min(x1, kotlin.math.floor(cx + spanHalfX - 0.5f).toInt() + 1)
+                if (spanEnd > spanStart) {
+                    for (px in x0 until spanStart) {
+                        blendSdfPixel(px, py, qy, rowWordOffset)
+                    }
+                    if (hasBorder && py == top && top in y0 until y1) {
+                        fillBackBufferSpanWords(
+                            bufPixels = bufPixels,
+                            startWordIndex = rowWordOffset + spanStart,
+                            wordCount = spanEnd - spanStart,
+                            packedBgra = packedOpaqueBorder
+                        )
+                    } else if (hasBorder && py == bottom - 1 && (bottom - 1) in y0 until y1) {
+                        fillBackBufferSpanWords(
+                            bufPixels = bufPixels,
+                            startWordIndex = rowWordOffset + spanStart,
+                            wordCount = spanEnd - spanStart,
+                            packedBgra = packedOpaqueBorder
+                        )
+                    } else {
+                        fillBackBufferSpanWords(
+                            bufPixels = bufPixels,
+                            startWordIndex = rowWordOffset + spanStart,
+                            wordCount = spanEnd - spanStart,
+                            packedBgra = packedOpaqueFill
+                        )
+                    }
+                    for (px in spanEnd until x1) {
+                        blendSdfPixel(px, py, qy, rowWordOffset)
+                    }
+                    continue
+                }
+            }
+            for (px in x0 until x1) {
+                blendSdfPixel(px, py, qy, rowWordOffset)
+            }
+        }
+    }
+
+    internal fun drawRoundedRect(
         hdc: HDC?,
         left: Int,
         top: Int,
@@ -7656,18 +10373,23 @@ object Win32NativeWindowHost {
         fillColor: UInt,
         borderColor: UInt
     ) {
-        val brush = CreateSolidBrush(fillColor)
-        val pen = CreatePen(PS_SOLID, 1, borderColor)
-        val oldBrush = SelectObject(hdc, brush)
-        val oldPen = SelectObject(hdc, pen)
-        RoundRect(hdc, left, top, right, bottom, radius * 2, radius * 2)
-        SelectObject(hdc, oldBrush)
-        SelectObject(hdc, oldPen)
-        DeleteObject(brush)
-        DeleteObject(pen)
+        val fillRgba = colorRefToRgba(fillColor, 255)
+        val borderRgba = if (borderColor == fillColor) null else colorRefToRgba(borderColor, 255)
+        drawAntialiasedRoundedRectRgba(
+            hdc = hdc,
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+            radiusPx = radius.toFloat(),
+            fillColor = fillRgba,
+            borderColor = borderRgba,
+            borderWidthPx = if (borderRgba != null) 1f else 0f,
+            opacity = 1f
+        )
     }
 
-    private fun drawDashedRoundedRect(
+    internal fun drawDashedRoundedRect(
         hdc: HDC?,
         left: Int,
         top: Int,
@@ -7686,28 +10408,42 @@ object Win32NativeWindowHost {
         SelectObject(hdc, oldPen)
         DeleteObject(brush)
         DeleteObject(pen)
+        gdiDirtySinceLastFlush = true
     }
 
-    private fun isRectHovered(hwnd: HWND?, left: Int, top: Int, right: Int, bottom: Int): Boolean {
+    internal fun isRectHovered(hwnd: HWND?, left: Int, top: Int, right: Int, bottom: Int): Boolean {
         if (hwnd != null && hoverHwndKey != 0L && hoverHwndKey != hwnd.toLong()) return false
         return hoverMouseX in left..right && hoverMouseY in top..bottom
     }
 
-    private fun lightenColorRef(colorRef: UInt, delta: Int): UInt {
+    internal fun lightenColorRef(colorRef: UInt, delta: Int): UInt {
         val r = ((colorRef.toInt() and 0xFF) + delta).coerceIn(0, 255)
         val g = (((colorRef.toInt() ushr 8) and 0xFF) + delta).coerceIn(0, 255)
         val b = (((colorRef.toInt() ushr 16) and 0xFF) + delta).coerceIn(0, 255)
         return rgb(r, g, b)
     }
 
-    private fun rgbaToColorRef(color: RgbaColor): UInt = rgb(color.r, color.g, color.b)
+    internal fun rgbaToColorRef(color: RgbaColor, backdropColorRef: UInt? = null): UInt {
+        if (backdropColorRef == null || color.a >= 250) {
+            return rgb(color.r, color.g, color.b)
+        }
+        val a = color.a.coerceIn(0, 255)
+        val invA = 255 - a
+        val bgR = (backdropColorRef.toInt() and 0xFF)
+        val bgG = ((backdropColorRef.toInt() ushr 8) and 0xFF)
+        val bgB = ((backdropColorRef.toInt() ushr 16) and 0xFF)
+        val outR = ((color.r * a + bgR * invA) / 255).coerceIn(0, 255)
+        val outG = ((color.g * a + bgG * invA) / 255).coerceIn(0, 255)
+        val outB = ((color.b * a + bgB * invA) / 255).coerceIn(0, 255)
+        return rgb(outR, outG, outB)
+    }
 
     /**
-     * Renders a [Gradient] ([com.nexustools.genericui.style.gradient.LinearGradient] or
-     * [com.nexustools.genericui.style.gradient.RadialGradient]) into `[left..right, top..bottom]`
-     * using a 32-bit BGRA surface buffer and `StretchDIBits`.
+     * Renders a [Gradient] ([com.nexustools.genericui.style.gradient.Gradient.LinearGradient] or
+     * [com.nexustools.genericui.style.gradient.Gradient.RadialGradient]) into `[left..right, top..bottom]`
+     * with full per-pixel alpha-blending over the 32-bit backbuffer.
      */
-    private fun drawGradientRect(
+    internal fun drawGradientRect(
         hdc: HDC?,
         left: Int,
         top: Int,
@@ -7715,63 +10451,26 @@ object Win32NativeWindowHost {
         bottom: Int,
         gradient: Gradient
     ) {
-        val w = (right - left).coerceAtLeast(1)
-        val h = (bottom - top).coerceAtLeast(1)
-        if (w <= 0 || h <= 0) return
-
-        val sampleW = w.coerceIn(1, 96)
-        val sampleH = h.coerceIn(1, 64)
-        val bgra = ByteArray(sampleW * sampleH * 4)
-        val maxX = (sampleW - 1).coerceAtLeast(1).toFloat()
-        val maxY = (sampleH - 1).coerceAtLeast(1).toFloat()
-
-        var offset = 0
-        for (py in 0 until sampleH) {
-            val v = if (sampleH == 1) 0.5f else py.toFloat() / maxY
-            for (px in 0 until sampleW) {
-                val u = if (sampleW == 1) 0.5f else px.toFloat() / maxX
-                val c = gradient.sampleAt(u, v)
-                bgra[offset] = c.b.toByte()
-                bgra[offset + 1] = c.g.toByte()
-                bgra[offset + 2] = c.r.toByte()
-                bgra[offset + 3] = (c.a * 255f).roundToInt().coerceIn(0, 255).toByte()
-                offset += 4
-            }
-        }
-
-        memScoped {
-            val bmi = alloc<BITMAPINFO>()
-            bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
-            bmi.bmiHeader.biWidth = sampleW
-            bmi.bmiHeader.biHeight = -sampleH
-            bmi.bmiHeader.biPlanes = 1u
-            bmi.bmiHeader.biBitCount = 32u
-            bmi.bmiHeader.biCompression = BI_RGB.toUInt()
-
-            bgra.usePinned { pinned ->
-                StretchDIBits(
-                    hdc,
-                    left,
-                    top,
-                    w,
-                    h,
-                    0,
-                    0,
-                    sampleW,
-                    sampleH,
-                    pinned.addressOf(0),
-                    bmi.ptr,
-                    DIB_RGB_COLORS.toUInt(),
-                    SRCCOPY
-                )
-            }
-        }
+        if (right <= left || bottom <= top) return
+        drawAntialiasedRoundedRectRgba(
+            hdc = hdc,
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+            radiusPx = 0f,
+            fillColor = null,
+            borderColor = null,
+            borderWidthPx = 0f,
+            opacity = 1f,
+            gradient = gradient
+        )
     }
 
     /**
      * Renders a native system button with support for:
      * - Standard native OS button surface (`primary == false` and no custom `tint`)
-     * - Tinted / Primary native OS button surface (`style { tint: ColorRgba(...) }` or `primary == true`)
+     * - Tinted / Primary native OS button surface (`style { tint: RgbaColor(...) }` or `primary == true`)
      * - Gradient backgrounds (`style { background = LinearGradient(...) }` or `RadialGradient(...)`)
      * - CSS pseudo-class states (`:hover`, `:active`, `:focus`) with distinct hover shading, pressed bevel, and focus ring!
      */
@@ -7815,7 +10514,7 @@ object Win32NativeWindowHost {
         return if (darkTheme) RgbaColor(242, 242, 242) else RgbaColor(0, 0, 0)
     }
 
-    private fun drawButtonControl(
+    internal fun drawButtonControl(
         hdc: HDC?,
         theme: SystemThemePalette = if (isWindowsSystemDarkTheme()) darkSystemPalette else lightSystemPalette,
         label: String,
@@ -7830,10 +10529,97 @@ object Win32NativeWindowHost {
         hwndForHover: HWND? = null
     ) {
         val impl = widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
-        val isEnabled = impl?.isEnabled() ?: true
+        val isEnabled = (widget?.enabled ?: true) && (impl?.isEnabled() ?: true)
         val isHovered = isEnabled && ((widget != null && hoveredWidget == widget) || isRectHovered(hwndForHover, left, top, right, bottom))
         val isPressed = isEnabled && (widget != null && pressedWidget == widget)
-        val isFocused = widget != null && focusedWidget == widget
+        val isFocused = isEnabled && (widget != null && focusedWidget == widget)
+
+        if (impl is DesktopStyledButtonNativeImpl<*>) {
+            impl.setHoveredState(isHovered)
+            impl.setFocusedState(isFocused)
+            impl.setActivePressedState(isPressed)
+            val visuals = impl.resolveCurrentVisuals()
+            val radius = (visuals.borderRadiusPx ?: 6f).coerceAtLeast(0f)
+            val borderW = (visuals.borderWidthPx ?: if (visuals.borderColor != null) 1f else 0f).coerceAtLeast(0f)
+            val borderStyle = visuals.borderStyle
+            val baseOpacity = (visuals.opacity ?: widget?.opacity ?: 1f).coerceIn(0.1f, 1f)
+            val effectiveOpacity = if (!isEnabled && visuals.opacity == null) (baseOpacity * 0.45f).coerceIn(0.15f, 1f) else baseOpacity
+            val grad = visuals.backgroundGradient ?: impl.getEffectiveBackgroundGradient()
+            val effectiveFillRgba: RgbaColor? = visuals.backgroundColor ?: when {
+                grad != null -> null
+                !isEnabled -> colorRefToRgba(theme.bgPanel, 180)
+                isPressed -> colorRefToRgba(lightenColorRef(theme.bgElevated, -14), 255)
+                isHovered -> colorRefToRgba(lightenColorRef(theme.bgElevated, 14), 255)
+                else -> colorRefToRgba(theme.bgCard, 255)
+            }
+            val effectiveBorderRgba: RgbaColor? = if (borderW <= 0f || borderStyle == CssBorderStyle.NONE || borderStyle == CssBorderStyle.HIDDEN) {
+                null
+            } else {
+                visuals.borderColor ?: when {
+                    !isEnabled -> colorRefToRgba(theme.borderSubtle, 140)
+                    isFocused -> colorRefToRgba(theme.accentBlueBorder, 255)
+                    isHovered -> colorRefToRgba(theme.borderStrong, 255)
+                    else -> colorRefToRgba(theme.borderSubtle, 255)
+                }
+            }
+
+            if (borderStyle == CssBorderStyle.DASHED || borderStyle == CssBorderStyle.DOTTED) {
+                val bgColorRef = effectiveFillRgba?.let { rgbaToColorRef(it, theme.bgCard) } ?: theme.bgCard
+                val borderColorRef = effectiveBorderRgba?.let { rgbaToColorRef(it, theme.bgCard) } ?: theme.borderSubtle
+                drawDashedRoundedRect(hdc, left, top, right, bottom, radius.roundToInt(), bgColorRef, borderColorRef)
+            } else {
+                drawAntialiasedRoundedRectRgba(
+                    hdc = hdc,
+                    left = left,
+                    top = top,
+                    right = right,
+                    bottom = bottom,
+                    radiusPx = radius,
+                    fillColor = effectiveFillRgba,
+                    borderColor = effectiveBorderRgba,
+                    borderWidthPx = borderW,
+                    opacity = effectiveOpacity,
+                    gradient = grad
+                )
+            }
+            if (isFocused) {
+                val ringColor = visuals.focusRingColor ?: colorRefToRgba(theme.accentBlue, 255)
+                drawAntialiasedRoundedRectRgba(
+                    hdc = hdc,
+                    left = left + 1,
+                    top = top + 1,
+                    right = right - 1,
+                    bottom = bottom - 1,
+                    radiusPx = (radius - 1f).coerceAtLeast(0f),
+                    fillColor = null,
+                    borderColor = ringColor,
+                    borderWidthPx = visuals.focusRingWidthPx ?: 1f,
+                    opacity = effectiveOpacity
+                )
+            }
+            val rawFgColorRef = visuals.textColor?.let { rgbaToColorRef(it) }
+                ?: if (!isEnabled) theme.textMuted else theme.textPrimary
+            val fgColorRef = if (effectiveOpacity < 0.98f) {
+                val r = (rawFgColorRef and 0xFFu).toInt()
+                val g = ((rawFgColorRef shr 8) and 0xFFu).toInt()
+                val b = ((rawFgColorRef shr 16) and 0xFFu).toInt()
+                rgb(
+                    (r * effectiveOpacity).roundToInt().coerceIn(0, 255),
+                    (g * effectiveOpacity).roundToInt().coerceIn(0, 255),
+                    (b * effectiveOpacity).roundToInt().coerceIn(0, 255)
+                )
+            } else {
+                rawFgColorRef
+            }
+            val pad = visuals.padding ?: impl.getEffectivePaddingInsets()
+            val hasExplicitPad = pad.left > 0 || pad.right > 0 || pad.top > 0 || pad.bottom > 0
+            val contentLeft = if (hasExplicitPad && label.isNotBlank()) (left + pad.left).coerceAtMost(right) else left
+            val contentTop = (if (hasExplicitPad && label.isNotBlank()) (top + pad.top).coerceAtMost(bottom) else top) + (if (isPressed) 1 else 0)
+            val contentRight = if (hasExplicitPad && label.isNotBlank()) (right - pad.right).coerceAtLeast(contentLeft) else right
+            val contentBottom = if (hasExplicitPad && label.isNotBlank()) (bottom - pad.bottom).coerceAtLeast(contentTop) else bottom
+            drawButtonLabelAndIcon(hdc, label, icon, contentLeft, contentTop, contentRight, contentBottom, fgColorRef)
+            return
+        }
 
         val semanticType = impl?.getType()?.takeIf { it.isSemantic }
             ?: impl?.getBackgroundType()?.takeIf { it.isSemantic }
@@ -7890,8 +10676,17 @@ object Win32NativeWindowHost {
             if (isFocused) {
                 drawRectBorder(hdc, left + 1, top + 1, right - 1, bottom - 1, theme.accentBlue)
             }
-            val nativeFg = impl?.getEffectiveTextColor()?.let { rgbaToColorRef(it) }
+            val rawNativeFg = impl?.getEffectiveTextColor()?.let { rgbaToColorRef(it) }
                 ?: if (!isEnabled) theme.textMuted else theme.textPrimary
+            val nativeFg = if (theme.isDark &&
+                (rawNativeFg and 0xFFu) < 75u &&
+                ((rawNativeFg shr 8) and 0xFFu) < 75u &&
+                ((rawNativeFg shr 16) and 0xFFu) < 85u
+            ) {
+                if (!isEnabled) theme.textMuted else theme.textPrimary
+            } else {
+                rawNativeFg
+            }
             drawButtonLabelAndIcon(hdc, label, icon, left, top + (if (isPressed) 1 else 0), right, bottom, nativeFg)
             return
         }
@@ -7912,19 +10707,36 @@ object Win32NativeWindowHost {
         }
         val border = when {
             isFocused -> theme.accentBlueBorder
-            isOutline && semanticColorRef != null -> semanticColorRef
+            isOutline && semanticColorRef != null -> {
+                if (theme.isDark &&
+                    (semanticColorRef and 0xFFu) < 75u &&
+                    ((semanticColorRef shr 8) and 0xFFu) < 75u &&
+                    ((semanticColorRef shr 16) and 0xFFu) < 85u
+                ) {
+                    theme.borderStrong
+                } else {
+                    semanticColorRef
+                }
+            }
             styleTint != null -> lightenColorRef(styleTint, 35)
             primary -> theme.accentBlueBorder
             isHovered -> theme.borderStrong
             else -> theme.borderSubtle
         }
-        val fg = impl?.getEffectiveTextColor()?.let { rgbaToColorRef(it) }
+        val rawFg = impl?.getEffectiveTextColor()?.let { rgbaToColorRef(it) }
             ?: when {
                 isOutline && semanticColorRef != null && !isHovered && !isPressed -> semanticColorRef
                 semanticType != null -> rgbaToColorRef(BootstrapColorPalette.resolveForegroundOn(semanticType))
                 primary || styleTint != null || styleGradient != null -> rgb(255, 255, 255)
                 else -> theme.textPrimary
             }
+        val isBgDark = (bg and 0xFFu) < 85u && ((bg shr 8) and 0xFFu) < 85u && ((bg shr 16) and 0xFFu) < 95u
+        val isFgDark = (rawFg and 0xFFu) < 75u && ((rawFg shr 8) and 0xFFu) < 75u && ((rawFg shr 16) and 0xFFu) < 85u
+        val fg = if (isBgDark && isFgDark) {
+            if (!isEnabled) theme.textMuted else theme.textPrimary
+        } else {
+            rawFg
+        }
 
         drawRoundedRect(hdc, left, top, right, bottom, 5, bg, border)
         if (styleGradient != null && right - left > 4 && bottom - top > 4) {
@@ -8179,6 +10991,7 @@ object Win32NativeWindowHost {
         SelectObject(hdc, oldBrush)
         SelectObject(hdc, oldPen)
         DeleteObject(pen)
+        gdiDirtySinceLastFlush = true
     }
 
     /**
@@ -8192,7 +11005,7 @@ object Win32NativeWindowHost {
         scaleX: Float,
         scaleY: Float
     ) {
-        val tokens = Regex("([MmLlHhVvCcQqZz])|(-?\\d+(?:\\.\\d+)?)")
+        val tokens = Regex("([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?)")
             .findAll(pathD)
             .map { it.value }
             .toList()
@@ -8239,12 +11052,12 @@ object Win32NativeWindowHost {
                     MoveToEx(hdc, toWinX(curX), toWinY(curY), null)
                     cmd = 'l'
                 }
-                'L' -> {
+                'L', 'T' -> {
                     curX = nextFloat()
                     curY = nextFloat()
                     LineTo(hdc, toWinX(curX), toWinY(curY))
                 }
-                'l' -> {
+                'l', 't' -> {
                     curX += nextFloat()
                     curY += nextFloat()
                     LineTo(hdc, toWinX(curX), toWinY(curY))
@@ -8285,7 +11098,7 @@ object Win32NativeWindowHost {
                     curX = x; curY = y
                     LineTo(hdc, toWinX(curX), toWinY(curY))
                 }
-                'Q' -> {
+                'S', 'Q' -> {
                     val x1 = nextFloat(); val y1 = nextFloat()
                     val x = nextFloat(); val y = nextFloat()
                     val midX = (curX + 2f * x1 + x) / 4f
@@ -8294,7 +11107,7 @@ object Win32NativeWindowHost {
                     curX = x; curY = y
                     LineTo(hdc, toWinX(curX), toWinY(curY))
                 }
-                'q' -> {
+                's', 'q' -> {
                     val x1 = curX + nextFloat(); val y1 = curY + nextFloat()
                     val x = curX + nextFloat(); val y = curY + nextFloat()
                     val midX = (curX + 2f * x1 + x) / 4f
@@ -8303,12 +11116,24 @@ object Win32NativeWindowHost {
                     curX = x; curY = y
                     LineTo(hdc, toWinX(curX), toWinY(curY))
                 }
+                'A' -> {
+                    nextFloat(); nextFloat(); nextFloat(); nextFloat(); nextFloat()
+                    val x = nextFloat(); val y = nextFloat()
+                    curX = x; curY = y
+                    LineTo(hdc, toWinX(curX), toWinY(curY))
+                }
+                'a' -> {
+                    nextFloat(); nextFloat(); nextFloat(); nextFloat(); nextFloat()
+                    val dx = nextFloat(); val dy = nextFloat()
+                    curX += dx; curY += dy
+                    LineTo(hdc, toWinX(curX), toWinY(curY))
+                }
                 else -> idx++
             }
         }
     }
 
-    private fun drawCheckboxControl(
+    internal fun drawCheckboxControl(
         hdc: HDC?,
         theme: SystemThemePalette,
         label: String,
@@ -8346,7 +11171,7 @@ object Win32NativeWindowHost {
         drawTextInRect(hdc, label, left + boxSize + 6, top, right, bottom, theme.textPrimary)
     }
 
-    private fun drawSelectControl(
+    internal fun drawSelectControl(
         hdc: HDC?,
         theme: SystemThemePalette,
         label: String,
@@ -8376,7 +11201,7 @@ object Win32NativeWindowHost {
         drawTextInRect(hdc, "▼", right - 20, top + 2, right - 4, bottom - 2, theme.textSecondary, center = true)
     }
 
-    private fun drawSliderControl(
+    internal fun drawSliderControl(
         hdc: HDC?,
         theme: SystemThemePalette,
         slider: DesktopRangeSliderNativeImpl<*>,
@@ -8385,51 +11210,170 @@ object Win32NativeWindowHost {
         right: Int,
         bottom: Int
     ) {
+        if (right <= left + 4 || bottom <= top + 2) return
         val midY = (top + bottom) / 2
+        val thumbR = min(6, max(4, (bottom - top) / 2 - 1))
+        val trackLeft = min(right - 2, left + thumbR)
+        val trackRight = max(trackLeft + 2, right - thumbR)
         val tintColor = slider.getEffectiveAccentColor(theme.isDark)?.let { rgbaToColorRef(it) }
+            ?: (slider.nativeWidget.attributes["accentColor"] as? String)?.let { RgbaColor.fromCss(it) }?.let { rgbaToColorRef(it) }
+        val thumbAttrColor = (slider.nativeWidget.attributes["thumbColor"] as? String)?.let { RgbaColor.fromCss(it) }?.let { rgbaToColorRef(it) }
         val hovered = hoveredWidget == slider.nativeWidget
         val activeColor = tintColor ?: theme.accentBlue
-        val thumbColor = if (hovered) lightenColorRef(activeColor, 26) else theme.accentBlueHover
-        fillRectColor(hdc, left, midY - 3, right, midY + 3, theme.bgElevated)
+        val baseThumbColor = thumbAttrColor ?: rgb(242, 245, 250)
+        val thumbColor = if (hovered) rgb(255, 255, 255) else baseThumbColor
+        drawAntialiasedRoundedRectRgba(
+            hdc = hdc,
+            left = trackLeft,
+            top = midY - 2,
+            right = trackRight,
+            bottom = midY + 2,
+            radiusPx = 2f,
+            fillColor = colorRefToRgba(theme.bgElevated, 210),
+            borderColor = null,
+            borderWidthPx = 0f
+        )
         val span = (slider.getMax() - slider.getMin()).coerceAtLeast(0.0001)
         val frac = ((slider.getValue() - slider.getMin()) / span).coerceIn(0.0, 1.0)
-        val fillX = left + ((right - left) * frac).roundToInt()
-        fillRectColor(hdc, left, midY - 3, fillX, midY + 3, activeColor)
-        fillRectColor(hdc, fillX - 5, top + 1, fillX + 5, bottom - 1, thumbColor)
+        val bufferedFrac = (slider.nativeWidget.attributes["bufferedFraction"] as? String)?.toDoubleOrNull()?.coerceIn(0.0, 1.0) ?: 0.0
+        if (bufferedFrac > frac) {
+            val bufferedX = trackLeft + ((trackRight - trackLeft) * bufferedFrac).roundToInt()
+            val bufferedColorRef = lightenColorRef(theme.bgElevated, 42)
+            drawAntialiasedRoundedRectRgba(
+                hdc = hdc,
+                left = trackLeft,
+                top = midY - 2,
+                right = bufferedX,
+                bottom = midY + 2,
+                radiusPx = 2f,
+                fillColor = colorRefToRgba(bufferedColorRef, 230),
+                borderColor = null,
+                borderWidthPx = 0f
+            )
+        }
+        val fillX = trackLeft + ((trackRight - trackLeft) * frac).roundToInt()
+        if (fillX > trackLeft) {
+            drawAntialiasedRoundedRectRgba(
+                hdc = hdc,
+                left = trackLeft,
+                top = midY - 2,
+                right = fillX,
+                bottom = midY + 2,
+                radiusPx = 2f,
+                fillColor = colorRefToRgba(activeColor, 255),
+                borderColor = null,
+                borderWidthPx = 0f
+            )
+        }
+        drawAntialiasedRoundedRectRgba(
+            hdc = hdc,
+            left = fillX - thumbR,
+            top = midY - thumbR,
+            right = fillX + thumbR,
+            bottom = midY + thumbR,
+            radiusPx = thumbR.toFloat(),
+            fillColor = colorRefToRgba(thumbColor, 255),
+            borderColor = colorRefToRgba(activeColor, 255),
+            borderWidthPx = 1.5f
+        )
     }
 
-    private fun fillRectColor(hdc: HDC?, left: Int, top: Int, right: Int, bottom: Int, colorRef: UInt) = memScoped {
-        val r = alloc<RECT>()
-        r.left = left
-        r.top = top
-        r.right = right
-        r.bottom = bottom
+    internal fun fillRectColor(hdc: HDC?, left: Int, top: Int, right: Int, bottom: Int, colorRef: UInt) {
+        if (right <= left || bottom <= top) return
+        val isActiveDc = hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null
+        val bufPixels = if (isActiveDc) activeBackBufferPixels else null
+        val bufW = activeBackBufferWidth
+        val bufH = activeBackBufferHeight
+        if (bufPixels != null && bufW > 0 && bufH > 0) {
+            val clipL = if (softClipDepth > 0) softClipLeft.coerceIn(0, bufW) else 0
+            val clipT = if (softClipDepth > 0) softClipTop.coerceIn(0, bufH) else 0
+            val clipR = if (softClipDepth > 0) softClipRight.coerceIn(clipL, bufW) else bufW
+            val clipB = if (softClipDepth > 0) softClipBottom.coerceIn(clipT, bufH) else bufH
+            val x0 = max(left, clipL)
+            val y0 = max(top, clipT)
+            val x1 = min(right, clipR)
+            val y1 = min(bottom, clipB)
+            if (x1 <= x0 || y1 <= y0) return
+            if (gdiDirtySinceLastFlush) {
+                GdiFlush()
+                gdiDirtySinceLastFlush = false
+            }
+            val spanWords = x1 - x0
+            val packedBgra = colorRefToBgraWord(colorRef)
+            val firstRowWordIdx = y0 * bufW + x0
+            fillBackBufferSpanWords(bufPixels, firstRowWordIdx, spanWords, packedBgra)
+            if (y1 - y0 > 1) {
+                val firstRowPtr = (bufPixels + (firstRowWordIdx * 4))!!
+                val rowBytes = (spanWords * 4).toULong()
+                for (py in (y0 + 1) until y1) {
+                    platform.posix.memcpy(
+                        bufPixels + ((py * bufW + x0) * 4),
+                        firstRowPtr,
+                        rowBytes
+                    )
+                }
+            }
+            return
+        }
+        sharedScratchRect.left = left
+        sharedScratchRect.top = top
+        sharedScratchRect.right = right
+        sharedScratchRect.bottom = bottom
         val brush = CreateSolidBrush(colorRef)
-        FillRect(hdc, r.ptr, brush)
+        FillRect(hdc, sharedScratchRect.ptr, brush)
         DeleteObject(brush)
+        gdiDirtySinceLastFlush = true
     }
 
-    private fun drawRectBorder(hdc: HDC?, left: Int, top: Int, right: Int, bottom: Int, colorRef: UInt) = memScoped {
-        val r = alloc<RECT>()
-        r.left = left
-        r.top = top
-        r.right = right
-        r.bottom = bottom
+    internal fun drawRectBorder(hdc: HDC?, left: Int, top: Int, right: Int, bottom: Int, colorRef: UInt) {
+        if (right <= left || bottom <= top) return
+        if (hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null) {
+            fillRectColor(hdc, left, top, right, top + 1, colorRef)
+            fillRectColor(hdc, left, bottom - 1, right, bottom, colorRef)
+            if (bottom - top > 2) {
+                fillRectColor(hdc, left, top + 1, left + 1, bottom - 1, colorRef)
+                fillRectColor(hdc, right - 1, top + 1, right, bottom - 1, colorRef)
+            }
+            return
+        }
+        sharedScratchRect.left = left
+        sharedScratchRect.top = top
+        sharedScratchRect.right = right
+        sharedScratchRect.bottom = bottom
         val brush = CreateSolidBrush(colorRef)
-        FrameRect(hdc, r.ptr, brush)
+        FrameRect(hdc, sharedScratchRect.ptr, brush)
         DeleteObject(brush)
+        gdiDirtySinceLastFlush = true
     }
 
-    private fun drawLineColor(hdc: HDC?, x0: Int, y0: Int, x1: Int, y1: Int, colorRef: UInt) {
+    internal fun drawLineColor(hdc: HDC?, x0: Int, y0: Int, x1: Int, y1: Int, colorRef: UInt) {
+        if (hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null) {
+            if (y0 == y1) {
+                val l = min(x0, x1)
+                val r = max(x0, x1)
+                if (r > l) {
+                    fillRectColor(hdc, l, y0, r, y0 + 1, colorRef)
+                }
+                return
+            } else if (x0 == x1) {
+                val t = min(y0, y1)
+                val b = max(y0, y1)
+                if (b > t) {
+                    fillRectColor(hdc, x0, t, x0 + 1, b, colorRef)
+                }
+                return
+            }
+        }
         val pen = CreatePen(PS_SOLID, 1, colorRef)
         val oldPen = SelectObject(hdc, pen)
         MoveToEx(hdc, x0, y0, null)
         LineTo(hdc, x1, y1)
         SelectObject(hdc, oldPen)
         DeleteObject(pen)
+        gdiDirtySinceLastFlush = true
     }
 
-    private fun drawTextInRect(
+    internal fun drawTextInRect(
         hdc: HDC?,
         text: String,
         left: Int,
@@ -8439,12 +11383,12 @@ object Win32NativeWindowHost {
         colorRef: UInt,
         center: Boolean = false,
         alignRight: Boolean = false
-    ) = memScoped {
-        val r = alloc<RECT>()
-        r.left = left
-        r.top = top
-        r.right = right
-        r.bottom = bottom
+    ) {
+        if (text.isEmpty() || right <= left || bottom <= top) return
+        sharedScratchRect.left = left
+        sharedScratchRect.top = top
+        sharedScratchRect.right = right
+        sharedScratchRect.bottom = bottom
         SetTextColor(hdc, colorRef)
         val horizFlag = when {
             center -> DT_CENTER
@@ -8452,21 +11396,68 @@ object Win32NativeWindowHost {
             else -> DT_LEFT
         }
         val flags = (DT_SINGLELINE or DT_VCENTER or horizFlag or DT_END_ELLIPSIS or DT_NOPREFIX).toUInt()
-        DrawTextW(hdc, text, -1, r.ptr, flags)
+        DrawTextW(hdc, text, -1, sharedScratchRect.ptr, flags)
+        gdiDirtySinceLastFlush = true
     }
 
-    private fun rgb(r: Int, g: Int, b: Int): UInt =
+    internal fun rgb(r: Int, g: Int, b: Int): UInt =
         ((r and 0xFF) or ((g and 0xFF) shl 8) or ((b and 0xFF) shl 16)).toUInt()
 
     fun isMainHostWindow(hwnd: HWND?): Boolean = hwnd != null && hwnd == activeHwnd
+
+    private fun buildAncestorWidgetChain(widget: DesktopNativeWidget?): List<DesktopNativeWidget> {
+        if (widget == null) return emptyList()
+        val chain = mutableListOf<DesktopNativeWidget>()
+        var cur: DesktopNativeWidget? = widget
+        var depth = 0
+        while (cur != null && depth < 32) {
+            chain.add(cur)
+            cur = cur.parentWidget
+            depth++
+        }
+        return chain
+    }
+
+    internal fun handleMouseLeave(hwnd: HWND) {
+        mouseLeaveTrackInstalledForHwnd = 0L
+        if (activeDragRegion != null || isDraggingCanvas || PointerDragManager.isDragging) {
+            return
+        }
+        val prevWidget = hoveredWidget
+        if (prevWidget != null) {
+            val pointerEv = PointerEvent(x = hoverMouseX.toFloat(), y = hoverMouseY.toFloat())
+            for (exited in buildAncestorWidgetChain(prevWidget)) {
+                val exitedImpl = exited.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                exitedImpl?.setHoveredState(false)
+                exitedImpl?.dispatchPointerLeave(pointerEv)
+            }
+            hoveredWidget = null
+            hoveredHitRegion = null
+            InvalidateRect(hwnd, null, 0)
+        }
+        if (isPointerInVideoStage) {
+            isPointerInVideoStage = false
+            InvalidateRect(hwnd, null, 0)
+        }
+    }
 
     fun clearActiveWindow() {
         Win32NativeTitleBarRenderer.clearWindowState(null)
         releaseMainBackBufferDc()
         activeHwnd = null
+        activeFullscreenElementWidget = null
+        isWindowFullscreenActive = false
+        isPointerInVideoStage = false
+        lastRenderedVideoStageRect = intArrayOf(-1, -1, -1, -1)
+        mouseLeaveTrackInstalledForHwnd = 0L
         panelHwnds.clear()
         hwndToPanel.clear()
+        dialogHwnds.clear()
+        hwndToDialog.clear()
         hitRegionsByHwnd.clear()
+        nativeEditEntriesByWidget.clear()
+        nativeEditEntriesByChildHwnd.clear()
+        origEditWndProcByChildHwnd.clear()
         isDraggingCardScrollbarThumb = false
         isDraggingLazyGridScrollbarThumb = false
     }
@@ -8486,6 +11477,17 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
     }
 
     when (msg.toInt()) {
+        WM_GETMINMAXINFO -> {
+            if (hwnd != null && lParam != 0L && Win32NativeWindowHost.isMainHostWindow(hwnd)) {
+                val mmiPtr = lParam.toCPointer<MINMAXINFO>()
+                if (mmiPtr != null) {
+                    val (minW, minH) = Win32NativeWindowHost.resolveMinWindowTrackSize(hwnd)
+                    mmiPtr.pointed.ptMinTrackSize.x = minW
+                    mmiPtr.pointed.ptMinTrackSize.y = minH
+                    return 0L
+                }
+            }
+        }
         WM_NCCALCSIZE -> {
             if (wParam != 0uL && hasCustomTitleBarFrame && hwnd != null) {
                 return Win32NativeTitleBarRenderer.handleNcCalcSize(hwnd, wParam, lParam)
@@ -8573,7 +11575,7 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
         WM_ERASEBKGND -> return 1L
         WM_SETCURSOR -> {
             val hitTest = (lParam.toLong() and 0xFFFF).toInt()
-            if (hwnd != null && hitTest == HTCLIENT) {
+            if (hwnd != null && hitTest == HTCLIENT && wParam.toLong() == hwnd.toLong()) {
                 runCatching { Win32NativeWindowHost.updateCursorForWindow(hwnd) }
                 return 1L
             }
@@ -8591,9 +11593,19 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
             }
             return 0L
         }
+        0x0133 /* WM_CTLCOLOREDIT */,
+        0x0138 /* WM_CTLCOLORSTATIC */ -> {
+            val hdcChild = wParam.toLong().toCPointer<HDC__>()
+            val childHwnd = if (lParam != 0L) lParam.toCPointer<HWND__>() else null
+            if (hdcChild != null) {
+                return Win32NativeWindowHost.handleCtlColorEdit(hdcChild, childHwnd)
+            }
+        }
         WM_COMMAND -> {
             val cmdId = (wParam.toLong() and 0xFFFF).toInt()
-            runCatching { Win32NativeWindowHost.handleCommand(cmdId) }
+            val notifyCode = ((wParam.toLong() ushr 16) and 0xFFFF).toInt()
+            val childHwnd = if (lParam != 0L) lParam.toCPointer<HWND__>() else null
+            runCatching { Win32NativeWindowHost.handleCommand(cmdId, notifyCode, childHwnd) }
             return 0L
         }
         WM_KEYDOWN -> {
@@ -8631,12 +11643,30 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
             }
             return 0L
         }
+        0x02A3 /* WM_MOUSELEAVE */ -> {
+            if (hwnd != null) {
+                runCatching { Win32NativeWindowHost.handleMouseLeave(hwnd) }
+            }
+            return 0L
+        }
         WM_LBUTTONUP -> {
             if (hwnd != null) {
                 val x = (lParam.toLong() and 0xFFFF).toShort().toInt()
                 val y = ((lParam.toLong() ushr 16) and 0xFFFF).toShort().toInt()
                 ReleaseCapture()
                 runCatching { Win32NativeWindowHost.handleMouseUp(hwnd, x, y) }
+            }
+            return 0L
+        }
+        0x0215 /* WM_CAPTURECHANGED */ -> {
+            if (hwnd != null && Win32NativeWindowHost.isOverlayDragActive()) {
+                runCatching {
+                    Win32NativeWindowHost.handleMouseUp(
+                        hwnd,
+                        Win32NativeWindowHost.hoverMouseX,
+                        Win32NativeWindowHost.hoverMouseY
+                    )
+                }
             }
             return 0L
         }
@@ -8648,6 +11678,14 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
             return 0L
         }
         WM_CLOSE -> {
+            val dialog = Win32NativeWindowHost.getDialogForHwnd(hwnd)
+            if (dialog != null) {
+                dialog.closeDialog()
+                return 0L
+            }
+            if (Win32NativeWindowHost.visualTestMode) {
+                return 0L
+            }
             if (hwnd != null && !Win32NativeWindowHost.isMainHostWindow(hwnd)) {
                 ShowWindow(hwnd, SW_HIDE)
                 return 0L

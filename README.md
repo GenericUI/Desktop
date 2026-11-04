@@ -74,3 +74,15 @@ In `DesktopBaseNativeImpl` and `SwingBaseNativeImpl`, `addClass`, `removeClass`,
 ## Window Chrome & Single-Placement Custom `TitleBar`
 
 All 5 desktop backends report `TitleCapabilities(isTitleBarRequired = true, supportsCustomComponents = true, canEmbedComponentsInTitleBar = true, titleBarRendersAsNavbar = false)`. Custom components added to `TitleBar` (`leadingComponents`, `centerComponents`, `trailingComponents`) are marked with `mountedInTitleBar = true` and rendered **strictly once** inside the window titlebar chrome, never duplicated in the window body.
+
+---
+
+## Bare-Metal Native Async `IFileSystem`, `Database`, & `Network` Across Desktop Backends
+
+| Backend | `FileSystem` & `UserDirectory` (`FileSystemAvailability.Always`) | Native `Database` (`DatabaseQuerySqlTranslator`) | Async `Network` (`TcpClient`, `UdpClient`), `HttpClient`, `WebSocket`, & `IApplication.isOffline` |
+| :--- | :--- | :--- | :--- |
+| [`:desktop:qt`](qt/README.md) | `QFile` / `QDir` + `$XDG_CONFIG_HOME/<appName>` & `$XDG_CACHE_HOME/<appName>` (`QtConfigDirectoryImpl`, `QtCacheDirectoryImpl`) | **`QtSql`** (`QSqlDatabase` `"QSQLITE"`, `QSqlQuery`) | `QTcpSocket` / `QSslSocket`, `QUdpSocket`, `QNetworkAccessManager`, `QWebSocket`, `QNetworkInformation::reachability()` |
+| [`:desktop:gtk`](gtk/README.md) | GIO `GFile` / POSIX + `$XDG_CONFIG_HOME/<appName>` & `$XDG_CACHE_HOME/<appName>` (`GtkConfigDirectoryImpl`, `GtkCacheDirectoryImpl`) | **`libsqlite3`** (`sqlite3_open_v2`, `sqlite3_prepare_v2`) | GIO `GSocketClient` / `GTlsClientConnection`, `GSocket` (`G_SOCKET_TYPE_DATAGRAM`), `libsoup-3.0` (`SoupSession`, `SoupWebsocketConnection`), `GNetworkMonitor` |
+| [`:desktop:windows`](windows/README.md) | Win32 `CreateFileW` / `ReadFile` / `WriteFile` + `%APPDATA%\<appName>` & `%LOCALAPPDATA%\<appName>\Cache` (`WindowsConfigDirectoryImpl`, `WindowsCacheDirectoryImpl`) | **`libsqlite3`** (`sqlite3_open_v2`, `sqlite3_prepare_v2`) | WinSock2 (`ws2_32.dll` `SOCK_STREAM` / `SOCK_DGRAM` + Schannel TLS), `WinHTTP` (`WinHttpOpenRequest`, `WinHttpWebSocket*`), COM `INetworkListManager` |
+| [`:desktop:macos`](macos/README.md) | `NSFileManager` / `dispatch_io_t` + `~/Library/Application Support/<appName>` & `~/Library/Caches/<appName>` (`MacosConfigDirectoryImpl`, `MacosCacheDirectoryImpl`) | **`libsqlite3`** (`sqlite3_open_v2`, `sqlite3_prepare_v2`) | `Network.framework` (`NWConnection` TCP/TLS & BSD `SOCK_DGRAM`), `NSURLSession` (`NSURLSessionDataTask`, `NSURLSessionWebSocketTask`), `NWPathMonitor` |
+| [`:desktop:swing`](swing/README.md) | JVM NIO.2 `AsynchronousFileChannel` / `Files` on `Dispatchers.IO` + `SwingUserDirectoryNativeImpl` | **`org.xerial:sqlite-jdbc`** (`org.sqlite.JDBC` / `PreparedStatement`) | JVM NIO `AsynchronousSocketChannel` / `SSLSocket`, `DatagramChannel`, `java.net.http.HttpClient`, `java.net.http.WebSocket`, `java.net.NetworkInterface` |

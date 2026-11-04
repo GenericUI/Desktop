@@ -4,7 +4,6 @@ plugins {
 
 kotlin {
     macosArm64()
-    macosX64()
 
     sourceSets {
         commonMain.dependencies {

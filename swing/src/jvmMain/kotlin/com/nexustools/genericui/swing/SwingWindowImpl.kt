@@ -45,6 +45,9 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     private val ownedToolWindows = mutableListOf<SwingWindowImpl>()
     private val ownedDockWindows = mutableListOf<SwingDockWindowImpl>()
+    private val _ownedDialogWindows = mutableListOf<SwingDialogWindowImpl>()
+    val ownedDialogWindows: List<SwingDialogWindowImpl>
+        get() = _ownedDialogWindows
 
     val defaultWindowIconPath: String = "icon.png"
 
@@ -80,6 +83,7 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     private var titleText: String = "GenericUI"
     private var windowSize: Size = Size(1280, 800)
+    private var minWindowSize: Size? = null
     private var windowState: WindowState = WindowState.NORMAL
     private var fullscreenFlag: Boolean = false
     private var pipActive: Boolean = false
@@ -111,6 +115,16 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     internal fun unregisterOwnedDockWindow(dockWindow: SwingDockWindowImpl) {
         ownedDockWindows.remove(dockWindow)
+    }
+
+    internal fun registerOwnedDialogWindow(dialogWindow: SwingDialogWindowImpl) {
+        if (dialogWindow !in _ownedDialogWindows) {
+            _ownedDialogWindows.add(dialogWindow)
+        }
+    }
+
+    internal fun unregisterOwnedDialogWindow(dialogWindow: SwingDialogWindowImpl) {
+        _ownedDialogWindows.remove(dialogWindow)
     }
 
     override fun configureAsToolModalWindow(
@@ -166,6 +180,11 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
                 dockWin.bringToFront()
             }
         }
+        for (dialogWin in _ownedDialogWindows.toList()) {
+            if (dialogWin.isVisible()) {
+                dialogWin.bringToFront()
+            }
+        }
     }
 
     override fun setTitle(title: String) {
@@ -175,11 +194,37 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     override fun getTitle(): String = titleText
 
+    override fun getMinWindowSize(): Size? = minWindowSize
+
+    override fun setMinWindowSize(minSize: Size?) {
+        minWindowSize = minSize
+        if (minSize != null) {
+            nativeWidget.putClientProperty("minWidthPx", minSize.width)
+            nativeWidget.putClientProperty("minHeightPx", minSize.height)
+        } else {
+            nativeWidget.putClientProperty("minWidthPx", null)
+            nativeWidget.putClientProperty("minHeightPx", null)
+        }
+        jFrame?.minimumSize = minSize?.let { java.awt.Dimension(it.width, it.height) }
+        if (minSize != null) {
+            val cur = getWindowSize()
+            if (cur.width < minSize.width || cur.height < minSize.height) {
+                setWindowSize(Size(maxOf(cur.width, minSize.width), maxOf(cur.height, minSize.height)))
+            }
+        }
+    }
+
     override fun setWindowSize(size: Size) {
-        windowSize = size
-        nativeWidget.setBounds(0, 0, size.width, size.height)
-        jFrame?.setSize(size.width, size.height)
-        onResizeListener?.invoke(WindowConfiguration(widthPx = size.width, heightPx = size.height))
+        val minSize = minWindowSize
+        val clamped = if (minSize != null) {
+            Size(maxOf(size.width, minSize.width), maxOf(size.height, minSize.height))
+        } else {
+            size
+        }
+        windowSize = clamped
+        nativeWidget.setBounds(0, 0, clamped.width, clamped.height)
+        jFrame?.setSize(clamped.width, clamped.height)
+        onResizeListener?.invoke(WindowConfiguration(widthPx = clamped.width, heightPx = clamped.height))
     }
 
     override fun getWindowSize(): Size = windowSize
@@ -195,11 +240,25 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     override fun getWindowState(): WindowState = windowState
 
+    private var fullscreenElementImpl: NativeImpl<*>? = null
+
     override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
         fullscreenFlag = fullscreen
+        if (!fullscreen) {
+            fullscreenElementImpl = null
+            nativeWidget.putClientProperty("fullscreenElement", null)
+        }
     }
 
     override fun isFullscreen(): Boolean = fullscreenFlag
+
+    override fun setFullscreenElement(elementImpl: NativeImpl<*>?, cutoutMode: DisplayCutoutMode) {
+        fullscreenElementImpl = elementImpl
+        nativeWidget.putClientProperty("fullscreenElement", elementImpl?.nativeWidget)
+        setFullscreen(elementImpl != null, cutoutMode)
+    }
+
+    override fun getFullscreenElement(): NativeImpl<*>? = fullscreenElementImpl
 
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         activeTitleBar?.setHostEmbedsComponents(false)
@@ -292,6 +351,10 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
             ownerWindow = null
             ownedToolWindows.clear()
             ownedDockWindows.clear()
+            for (dialogWin in _ownedDialogWindows.toList()) {
+                dialogWin.closeDialog()
+            }
+            _ownedDialogWindows.clear()
         }
     }
 

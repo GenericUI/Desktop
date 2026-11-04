@@ -21,15 +21,24 @@ open class DesktopSelectNativeImpl<out W : DesktopNativeWidget>(
         if (selectedVal == null && options.isNotEmpty()) {
             selectedVal = options.first().first
         }
+        nativeWidget.notifyTreeInvalidated()
     }
 
     override fun setSelectedValue(value: String?) {
         if (selectedVal != value) {
             selectedVal = value
             nativeWidget.attributes["selectedValue"] = value
-            if (value != null) {
-                onSelectionChangedListener?.invoke(value)
-            }
+            nativeWidget.notifyTreeInvalidated()
+        }
+    }
+
+    fun notifyUserSelectionChanged(value: String) {
+        val changed = selectedVal != value
+        selectedVal = value
+        nativeWidget.attributes["selectedValue"] = value
+        nativeWidget.notifyTreeInvalidated()
+        if (changed) {
+            onSelectionChangedListener?.invoke(value)
         }
     }
 

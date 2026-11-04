@@ -17,8 +17,11 @@ open class DesktopTextNativeImpl<out W : DesktopNativeWidget>(
     protected var maxLinesLimit: Int? = null
 
     override fun setText(text: String) {
-        textContent = text
-        nativeWidget.attributes["text"] = text
+        if (textContent != text) {
+            textContent = text
+            nativeWidget.attributes["text"] = text
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun getText(): String = textContent

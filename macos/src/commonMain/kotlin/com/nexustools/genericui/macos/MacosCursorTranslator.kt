@@ -1,7 +1,7 @@
 package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.image.ImageBuffer
-import com.nexustools.genericui.image.PureKotlinPngCodec
+import com.nexustools.genericui.image.codec.LibPngCodec
 import com.nexustools.genericui.style.css.CssCustomCursor
 
 /**
@@ -21,7 +21,7 @@ object MacosCursorTranslator {
         val key = buildCacheKey(cursor)
         encodedPngCache[key]?.let { return it }
         val buffer = cursor.resolveToImageBuffer() ?: return null
-        val pngBytes = PureKotlinPngCodec.encodePng(buffer)
+        val pngBytes = LibPngCodec.encode(buffer)
         encodedPngCache[key] = pngBytes
         return pngBytes
     }
@@ -30,7 +30,7 @@ object MacosCursorTranslator {
      * Encodes an [ImageBuffer] directly into PNG bytes for `[NSImage initWithData:]`.
      */
     fun encodeToNsImagePngBytes(imageBuffer: ImageBuffer): ByteArray =
-        PureKotlinPngCodec.encodePng(imageBuffer)
+        LibPngCodec.encode(imageBuffer)
 
     /**
      * Applies [cursor] to [viewHandle], storing the resolved `NSImage` PNG payload and

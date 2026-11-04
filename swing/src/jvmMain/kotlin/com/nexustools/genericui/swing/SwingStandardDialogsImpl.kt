@@ -3,7 +3,7 @@ package com.nexustools.genericui.swing
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.nativeimpl.dialog.StandardDialogsNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
-import com.nexustools.genericui.style.RgbaColor
+import com.nexustools.genericui.style.color.RgbaColor
 
 /**
  * Java Swing `JOptionPane` + `JColorChooser` implementation of [StandardDialogsNativeImpl].

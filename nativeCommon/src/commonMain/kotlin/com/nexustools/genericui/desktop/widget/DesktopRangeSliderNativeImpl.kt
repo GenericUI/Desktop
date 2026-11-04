@@ -29,7 +29,7 @@ open class DesktopRangeSliderNativeImpl<out W : DesktopNativeWidget>(
         if (kotlin.math.abs(currentVal - clamped) > 1e-4) {
             currentVal = clamped
             nativeWidget.attributes["value"] = clamped
-            onValueChangedListener?.invoke(clamped)
+            nativeWidget.notifyTreeInvalidated()
         }
     }
 
@@ -45,7 +45,7 @@ open class DesktopRangeSliderNativeImpl<out W : DesktopNativeWidget>(
 
     fun getStep(): Double = stepVal
 
-    fun setNormalizedFraction(fraction: Double) {
+    open fun setNormalizedFraction(fraction: Double) {
         val clampedFraction = fraction.coerceIn(0.0, 1.0)
         val raw = minVal + clampedFraction * (maxVal - minVal)
         val stepped = if (stepVal > 0.0) {
@@ -53,6 +53,22 @@ open class DesktopRangeSliderNativeImpl<out W : DesktopNativeWidget>(
         } else {
             raw
         }
-        setValue(stepped)
+        val clamped = stepped.coerceIn(minVal, maxVal)
+        if (kotlin.math.abs(currentVal - clamped) > 1e-4) {
+            setValue(clamped)
+            onValueChangedListener?.invoke(clamped)
+        }
+    }
+
+    open fun beginDragFromFraction(fraction: Double) {
+        setNormalizedFraction(fraction)
+    }
+
+    open fun updateDragFromFraction(fraction: Double) {
+        setNormalizedFraction(fraction)
+    }
+
+    open fun endDragFromFraction(fraction: Double) {
+        setNormalizedFraction(fraction)
     }
 }

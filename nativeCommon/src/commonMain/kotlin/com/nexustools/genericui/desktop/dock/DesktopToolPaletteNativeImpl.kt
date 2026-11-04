@@ -4,7 +4,7 @@ import com.nexustools.genericui.component.dock.ToolPaletteItem
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.nativeimpl.dock.ToolPaletteNativeImpl
-import com.nexustools.genericui.style.RgbaColor
+import com.nexustools.genericui.style.color.RgbaColor
 
 /**
  * Shared desktop base implementation of [ToolPaletteNativeImpl].

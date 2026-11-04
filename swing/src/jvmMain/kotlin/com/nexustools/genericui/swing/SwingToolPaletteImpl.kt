@@ -2,7 +2,7 @@ package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.component.dock.ToolPaletteItem
 import com.nexustools.genericui.nativeimpl.dock.ToolPaletteNativeImpl
-import com.nexustools.genericui.style.RgbaColor
+import com.nexustools.genericui.style.color.RgbaColor
 import java.awt.GridLayout
 import javax.swing.JComponent
 import javax.swing.JPanel

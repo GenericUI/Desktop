@@ -1,11 +1,20 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package com.nexustools.genericui.desktop.system
 
+import com.nexustools.genericui.io.ByteBuffer
+import com.nexustools.genericui.io.FileSystem
+import com.nexustools.genericui.nativeimpl.io.DefaultFileReadableNativeImpl
+import com.nexustools.genericui.nativeimpl.io.DefaultFileWritableNativeImpl
+import com.nexustools.genericui.nativeimpl.io.FileReadableNativeImpl
+import com.nexustools.genericui.nativeimpl.io.FileWritableNativeImpl
 import com.nexustools.genericui.nativeimpl.system.UserDirectoryNativeImpl
+import kotlin.concurrent.atomics.AtomicInt
 
 /**
  * Shared Desktop (`:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, `:desktop:qt`) implementation
- * of [UserDirectoryNativeImpl] backed by POSIX file I/O ([DesktopConfigDirectoryHelper]) and a
- * persistent `.user_dir_manifest` file index.
+ * of [UserDirectoryNativeImpl] backed by POSIX file I/O ([DesktopConfigDirectoryHelper]), [FileSystem]
+ * async stream delegation (`usesFileSystemBasePath == true`), and a persistent `.user_dir_manifest` file index.
  */
 open class DesktopUserDirectoryNativeImpl(
     override val appName: String,
@@ -14,18 +23,42 @@ open class DesktopUserDirectoryNativeImpl(
     override val fileSeparator: Char
 ) : UserDirectoryNativeImpl {
 
+    override val usesFileSystemBasePath: Boolean = true
+
     override val directoryPath: String =
         DesktopConfigDirectoryHelper.appendSubdirectory(baseDirectoryPath, subdirectory, fileSeparator)
 
     override var isDisposed: Boolean = false
         protected set
 
+    private val lockState = AtomicInt(0)
     private val memoryCache = LinkedHashMap<String, ByteArray>()
     private val knownFiles = LinkedHashSet<String>()
 
     init {
         ensureDirectoryExists()
-        loadManifest()
+        withLock { loadManifestUnlocked() }
+    }
+
+    private inline fun <T> withLock(block: () -> T): T {
+        while (!lockState.compareAndSet(0, 1)) {
+            // Short spin for thread-safe access across coroutine worker threads
+        }
+        try {
+            return block()
+        } finally {
+            lockState.store(0)
+        }
+    }
+
+    private fun putMemoryCacheUnlocked(cleanName: String, bytes: ByteArray) {
+        if (memoryCache.size >= MAX_MEMORY_CACHE_ENTRIES && !memoryCache.containsKey(cleanName)) {
+            val oldest = memoryCache.keys.firstOrNull()
+            if (oldest != null) {
+                memoryCache.remove(oldest)
+            }
+        }
+        memoryCache[cleanName] = bytes
     }
 
     override fun ensureDirectoryExists(): Boolean {
@@ -43,33 +76,50 @@ open class DesktopUserDirectoryNativeImpl(
         if (isDisposed) return false
         val cleanName = sanitizeFileName(fileName)
         ensureDirectoryExists()
-        memoryCache[cleanName] = bytes.copyOf()
-        knownFiles.add(cleanName)
-        val written = DesktopConfigDirectoryHelper.writeBytesToFile(resolveFilePath(cleanName), bytes)
-        saveManifest()
-        return written || memoryCache.containsKey(cleanName)
+        val copy = bytes.copyOf()
+        val fullPath = resolveFilePath(cleanName)
+        val written = DesktopConfigDirectoryHelper.writeBytesToFile(fullPath, copy)
+        return withLock {
+            putMemoryCacheUnlocked(cleanName, copy)
+            val added = knownFiles.add(cleanName)
+            if (added) {
+                saveManifestUnlocked()
+            }
+            written || memoryCache.containsKey(cleanName)
+        }
     }
 
     override fun readBytes(fileName: String): ByteArray? {
         if (isDisposed) return null
         val cleanName = sanitizeFileName(fileName)
+        withLock {
+            memoryCache[cleanName]?.let { return it.copyOf() }
+        }
         val diskBytes = DesktopConfigDirectoryHelper.readBytesFromFile(resolveFilePath(cleanName))
         if (diskBytes != null) {
-            memoryCache[cleanName] = diskBytes
-            if (!cleanName.startsWith(".")) {
-                knownFiles.add(cleanName)
+            withLock {
+                putMemoryCacheUnlocked(cleanName, diskBytes)
+                if (!cleanName.startsWith(".")) {
+                    knownFiles.add(cleanName)
+                }
             }
             return diskBytes
         }
-        return memoryCache[cleanName]?.copyOf()
+        return withLock { memoryCache[cleanName]?.copyOf() }
     }
 
     override fun exists(fileName: String): Boolean {
         if (isDisposed) return false
         val cleanName = sanitizeFileName(fileName)
-        return cleanName in knownFiles ||
-            memoryCache.containsKey(cleanName) ||
-            DesktopConfigDirectoryHelper.fileExists(resolveFilePath(cleanName))
+        val inMemoryOrKnown = withLock {
+            cleanName in knownFiles || memoryCache.containsKey(cleanName)
+        }
+        if (inMemoryOrKnown) return true
+        val onDisk = DesktopConfigDirectoryHelper.fileExists(resolveFilePath(cleanName))
+        if (onDisk && !cleanName.startsWith(".")) {
+            withLock { knownFiles.add(cleanName) }
+        }
+        return onDisk
     }
 
     override fun fileSize(fileName: String): Long {
@@ -77,31 +127,34 @@ open class DesktopUserDirectoryNativeImpl(
         val cleanName = sanitizeFileName(fileName)
         val diskLen = DesktopConfigDirectoryHelper.fileSize(resolveFilePath(cleanName))
         if (diskLen > 0L) return diskLen
-        return memoryCache[cleanName]?.size?.toLong() ?: 0L
+        return withLock { memoryCache[cleanName]?.size?.toLong() ?: 0L }
     }
 
     override fun delete(fileName: String): Boolean {
         if (isDisposed) return false
         val cleanName = sanitizeFileName(fileName)
-        val hadInMemory = memoryCache.remove(cleanName) != null
-        val hadInKnown = knownFiles.remove(cleanName)
         val deletedOnDisk = DesktopConfigDirectoryHelper.deleteFile(resolveFilePath(cleanName))
-        if (hadInMemory || hadInKnown || deletedOnDisk) {
-            saveManifest()
-            return true
+        return withLock {
+            val hadInMemory = memoryCache.remove(cleanName) != null
+            val hadInKnown = knownFiles.remove(cleanName)
+            if (hadInMemory || hadInKnown || deletedOnDisk) {
+                saveManifestUnlocked()
+                true
+            } else {
+                false
+            }
         }
-        return false
     }
 
-    override fun listFiles(): List<String> {
-        if (isDisposed) return emptyList()
-        loadManifest()
-        return knownFiles.filter { !it.startsWith(".") }
+    override fun listFiles(): List<String> = withLock {
+        if (isDisposed) return@withLock emptyList()
+        loadManifestUnlocked()
+        knownFiles.filter { !it.startsWith(".") }
     }
 
-    override fun clearAll(): Int {
-        if (isDisposed) return 0
-        loadManifest()
+    override fun clearAll(): Int = withLock {
+        if (isDisposed) return@withLock 0
+        loadManifestUnlocked()
         val snapshot = knownFiles.toList()
         var removedCount = 0
         for (name in snapshot) {
@@ -115,7 +168,7 @@ open class DesktopUserDirectoryNativeImpl(
         memoryCache.clear()
         knownFiles.clear()
         DesktopConfigDirectoryHelper.deleteFile(manifestFilePath())
-        return removedCount
+        removedCount
     }
 
     override fun totalByteSize(): Long {
@@ -127,7 +180,65 @@ open class DesktopUserDirectoryNativeImpl(
         return total
     }
 
-    override fun dispose() {
+    override suspend fun readAsync(fileName: String): ByteBuffer? {
+        if (isDisposed) return null
+        val fullPath = resolveFilePath(fileName)
+        val fsBuffer = FileSystem.read(fullPath)
+        if (fsBuffer != null) {
+            return fsBuffer
+        }
+        return readBytes(fileName)?.let { ByteBuffer.wrap(it) }
+    }
+
+    override suspend fun writeAsync(fileName: String, buffer: ByteBuffer, append: Boolean): Boolean {
+        if (isDisposed) return false
+        ensureDirectoryExists()
+        val cleanName = sanitizeFileName(fileName)
+        val fullPath = resolveFilePath(cleanName)
+        val fsWritten = FileSystem.write(fullPath, buffer, append)
+        val updatedBytes = FileSystem.read(fullPath)?.toByteArray() ?: if (append) {
+            val existing = readBytes(cleanName)
+            val incoming = buffer.toByteArray()
+            if (existing == null || existing.isEmpty()) incoming else existing + incoming
+        } else {
+            buffer.toByteArray()
+        }
+        val syncWritten = writeBytes(cleanName, updatedBytes)
+        return fsWritten || syncWritten
+    }
+
+    override suspend fun openReadableAsync(fileName: String): FileReadableNativeImpl? {
+        if (isDisposed) return null
+        val fullPath = resolveFilePath(fileName)
+        val fsStream = FileSystem.openReadable(fullPath) as? FileReadableNativeImpl
+        if (fsStream != null) {
+            return fsStream
+        }
+        val bytes = readBytes(fileName) ?: return null
+        FileSystem.writeFile(fullPath, bytes)
+        return (FileSystem.openReadable(fullPath) as? FileReadableNativeImpl)
+            ?: DefaultFileReadableNativeImpl(bytes, fullPath)
+    }
+
+    override suspend fun openWritableAsync(fileName: String, append: Boolean): FileWritableNativeImpl {
+        ensureDirectoryExists()
+        val cleanName = sanitizeFileName(fileName)
+        val fullPath = resolveFilePath(cleanName)
+        if (append && !FileSystem.exists(fullPath)) {
+            readBytes(cleanName)?.let { FileSystem.writeFile(fullPath, it) }
+        }
+        withLock {
+            if (knownFiles.add(cleanName)) {
+                saveManifestUnlocked()
+            }
+        }
+        return (FileSystem.openWritable(fullPath, append) as? FileWritableNativeImpl)
+            ?: DefaultFileWritableNativeImpl(filePath = fullPath, appendMode = append) { committed ->
+                writeBytes(cleanName, committed)
+            }
+    }
+
+    override fun dispose() = withLock {
         isDisposed = true
         memoryCache.clear()
     }
@@ -137,7 +248,7 @@ open class DesktopUserDirectoryNativeImpl(
         return "$baseDir$fileSeparator$MANIFEST_FILE_NAME"
     }
 
-    private fun loadManifest() {
+    private fun loadManifestUnlocked() {
         val bytes = DesktopConfigDirectoryHelper.readBytesFromFile(manifestFilePath()) ?: return
         for (line in bytes.decodeToString().lineSequence()) {
             val trimmed = line.trim()
@@ -147,7 +258,7 @@ open class DesktopUserDirectoryNativeImpl(
         }
     }
 
-    private fun saveManifest() {
+    private fun saveManifestUnlocked() {
         val content = knownFiles.filter { !it.startsWith(".") }.joinToString("\n").encodeToByteArray()
         DesktopConfigDirectoryHelper.writeBytesToFile(manifestFilePath(), content)
     }
@@ -159,5 +270,6 @@ open class DesktopUserDirectoryNativeImpl(
 
     companion object {
         private const val MANIFEST_FILE_NAME = ".user_dir_manifest"
+        private const val MAX_MEMORY_CACHE_ENTRIES = 64
     }
 }

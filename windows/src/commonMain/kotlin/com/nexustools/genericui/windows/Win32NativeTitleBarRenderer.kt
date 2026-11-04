@@ -716,7 +716,7 @@ object Win32NativeTitleBarRenderer {
                     right = bRight,
                     bottom = btnBottom
                 )
-                registerHitRegionFn(absLeft, absTop, absRight, absBottom, "Close", null) { _, _ ->
+                registerHitRegionFn(absLeft, absTop, absRight, absBottom, null, null) { _, _ ->
                     onCloseClicked()
                 }
                 rightCursor = bLeft
@@ -755,7 +755,7 @@ object Win32NativeTitleBarRenderer {
                     absTop,
                     absRight,
                     absBottom,
-                    if (isZoomed) "Restore" else "Maximize",
+                    null,
                     null
                 ) { _, _ ->
                     onMaximizeRestoreClicked()
@@ -790,7 +790,7 @@ object Win32NativeTitleBarRenderer {
                     right = bRight,
                     bottom = btnBottom
                 )
-                registerHitRegionFn(absLeft, absTop, absRight, absBottom, "Minimize", null) { _, _ ->
+                registerHitRegionFn(absLeft, absTop, absRight, absBottom, null, null) { _, _ ->
                     onMinimizeClicked()
                 }
                 rightCursor = bLeft
@@ -884,7 +884,7 @@ object Win32NativeTitleBarRenderer {
 
         // Optional background click handler (e.g. for toggling collapsible docked panel headers)
         if (onHeaderBackgroundClicked != null && rightCursor > left) {
-            registerHitRegionFn(left, top, left + rightCursor, top + height, windowTitle, null) { _, _ ->
+            registerHitRegionFn(left, top, left + rightCursor, top + height, null, null) { _, _ ->
                 onHeaderBackgroundClicked()
             }
         }

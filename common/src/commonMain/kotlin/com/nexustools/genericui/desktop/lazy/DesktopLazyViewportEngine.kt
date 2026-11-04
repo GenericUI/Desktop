@@ -47,6 +47,9 @@ class DesktopLazyViewportEngine(
             field = max(0f, value)
         }
 
+    val totalContentExtentPx: Float
+        get() = ((totalItemCount + columns - 1) / columns).coerceAtLeast(0) * max(1f, estimatedItemExtentPx)
+
     var visibleRange: IntRange = IntRange.EMPTY
         private set
 

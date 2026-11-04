@@ -21,6 +21,9 @@ class WindowsApplicationNativeImpl :
         installWindowsThemeDetector()
     }
 
+    override fun detectSystemThemeMode(): ThemeMode =
+        if (queryRegistryAppsUseLightTheme()) ThemeMode.LIGHT else ThemeMode.DARK
+
     override fun setThemeMode(mode: ThemeMode) {
         super.setThemeMode(mode)
         installWindowsThemeDetector()
@@ -32,6 +35,7 @@ class WindowsApplicationNativeImpl :
         nativeApplication.attributes["uxThemeClass"] = if (isDark) "DarkMode_Explorer" else "Explorer"
         val hwnd = Win32NativeWindowHost.activeHwnd
         if (hwnd != null) {
+            Win32NativeWindowHost.applyWindowsImmersiveTitleBarTheme(hwnd, isDark)
             Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, isDark)
             Win32NativeWindowHost.invalidateAllWindows()
         }
@@ -40,6 +44,9 @@ class WindowsApplicationNativeImpl :
     override fun runEventLoop(onStarted: () -> Unit) {
         nativeApplication.attributes["messageLoopRunning"] = true
         super.runEventLoop(onStarted)
+        if (interactiveWin32GuiEnabled) {
+            Win32NativeWindowHost.runMessageLoop()
+        }
     }
 
     override fun exitApplication(exitCode: Int) {
@@ -56,9 +63,16 @@ class WindowsApplicationNativeImpl :
          */
         var interactiveWin32GuiEnabled: Boolean = false
 
+        private val windowsBackendDetector: () -> ThemeMode = {
+            if (queryRegistryAppsUseLightTheme()) ThemeMode.LIGHT else ThemeMode.DARK
+        }
+
+        fun queryRegistryAppsUseLightTheme(): Boolean =
+            !Win32DwmUxThemeBridge.isSystemDarkTheme()
+
         fun installWindowsThemeDetector() {
-            SystemThemeDetector.backendDetector = {
-                if (Win32DwmUxThemeBridge.isSystemDarkTheme()) ThemeMode.DARK else ThemeMode.LIGHT
+            if (SystemThemeDetector.backendDetector !== windowsBackendDetector) {
+                SystemThemeDetector.backendDetector = windowsBackendDetector
             }
         }
     }

@@ -28,6 +28,7 @@ open class DesktopCheckboxNativeImpl<out W : DesktopNativeWidget>(
         if (checkedState != checked) {
             checkedState = checked
             nativeWidget.attributes["checked"] = checked
+            nativeWidget.notifyTreeInvalidated()
             onCheckedChangedListener?.invoke(checked)
         }
     }

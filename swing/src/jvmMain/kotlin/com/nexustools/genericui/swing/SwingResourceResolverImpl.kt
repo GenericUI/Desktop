@@ -1,5 +1,8 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.io.ByteBuffer
+import com.nexustools.genericui.io.Readable
+import com.nexustools.genericui.io.ReadableByteBuffer
 import com.nexustools.genericui.res.Resources
 import com.nexustools.genericui.resources.DefaultResourceResolverNativeImpl
 import com.nexustools.genericui.resources.ResourceID
@@ -48,5 +51,28 @@ class SwingResourceResolverImpl : DefaultResourceResolverNativeImpl() {
             }
         }
         return super.resolveBytes(resId)
+    }
+
+    override suspend fun openResourceStream(resId: ResourceID): Readable? {
+        val loader = Thread.currentThread().contextClassLoader ?: SwingResourceResolverImpl::class.java.classLoader
+        if (loader != null) {
+            for (path in candidateClasspathPaths(resId)) {
+                val stream = loader.getResourceAsStream(path)
+                if (stream != null) {
+                    return SwingFileReadableNativeImpl(stream, filePath = resolveUrl(resId))
+                }
+            }
+        }
+        val rawBytes = super.resolveBytes(resId)
+        if (rawBytes != null) {
+            return ReadableByteBuffer(ByteBuffer.wrap(rawBytes))
+        }
+        val rawText = Resources.activeTable.getRawText(resId)
+            ?: Resources.activeTable.getStringOrNull(resId)
+            ?: Resources.activeTable.getDrawable(resId)?.svgSource
+        if (rawText != null) {
+            return ReadableByteBuffer(ByteBuffer.wrap(rawText.encodeToByteArray()))
+        }
+        return null
     }
 }

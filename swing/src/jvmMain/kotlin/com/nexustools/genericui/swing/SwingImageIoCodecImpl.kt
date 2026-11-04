@@ -6,7 +6,7 @@ import com.nexustools.genericui.image.codec.LibJpegCodec
 import com.nexustools.genericui.image.codec.LibPngCodec
 import com.nexustools.genericui.image.codec.LibWebpCodec
 import com.nexustools.genericui.nativeimpl.image.ImageCodecNativeImpl
-import com.nexustools.genericui.style.RgbaColor
+import com.nexustools.genericui.style.color.RgbaColor
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream

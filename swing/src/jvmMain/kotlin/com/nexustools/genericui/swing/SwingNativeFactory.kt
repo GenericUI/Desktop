@@ -1,9 +1,12 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.NativeFactory
+import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.action.DropdownNativeImpl
+import com.nexustools.genericui.nativeimpl.action.StyledButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.content.ImageNativeImpl
 import com.nexustools.genericui.nativeimpl.content.TableNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.DialogWindowNativeImpl
@@ -17,19 +20,24 @@ import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
 import com.nexustools.genericui.nativeimpl.form.RangeSliderNativeImpl
 import com.nexustools.genericui.nativeimpl.form.SelectNativeImpl
 import com.nexustools.genericui.nativeimpl.form.TextInputNativeImpl
+import com.nexustools.genericui.nativeimpl.io.FileSystemNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.DividerNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ScrollViewNativeImpl
+import com.nexustools.genericui.nativeimpl.layout.StyledContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.LazyGridNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.LazyListNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.TreeViewNativeImpl
 import com.nexustools.genericui.nativeimpl.navigation.BottomNavigationBarNativeImpl
 import com.nexustools.genericui.nativeimpl.navigation.NavbarNativeImpl
+import com.nexustools.genericui.nativeimpl.net.HttpClientNativeImpl
+import com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl
+import com.nexustools.genericui.nativeimpl.net.UdpSocketNativeImpl
+import com.nexustools.genericui.nativeimpl.net.WebSocketNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
 import com.nexustools.genericui.nativeimpl.overlay.PopoverNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.*
-import com.nexustools.genericui.nativeimpl.surface.CollapseNativeImpl
 import com.nexustools.genericui.nativeimpl.system.*
 import com.nexustools.genericui.nativeimpl.typography.MarkdownViewNativeImpl
 import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
@@ -43,7 +51,13 @@ import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
  * [SwingGLCanvasImpl] and [SwingVKCanvasImpl], and `javax.imageio.ImageIO` ([SwingImageIoCodecImpl]) for [ImageLoader].
  */
 class SwingNativeFactory : NativeFactory {
+    override val backendTarget: com.nexustools.genericui.enums.system.BackendTarget =
+        com.nexustools.genericui.enums.system.BackendTarget.Swing
     override val backendName: String = "swing"
+    override val layoutFactory: LayoutFactory = DesktopLayoutFactory
+
+    override fun supportsTcp(): Boolean = true
+    override fun supportsUdp(): Boolean = true
 
     init {
         ImageLoader.activeNativeCodec = SwingImageIoCodecImpl()
@@ -56,7 +70,6 @@ class SwingNativeFactory : NativeFactory {
     override fun createMenu(): MenuNativeImpl<*> = SwingMenuImpl()
     override fun createMenuItem(checkable: Boolean, radio: Boolean): MenuItemNativeImpl<*> = SwingMenuItemImpl(checkable, radio)
     override fun createContextMenu(): ContextMenuNativeImpl<*> = SwingContextMenuImpl()
-    override fun createSplitPane(): SplitPaneNativeImpl<*> = SwingSplitPaneImpl()
 
     // Dockable Panel System (GIMP / Photoshop Studio)
     override fun createDockWorkspace(): DockWorkspaceNativeImpl<*> = SwingDockWorkspaceImpl()
@@ -68,6 +81,8 @@ class SwingNativeFactory : NativeFactory {
 
     // Layout & Printable Book Documents
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> = SwingContainerImpl(classPrefix)
+    override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
+        SwingStyledContainerImpl(classPrefix)
     override fun createBookContainer(): BookContainerNativeImpl<*> = SwingBookContainerImpl()
     override fun createScrollView(): ScrollViewNativeImpl<*> = SwingScrollViewImpl()
     override fun createDivider(): DividerNativeImpl<*> = SwingDividerImpl()
@@ -80,6 +95,7 @@ class SwingNativeFactory : NativeFactory {
 
     // Action & Form
     override fun createButton(classPrefix: String): ButtonNativeImpl<*> = SwingButtonImpl(classPrefix)
+    override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> = SwingStyledButtonImpl(classPrefix)
     override fun createDropdown(): DropdownNativeImpl<*> = SwingDropdownImpl()
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> = SwingTextInputImpl(multiline)
     override fun createSelect(): SelectNativeImpl<*> = SwingSelectImpl()
@@ -87,7 +103,6 @@ class SwingNativeFactory : NativeFactory {
     override fun createRangeSlider(): RangeSliderNativeImpl<*> = SwingRangeSliderImpl()
 
     // Surface, Tabs, Navigation, Feedback & Overlay
-    override fun createCollapse(): CollapseNativeImpl<*> = SwingCollapseImpl()
     override fun createTab(closable: Boolean): TabNativeImpl<*> = SwingTabImpl(closable)
     override fun createTabContainer(): TabContainerNativeImpl<*> = SwingTabContainerImpl()
     override fun createNavbar(): NavbarNativeImpl<*> = SwingNavbarImpl()
@@ -117,6 +132,22 @@ class SwingNativeFactory : NativeFactory {
         SwingUserDirectoryNativeImpl(appName = appName, subdirectory = subdirectory, isCache = false)
     override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
         SwingUserDirectoryNativeImpl(appName = appName, subdirectory = subdirectory, isCache = true)
+    override fun createFileSystem(): FileSystemNativeImpl = SwingFileSystemNativeImpl()
+    override fun createDatabase(
+        databaseName: String,
+        filePath: String?,
+        version: Int
+    ): DatabaseNativeImpl = SwingDatabaseNativeImpl(
+        databaseName = databaseName,
+        filePath = filePath ?: "$databaseName.db",
+        version = version
+    )
     override fun createResourceResolver(): com.nexustools.genericui.resources.ResourceResolverNativeImpl =
         SwingResourceResolverImpl()
+
+    // Async Networking (TCP, UDP, HTTP/HTTPS, WebSocket)
+    override fun createTcpSocket(): TcpSocketNativeImpl = SwingTcpSocketNativeImpl()
+    override fun createUdpSocket(): UdpSocketNativeImpl = SwingUdpSocketNativeImpl()
+    override fun createHttpClient(): HttpClientNativeImpl = SwingHttpClientNativeImpl()
+    override fun createWebSocket(): WebSocketNativeImpl = SwingWebSocketNativeImpl()
 }

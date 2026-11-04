@@ -34,15 +34,17 @@ class SwingPreferenceStoreImpl(
 
     val fileExtension: String = if (isMacOsHost) ".plist" else ".bson"
 
-    val configDir: ConfigDirectory = ConfigDirectory(
-        appName = appName,
-        nativeImplOverride = SwingUserDirectoryNativeImpl(
+    val configDir: ConfigDirectory = object : ConfigDirectory(appName = appName) {
+        private val customImpl = SwingUserDirectoryNativeImpl(
             appName = appName,
             subdirectory = "",
             isCache = false,
             customDirectory = customDirectory
         )
-    )
+
+        override fun resolveCustomImpl(): com.nexustools.genericui.nativeimpl.system.UserDirectoryNativeImpl =
+            customImpl
+    }
 
     val configDirectory: File = File(configDir.directoryPath).apply {
         mkdirs()

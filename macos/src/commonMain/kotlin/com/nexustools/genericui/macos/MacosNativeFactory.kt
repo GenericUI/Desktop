@@ -1,5 +1,6 @@
 package com.nexustools.genericui.macos
 
+import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.NativeFactory
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
@@ -8,6 +9,7 @@ import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockWorkspaceNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopToolPaletteNativeImpl
 import com.nexustools.genericui.desktop.image.DesktopImageCodecHooks
+import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
 import com.nexustools.genericui.desktop.lazy.DesktopLazyGridNativeImpl
 import com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl
 import com.nexustools.genericui.desktop.lazy.DesktopTreeViewNativeImpl
@@ -15,13 +17,13 @@ import com.nexustools.genericui.desktop.shell.DesktopContextMenuNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuBarNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuItemNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuNativeImpl
-import com.nexustools.genericui.desktop.shell.DesktopSplitPaneNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopPermissionManagerNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopUiTimerNativeImpl
 import com.nexustools.genericui.desktop.widget.*
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.action.DropdownNativeImpl
+import com.nexustools.genericui.nativeimpl.action.StyledButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.content.ImageNativeImpl
 import com.nexustools.genericui.nativeimpl.content.TableNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.DialogWindowNativeImpl
@@ -35,19 +37,24 @@ import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
 import com.nexustools.genericui.nativeimpl.form.RangeSliderNativeImpl
 import com.nexustools.genericui.nativeimpl.form.SelectNativeImpl
 import com.nexustools.genericui.nativeimpl.form.TextInputNativeImpl
+import com.nexustools.genericui.nativeimpl.io.FileSystemNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.DividerNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ScrollViewNativeImpl
+import com.nexustools.genericui.nativeimpl.layout.StyledContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.LazyGridNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.LazyListNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.TreeViewNativeImpl
 import com.nexustools.genericui.nativeimpl.navigation.BottomNavigationBarNativeImpl
 import com.nexustools.genericui.nativeimpl.navigation.NavbarNativeImpl
+import com.nexustools.genericui.nativeimpl.net.HttpClientNativeImpl
+import com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl
+import com.nexustools.genericui.nativeimpl.net.UdpSocketNativeImpl
+import com.nexustools.genericui.nativeimpl.net.WebSocketNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
 import com.nexustools.genericui.nativeimpl.overlay.PopoverNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.*
-import com.nexustools.genericui.nativeimpl.surface.CollapseNativeImpl
 import com.nexustools.genericui.nativeimpl.system.*
 import com.nexustools.genericui.nativeimpl.typography.MarkdownViewNativeImpl
 import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
@@ -61,7 +68,18 @@ import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
  */
 class MacosNativeFactory : NativeFactory {
 
+    override val backendTarget: com.nexustools.genericui.enums.system.BackendTarget =
+        com.nexustools.genericui.enums.system.BackendTarget.MacOS
+
     override val backendName: String = "macOS (AppKit / CoreGraphics / MoltenVK / VLC)"
+
+    override val layoutFactory: LayoutFactory = DesktopLayoutFactory
+
+    override val supportsSystemMenuBar: Boolean = true
+
+    override fun supportsTcp(): Boolean = true
+
+    override fun supportsUdp(): Boolean = true
 
     val imageCodec: MacosImageIoCodecNativeImpl = MacosImageIoCodecNativeImpl()
 
@@ -86,9 +104,6 @@ class MacosNativeFactory : NativeFactory {
     override fun createContextMenu(): ContextMenuNativeImpl<*> =
         DesktopContextMenuNativeImpl(MacosViewHandle("NSMenu_Contextual"))
 
-    override fun createSplitPane(): SplitPaneNativeImpl<*> =
-        DesktopSplitPaneNativeImpl(MacosViewHandle("NSSplitView"))
-
     override fun createDockWorkspace(): DockWorkspaceNativeImpl<*> =
         DesktopDockWorkspaceNativeImpl(MacosViewHandle("NSView_DockWorkspace"))
 
@@ -108,6 +123,9 @@ class MacosNativeFactory : NativeFactory {
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
         DesktopContainerNativeImpl(MacosViewHandle("NSStackView"), classPrefix)
+
+    override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
+        DesktopStyledContainerNativeImpl(MacosViewHandle("NSView_StyledContainer"), classPrefix)
 
     override fun createBookContainer(): BookContainerNativeImpl<*> =
         DesktopBookContainerNativeImpl(MacosViewHandle("NSView_BookPrintPreview"))
@@ -133,6 +151,9 @@ class MacosNativeFactory : NativeFactory {
     override fun createButton(classPrefix: String): ButtonNativeImpl<*> =
         DesktopButtonNativeImpl(MacosViewHandle("NSButton"), classPrefix)
 
+    override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> =
+        DesktopStyledButtonNativeImpl(MacosViewHandle("NSButton_Styled"), classPrefix)
+
     override fun createDropdown(): DropdownNativeImpl<*> =
         DesktopDropdownNativeImpl(MacosViewHandle("NSPopUpButton_PullDown"))
 
@@ -151,9 +172,6 @@ class MacosNativeFactory : NativeFactory {
 
     override fun createRangeSlider(): RangeSliderNativeImpl<*> =
         DesktopRangeSliderNativeImpl(MacosViewHandle("NSSlider"))
-
-    override fun createCollapse(): CollapseNativeImpl<*> =
-        DesktopCollapseNativeImpl(MacosViewHandle("NSDisclosureView"))
 
     override fun createTab(closable: Boolean): TabNativeImpl<*> =
         DesktopTabNativeImpl(MacosViewHandle(if (closable) "NSTabViewItem_Closable" else "NSTabViewItem"), closable)
@@ -176,7 +194,13 @@ class MacosNativeFactory : NativeFactory {
         DesktopPopoverNativeImpl(MacosViewHandle("NSPopover"))
 
     override fun createDialogWindow(): DialogWindowNativeImpl<*> =
-        DesktopDialogWindowNativeImpl(MacosViewHandle("NSPanel_SheetOrModal"))
+        DesktopDialogWindowNativeImpl(
+            MacosViewHandle("NSPanel_SheetOrModal").apply {
+                attributes["isSeparateNativeWindow"] = true
+                attributes["inWindowOverlay"] = false
+                attributes["attachedToMainWindow"] = true
+            }
+        )
 
     override fun createFileBrowserDialog(): FileBrowserDialogNativeImpl =
         MacosFileBrowserDialogNativeImpl()
@@ -215,6 +239,28 @@ class MacosNativeFactory : NativeFactory {
     override fun createCacheDirectory(appName: String, subdirectory: String): UserDirectoryNativeImpl =
         MacosCacheDirectoryImpl(appName, subdirectory)
 
+    override fun createFileSystem(): FileSystemNativeImpl =
+        MacosFileSystemNativeImpl()
+
+    override fun createDatabase(databaseName: String, filePath: String?, version: Int): DatabaseNativeImpl =
+        MacosDatabaseNativeImpl(
+            databaseName = databaseName,
+            filePath = filePath ?: "$databaseName.db",
+            version = version
+        )
+
     override fun createResourceResolver(): com.nexustools.genericui.resources.ResourceResolverNativeImpl =
         MacosResourceResolverImpl()
+
+    override fun createTcpSocket(): TcpSocketNativeImpl =
+        MacosTcpSocketNativeImpl()
+
+    override fun createUdpSocket(): UdpSocketNativeImpl =
+        MacosUdpSocketNativeImpl()
+
+    override fun createHttpClient(): HttpClientNativeImpl =
+        MacosHttpClientNativeImpl()
+
+    override fun createWebSocket(): WebSocketNativeImpl =
+        MacosWebSocketNativeImpl()
 }

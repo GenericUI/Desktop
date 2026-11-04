@@ -17,6 +17,8 @@ class SwingUserDirectoryNativeImpl(
 
     override val fileSeparator: Char = File.separatorChar
 
+    override val usesFileSystemBasePath: Boolean = true
+
     val directory: File = resolveTargetDirectory(appName, subdirectory, isCache, customDirectory).apply {
         mkdirs()
     }
@@ -26,6 +28,57 @@ class SwingUserDirectoryNativeImpl(
 
     override var isDisposed: Boolean = false
         private set
+
+    override suspend fun readAsync(fileName: String): com.nexustools.genericui.io.ByteBuffer? {
+        if (com.nexustools.genericui.core.GenericUI.activeFactory is SwingNativeFactory) {
+            return com.nexustools.genericui.io.FileSystem.read(resolveFilePath(fileName))
+        }
+        return readBytes(fileName)?.let { com.nexustools.genericui.io.ByteBuffer.wrap(it) }
+    }
+
+    override suspend fun writeAsync(
+        fileName: String,
+        buffer: com.nexustools.genericui.io.ByteBuffer,
+        append: Boolean
+    ): Boolean {
+        ensureDirectoryExists()
+        if (com.nexustools.genericui.core.GenericUI.activeFactory is SwingNativeFactory) {
+            return com.nexustools.genericui.io.FileSystem.write(resolveFilePath(fileName), buffer, append)
+        }
+        val file = File(directory, sanitizeName(fileName))
+        return runCatching {
+            if (append && file.exists()) {
+                file.appendBytes(buffer.toByteArray())
+            } else {
+                file.writeBytes(buffer.toByteArray())
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    override suspend fun openReadableAsync(fileName: String): com.nexustools.genericui.nativeimpl.io.FileReadableNativeImpl? {
+        if (com.nexustools.genericui.core.GenericUI.activeFactory is SwingNativeFactory) {
+            return com.nexustools.genericui.io.FileSystem.openReadable(resolveFilePath(fileName))
+                as? com.nexustools.genericui.nativeimpl.io.FileReadableNativeImpl
+        }
+        val file = File(directory, sanitizeName(fileName))
+        if (!file.isFile || !file.exists()) return null
+        return SwingFileReadableNativeImpl(file)
+    }
+
+    override suspend fun openWritableAsync(
+        fileName: String,
+        append: Boolean
+    ): com.nexustools.genericui.nativeimpl.io.FileWritableNativeImpl {
+        ensureDirectoryExists()
+        if (com.nexustools.genericui.core.GenericUI.activeFactory is SwingNativeFactory) {
+            val stream = com.nexustools.genericui.io.FileSystem.openWritable(resolveFilePath(fileName), append)
+                as? com.nexustools.genericui.nativeimpl.io.FileWritableNativeImpl
+            if (stream != null) return stream
+        }
+        val file = File(directory, sanitizeName(fileName))
+        return SwingFileWritableNativeImpl(file, append = append)
+    }
 
     override fun ensureDirectoryExists(): Boolean {
         if (isDisposed) return false
