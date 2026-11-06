@@ -61,10 +61,7 @@ import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
 
 /**
  * GTK 4 + Libadwaita (`:gtk`) implementation of [NativeFactory] backed by native `GtkWidget` controls,
- * `GtkHeaderBar` custom title bars, Cairo (`Canvas2D`), `GtkGLArea` (`GLCanvas` using EGL/GLES3 or Google ANGLE),
- * `GdkVulkanContext` (`VKCanvas`), VLC (`libvlc` with Vulkan `#version 450` SPIR-V primary and OpenGL ES
- * `#version 300 es` fallback for `VideoPlayer` / `AudioPlayer`), `WebKitWebView`, and `GdkPixbuf` +
- * `libjpeg-turbo` ([GtkPixbufImageCodecNativeImpl]).
+ * `GtkHeaderBar` custom title bars, and `GdkPixbuf` + `libjpeg-turbo` ([GtkPixbufImageCodecNativeImpl]).
  */
 class GtkNativeFactory : NativeFactory {
 
@@ -120,10 +117,10 @@ class GtkNativeFactory : NativeFactory {
         DesktopToolPaletteNativeImpl(GtkWidgetHandle("GtkFlowBox_ToolPalette"))
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
-        DesktopContainerNativeImpl(GtkWidgetHandle("GtkBox"), classPrefix)
+        GtkContainerNativeImpl(GtkWidgetHandle("GtkBox"), classPrefix)
 
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
-        DesktopStyledContainerNativeImpl(GtkWidgetHandle("GtkBox_Styled"), classPrefix)
+        GtkStyledContainerNativeImpl(GtkWidgetHandle("GtkBox_Styled"), classPrefix, tagName)
 
     override fun createBookContainer(): BookContainerNativeImpl<*> =
         DesktopBookContainerNativeImpl(GtkWidgetHandle("GtkBox_BookPrintPreview"))
@@ -147,10 +144,10 @@ class GtkNativeFactory : NativeFactory {
         DesktopTableNativeImpl(GtkWidgetHandle("GtkColumnView"))
 
     override fun createButton(classPrefix: String): ButtonNativeImpl<*> =
-        DesktopButtonNativeImpl(GtkWidgetHandle("GtkButton"), classPrefix)
+        GtkButtonNativeImpl(GtkWidgetHandle("GtkButton"), classPrefix)
 
     override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> =
-        DesktopStyledButtonNativeImpl(GtkWidgetHandle("GtkButton_Styled"), classPrefix)
+        GtkStyledButtonNativeImpl(GtkWidgetHandle("GtkButton_Styled"), classPrefix)
 
     override fun createDropdown(): DropdownNativeImpl<*> =
         DesktopDropdownNativeImpl(GtkWidgetHandle("GtkMenuButton"))

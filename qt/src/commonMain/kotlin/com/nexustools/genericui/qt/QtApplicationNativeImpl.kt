@@ -22,6 +22,9 @@ class QtApplicationNativeImpl :
         installQtThemeDetector()
     }
 
+    override fun detectSystemThemeMode(): ThemeMode =
+        SystemThemeDetector.overrideDetectedTheme?.takeIf { !it.isAuto } ?: detectQtSystemTheme()
+
     override fun setThemeMode(mode: ThemeMode) {
         super.setThemeMode(mode)
         installQtThemeDetector()
@@ -30,7 +33,11 @@ class QtApplicationNativeImpl :
         nativeWidget.attributes["qtColorScheme"] = when (mode) {
             ThemeMode.DARK -> "Qt::ColorScheme::Dark"
             ThemeMode.LIGHT -> "Qt::ColorScheme::Light"
-            ThemeMode.AUTO -> "Qt::ColorScheme::Unknown"
+            ThemeMode.AUTO -> if (effective == ThemeMode.DARK) {
+                "Qt::ColorScheme::Dark"
+            } else {
+                "Qt::ColorScheme::Light"
+            }
         }
     }
 

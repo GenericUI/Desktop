@@ -19,6 +19,7 @@ class SwingTabContainerImpl : SwingBaseContainerNativeImpl(JTabbedPane(), "nav-t
     override val supportsNativeFadeTransition: Boolean = false
 
     private val tabbedPane: JTabbedPane = nativeWidget as JTabbedPane
+    private val buttonTabFlags = mutableListOf<Boolean>()
     private var selectedIndexVal: Int = 0
     private var suppressChangeEvent: Boolean = false
     private var onTabSelectedListener: ((Int) -> Unit)? = null
@@ -27,8 +28,21 @@ class SwingTabContainerImpl : SwingBaseContainerNativeImpl(JTabbedPane(), "nav-t
     init {
         tabbedPane.addChangeListener {
             if (!suppressChangeEvent && tabbedPane.selectedIndex >= 0) {
-                selectedIndexVal = tabbedPane.selectedIndex
-                onTabSelectedListener?.invoke(selectedIndexVal)
+                val idx = tabbedPane.selectedIndex
+                if (buttonTabFlags.getOrElse(idx) { false }) {
+                    suppressChangeEvent = true
+                    try {
+                        if (selectedIndexVal in 0 until tabbedPane.tabCount && !buttonTabFlags.getOrElse(selectedIndexVal) { false }) {
+                            tabbedPane.selectedIndex = selectedIndexVal
+                        }
+                    } finally {
+                        suppressChangeEvent = false
+                    }
+                    onTabSelectedListener?.invoke(idx)
+                } else {
+                    selectedIndexVal = idx
+                    onTabSelectedListener?.invoke(selectedIndexVal)
+                }
             }
         }
     }
@@ -39,6 +53,7 @@ class SwingTabContainerImpl : SwingBaseContainerNativeImpl(JTabbedPane(), "nav-t
         val title = swingTab?.titleVal ?: ""
         val tooltip = swingTab?.tooltipVal
         val insertIndex = if (index < 0 || index > tabbedPane.tabCount) tabbedPane.tabCount else index
+        buttonTabFlags.add(insertIndex, false)
 
         suppressChangeEvent = true
         try {
@@ -52,9 +67,29 @@ class SwingTabContainerImpl : SwingBaseContainerNativeImpl(JTabbedPane(), "nav-t
         }
     }
 
+    override fun addButtonTabNative(tabImpl: TabNativeImpl<*>, index: Int) {
+        val swingTab = tabImpl as? SwingTabImpl
+        val title = swingTab?.titleVal ?: ""
+        val tooltip = swingTab?.tooltipVal
+        val insertIndex = if (index < 0 || index > tabbedPane.tabCount) tabbedPane.tabCount else index
+        buttonTabFlags.add(insertIndex, true)
+
+        suppressChangeEvent = true
+        try {
+            tabbedPane.insertTab(title, null, JPanel(), tooltip, insertIndex)
+            val headerComp = tabImpl.nativeWidget as? JComponent
+            if (headerComp != null) {
+                tabbedPane.setTabComponentAt(insertIndex, headerComp)
+            }
+        } finally {
+            suppressChangeEvent = false
+        }
+    }
+
     override fun addTabNative(title: String, contentImpl: NativeImpl<*>, index: Int) {
         val contentComp = (contentImpl.nativeWidget as? JComponent) ?: JPanel()
         val insertIndex = if (index < 0 || index > tabbedPane.tabCount) tabbedPane.tabCount else index
+        buttonTabFlags.add(insertIndex, false)
         suppressChangeEvent = true
         try {
             tabbedPane.insertTab(title, null, contentComp, null, insertIndex)
@@ -76,6 +111,9 @@ class SwingTabContainerImpl : SwingBaseContainerNativeImpl(JTabbedPane(), "nav-t
 
     override fun removeTabNative(index: Int) {
         if (index in 0 until tabbedPane.tabCount) {
+            if (index in buttonTabFlags.indices) {
+                buttonTabFlags.removeAt(index)
+            }
             suppressChangeEvent = true
             try {
                 tabbedPane.removeTabAt(index)

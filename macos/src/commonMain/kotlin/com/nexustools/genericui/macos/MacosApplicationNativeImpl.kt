@@ -20,6 +20,9 @@ class MacosApplicationNativeImpl :
         installMacosThemeDetector()
     }
 
+    override fun detectSystemThemeMode(): ThemeMode =
+        SystemThemeDetector.overrideDetectedTheme?.takeIf { !it.isAuto } ?: detectMacosSystemTheme()
+
     override fun setThemeMode(mode: ThemeMode) {
         super.setThemeMode(mode)
         installMacosThemeDetector()

@@ -73,6 +73,24 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
         onSubmitListener = listener
     }
 
+    override fun setFocusedState(focused: Boolean) {
+        val wasFocused = isFocusedState()
+        super<DesktopBaseNativeImpl>.setFocusedState(focused)
+        val nowFocused = isFocusedState()
+        if (nowFocused) {
+            com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = true
+        } else if (wasFocused) {
+            com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = false
+        }
+    }
+
+    override fun dispose() {
+        if (isFocusedState()) {
+            com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = false
+        }
+        super.dispose()
+    }
+
     fun submitValue() {
         onSubmitListener?.invoke(textValue)
     }

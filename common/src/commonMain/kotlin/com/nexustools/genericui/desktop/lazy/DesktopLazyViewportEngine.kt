@@ -62,9 +62,9 @@ class DesktopLazyViewportEngine(
     fun getMountedItem(index: Int): NativeImpl<*>? = mountedItems[index]
 
     fun computeScrollOffsetForIndex(index: Int): Float {
-        if (totalItemCount <= 0) return 0f
+        if (totalItemCount <= 0) return max(0, (index / columns) - 1) * max(1f, estimatedItemExtentPx)
         val clamped = index.coerceIn(0, totalItemCount - 1)
-        val row = clamped / columns
+        val row = max(0, (clamped / columns) - 1)
         return row * max(1f, estimatedItemExtentPx)
     }
 

@@ -22,6 +22,9 @@ class GtkApplicationNativeImpl :
         installGtkThemeDetector()
     }
 
+    override fun detectSystemThemeMode(): ThemeMode =
+        SystemThemeDetector.overrideDetectedTheme?.takeIf { !it.isAuto } ?: detectGtkSystemTheme()
+
     override fun setThemeMode(mode: ThemeMode) {
         super.setThemeMode(mode)
         installGtkThemeDetector()

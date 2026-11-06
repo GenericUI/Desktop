@@ -12,6 +12,8 @@ import com.nexustools.genericui.style.css.CssFilter
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
+import java.awt.image.BufferedImage
+import javax.swing.ImageIcon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.SwingUtilities
@@ -51,6 +53,7 @@ class SwingImageImpl : SwingBaseNativeImpl(
 
     private var sourceUrlVal: String? = null
     private var placeholderUrlVal: String? = "res://drawable/loading"
+    private var fallbackTextVal: String? = null
     private var objectFitVal: ObjectFit = ObjectFit.CONTAIN
     private var antialiasingVal: Boolean = true
     private var isLoadingVal: Boolean = false
@@ -59,6 +62,7 @@ class SwingImageImpl : SwingBaseNativeImpl(
     private var cssFilterVal: CssFilter? = null
     private var onLoadCallback: (() -> Unit)? = null
     private var onErrorCallback: (() -> Unit)? = null
+    private var activeLoadGeneration: Int = 0
     private var activeLoadJob: Job? = null
     private var retainedBuffer: ImageBuffer? = null
 
@@ -66,7 +70,34 @@ class SwingImageImpl : SwingBaseNativeImpl(
         nativeWidget.putClientProperty("antialiasing", true)
     }
 
+    private fun applyBufferIcon(buffer: ImageBuffer) {
+        val w = buffer.width.coerceAtLeast(1)
+        val h = buffer.height.coerceAtLeast(1)
+        val bimg = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val px = buffer.getPixel(x, y)
+                val argb = ((px.a and 0xFF) shl 24) or
+                    ((px.r and 0xFF) shl 16) or
+                    ((px.g and 0xFF) shl 8) or
+                    (px.b and 0xFF)
+                bimg.setRGB(x, y, argb)
+            }
+        }
+        nativeWidget.putClientProperty("imageBuffer", buffer)
+        nativeWidget.icon = ImageIcon(bimg)
+        nativeWidget.text = ""
+    }
+
     override fun setSourceUrl(url: String?) {
+        val trimmed = url?.trim()
+        if (!trimmed.isNullOrEmpty() && trimmed.startsWith("memory://", ignoreCase = true)) {
+            ImageLoader.resolveMemoryBuffer(trimmed)?.let {
+                setImageBuffer(it)
+                return
+            }
+        }
+        val gen = ++activeLoadGeneration
         activeLoadJob?.cancel()
         activeLoadJob = null
         sourceUrlVal = url
@@ -74,7 +105,11 @@ class SwingImageImpl : SwingBaseNativeImpl(
         if (url.isNullOrBlank()) {
             isLoadingVal = false
             retainedBuffer = null
+            nativeWidget.putClientProperty("imageBuffer", null)
             nativeWidget.putClientProperty("isLoading", false)
+            nativeWidget.icon = null
+            nativeWidget.text = fallbackTextVal ?: ""
+            nativeWidget.repaint()
             return
         }
         isLoadingVal = true
@@ -83,13 +118,16 @@ class SwingImageImpl : SwingBaseNativeImpl(
             source = ImageSource.fromUrl(url),
             options = ImageDecodeOptions(antialiasing = antialiasingVal),
             onLoaded = { buffer ->
+                if (gen != activeLoadGeneration) return@launchLoad
                 retainedBuffer = buffer
                 isLoadingVal = false
                 nativeWidget.putClientProperty("isLoading", false)
+                applyBufferIcon(buffer)
                 onLoadCallback?.invoke()
                 SwingUtilities.invokeLater { nativeWidget.repaint() }
             },
             onError = {
+                if (gen != activeLoadGeneration) return@launchLoad
                 isLoadingVal = false
                 nativeWidget.putClientProperty("isLoading", false)
                 onErrorCallback?.invoke()
@@ -98,6 +136,34 @@ class SwingImageImpl : SwingBaseNativeImpl(
     }
 
     override fun getSourceUrl(): String? = sourceUrlVal
+
+    override fun setImageBuffer(buffer: ImageBuffer?) {
+        activeLoadGeneration++
+        activeLoadJob?.cancel()
+        activeLoadJob = null
+        if (buffer == null) {
+            isLoadingVal = false
+            sourceUrlVal = null
+            retainedBuffer = null
+            nativeWidget.putClientProperty("src", null)
+            nativeWidget.putClientProperty("imageBuffer", null)
+            nativeWidget.putClientProperty("isLoading", false)
+            nativeWidget.icon = null
+            nativeWidget.text = fallbackTextVal ?: ""
+            nativeWidget.repaint()
+            return
+        }
+        val memoryUri = "memory://imagebuffer/${buffer.width}x${buffer.height}@${buffer.hashCode()}"
+        ImageLoader.registerMemoryBuffer(memoryUri, buffer)
+        sourceUrlVal = memoryUri
+        isLoadingVal = false
+        retainedBuffer = buffer
+        nativeWidget.putClientProperty("src", memoryUri)
+        nativeWidget.putClientProperty("isLoading", false)
+        applyBufferIcon(buffer)
+        nativeWidget.repaint()
+        onLoadCallback?.invoke()
+    }
 
     override fun setPlaceholderUrl(url: String?) {
         placeholderUrlVal = url
@@ -117,7 +183,11 @@ class SwingImageImpl : SwingBaseNativeImpl(
     override fun isLoading(): Boolean = isLoadingVal
 
     override fun setFallbackText(fallback: String?) {
+        fallbackTextVal = fallback
         nativeWidget.putClientProperty("fallbackText", fallback)
+        if (retainedBuffer == null && sourceUrlVal.isNullOrBlank()) {
+            nativeWidget.text = fallback ?: ""
+        }
     }
 
     override fun setObjectFit(fit: ObjectFit) {

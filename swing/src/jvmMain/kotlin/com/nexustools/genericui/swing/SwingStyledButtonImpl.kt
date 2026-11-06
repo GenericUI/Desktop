@@ -1,5 +1,6 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.nativeimpl.action.StyledButtonNativeImpl
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
@@ -35,7 +36,15 @@ class SwingStyledButtonImpl(
                     ?: (getClientProperty("styledButtonVisuals") as? StyledVisualSpec)
                     ?: StyledVisualSpec.EMPTY
                 val focusedState = (getClientProperty("styledButtonFocused") as? Boolean) ?: hasFocus()
-                SwingStyledContainerImpl.paintStyledSurface(g, width, height, spec, focusedState)
+                val componentOpacity = (getClientProperty("opacity") as? Float) ?: 1f
+                SwingStyledContainerImpl.paintStyledSurface(
+                    g = g,
+                    width = width,
+                    height = height,
+                    spec = spec,
+                    isFocused = focusedState,
+                    componentOpacity = componentOpacity
+                )
             }
             super.paintComponent(g)
         }
@@ -111,8 +120,20 @@ class SwingStyledButtonImpl(
         nativeWidget.isContentAreaFilled = false
         nativeWidget.isFocusPainted = false
         nativeWidget.isOpaque = false
+        nativeWidget.putClientProperty("backdropBlurPx", null)
+        nativeWidget.putClientProperty("backdrop-filter", null)
+        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
         nativeWidget.putClientProperty("styledButtonVisuals", current)
         nativeWidget.putClientProperty("styledButtonFocused", focused)
+        nativeWidget.putClientProperty("backgroundColor", current.backgroundColor)
+        nativeWidget.putClientProperty("backgroundGradient", current.backgroundGradient)
+        nativeWidget.putClientProperty("textColor", current.textColor)
+        nativeWidget.putClientProperty("borderColor", current.borderColor)
+        nativeWidget.putClientProperty("borderWidthPx", current.borderWidthPx)
+        nativeWidget.putClientProperty("borderStyle", current.borderStyle)
+        nativeWidget.putClientProperty("borderRadiusPx", current.borderRadiusPx)
+        nativeWidget.putClientProperty("focusRingColor", current.focusRingColor)
+        nativeWidget.putClientProperty("focusRingWidthPx", current.focusRingWidthPx)
         current.backgroundColor?.let { c ->
             nativeWidget.background = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), c.a.coerceIn(0, 255))
         }
@@ -217,7 +238,7 @@ class SwingStyledButtonImpl(
     }
 
     override fun resolveCurrentVisuals(): StyledVisualSpec {
-        val isDark = SystemThemeDetector.detectSystemTheme() == ThemeMode.DARK
+        val isDark = (Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()) == ThemeMode.DARK
         val computedBase = StyledVisualSpec.fromComponentAndComputed(
             componentStyle = lastComponentStyle,
             computedStyle = lastComputedStyle,

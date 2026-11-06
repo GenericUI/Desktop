@@ -21,8 +21,10 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
     private var focusVisuals: StyledVisualSpec? = null
     private var activeVisuals: StyledVisualSpec? = null
     private var disabledVisuals: StyledVisualSpec? = null
+    private var cachedResolvedVisuals: StyledVisualSpec? = null
 
-    private fun syncResolvedVisualsToWidget() {
+    private fun syncResolvedVisualsToWidget(visualOnly: Boolean = false) {
+        cachedResolvedVisuals = null
         val resolved = resolveCurrentVisuals()
         nativeWidget.attributes["styledButtonVisuals"] = resolved
         resolved.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
@@ -40,7 +42,17 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes["opacity"] = op
         }
         resolved.padding?.let { nativeWidget.padding = it }
-        nativeWidget.notifyTreeInvalidated()
+        nativeWidget.notifyTreeInvalidated(visualOnly = visualOnly)
+    }
+
+    override fun applyComponentStyle(style: com.nexustools.genericui.style.css.ComponentStyle) {
+        cachedResolvedVisuals = null
+        super<DesktopButtonNativeImpl>.applyComponentStyle(style)
+    }
+
+    override fun applyComputedStyle(style: com.nexustools.genericui.style.css.ComputedStyle) {
+        cachedResolvedVisuals = null
+        super<DesktopButtonNativeImpl>.applyComputedStyle(style)
     }
 
     override fun setBaseVisuals(visuals: StyledVisualSpec) {
@@ -88,7 +100,7 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
         val changed = isHoveredState() != effective
         super<DesktopButtonNativeImpl>.setHoveredState(effective)
         if (changed) {
-            syncResolvedVisualsToWidget()
+            syncResolvedVisualsToWidget(visualOnly = true)
         }
     }
 
@@ -97,7 +109,7 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
         val changed = isFocusedState() != effective
         super<DesktopButtonNativeImpl>.setFocusedState(effective)
         if (changed) {
-            syncResolvedVisualsToWidget()
+            syncResolvedVisualsToWidget(visualOnly = true)
         }
     }
 
@@ -106,7 +118,7 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
         val changed = isActivePressedState() != effective
         super<DesktopButtonNativeImpl>.setActivePressedState(effective)
         if (changed) {
-            syncResolvedVisualsToWidget()
+            syncResolvedVisualsToWidget(visualOnly = true)
         }
     }
 
@@ -119,6 +131,7 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun resolveCurrentVisuals(): StyledVisualSpec {
+        cachedResolvedVisuals?.let { return it }
         val computed = getComputedStyle()
         val computedBase = StyledVisualSpec.fromComponentAndComputed(lastComponentStyle, computed)
         var effective = computedBase.mergeWith(baseVisuals)
@@ -126,6 +139,7 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
         if (!nativeWidget.enabled) {
             val computedDisabled = computed?.disabledStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
             effective = effective.mergeWith(computedDisabled).mergeWith(disabledVisuals)
+            cachedResolvedVisuals = effective
             return effective
         }
 
@@ -144,6 +158,7 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
             effective = effective.mergeWith(computedActive).mergeWith(activeVisuals)
         }
 
+        cachedResolvedVisuals = effective
         return effective
     }
 }

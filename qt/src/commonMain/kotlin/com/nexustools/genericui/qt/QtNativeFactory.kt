@@ -61,10 +61,7 @@ import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
 
 /**
  * Qt 6 (`:qt`) implementation of [NativeFactory] backed by native `QWidget` / `QMainWindow` / `QDockWidget`
- * controls, `QPainter` (`Canvas2D`), `QOpenGLWidget` (`GLCanvas` using OpenGL ES 3.0 / Google ANGLE on Windows),
- * `QVulkanWindow` (`VKCanvas`), VLC (`libvlc` with Vulkan `#version 450` SPIR-V primary and OpenGL ES
- * `#version 300 es` fallback for `VideoPlayer` / `AudioPlayer`), `QWebEngineView`, and `QImage` +
- * `libjpeg-turbo` ([QtQImageCodecNativeImpl]).
+ * controls and `QImage` + `libjpeg-turbo` ([QtQImageCodecNativeImpl]).
  */
 class QtNativeFactory : NativeFactory {
 
@@ -120,10 +117,10 @@ class QtNativeFactory : NativeFactory {
         DesktopToolPaletteNativeImpl(QtWidgetHandle("QToolBar_ToolPalette"))
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
-        DesktopContainerNativeImpl(QtWidgetHandle("QWidget_QBoxLayout"), classPrefix)
+        QtContainerNativeImpl(QtWidgetHandle("QWidget_QBoxLayout"), classPrefix)
 
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
-        DesktopStyledContainerNativeImpl(QtWidgetHandle("QWidget_StyledContainer"), classPrefix)
+        QtStyledContainerNativeImpl(QtWidgetHandle("QWidget_StyledContainer"), classPrefix, tagName)
 
     override fun createBookContainer(): BookContainerNativeImpl<*> =
         DesktopBookContainerNativeImpl(QtWidgetHandle("QPrintPreviewWidget"))
@@ -147,10 +144,10 @@ class QtNativeFactory : NativeFactory {
         DesktopTableNativeImpl(QtWidgetHandle("QTableWidget"))
 
     override fun createButton(classPrefix: String): ButtonNativeImpl<*> =
-        DesktopButtonNativeImpl(QtWidgetHandle("QPushButton"), classPrefix)
+        QtButtonNativeImpl(QtWidgetHandle("QPushButton"), classPrefix)
 
     override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> =
-        DesktopStyledButtonNativeImpl(QtWidgetHandle("QPushButton_Styled"), classPrefix)
+        QtStyledButtonNativeImpl(QtWidgetHandle("QPushButton_Styled"), classPrefix)
 
     override fun createDropdown(): DropdownNativeImpl<*> =
         DesktopDropdownNativeImpl(QtWidgetHandle("QToolButton_MenuButtonPopup"))

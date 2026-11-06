@@ -5,6 +5,7 @@ import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.enums.ui.Orientation
 import com.nexustools.genericui.nativeimpl.lazy.LazyListNativeImpl
+import kotlin.math.roundToInt
 
 /**
  * Shared desktop base implementation of [LazyListNativeImpl] backed by [DesktopLazyViewportEngine].
@@ -75,6 +76,9 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["leadingSpacerPx"] = this.leadingSpacerPx
         nativeWidget.attributes["trailingSpacerPx"] = this.trailingSpacerPx
         nativeWidget.attributes["totalContentExtentPx"] = this.totalContentExtentPx
+        nativeWidget.attributes["hostSyncedScrollOffsetPx"] = viewportEngine.scrollOffsetPx.roundToInt()
+        nativeWidget.attributes["hostSyncedScrollVer"] = ((nativeWidget.attributes["hostSyncedScrollVer"] as? Long) ?: 0L) + 1L
+        nativeWidget.notifyTreeInvalidated()
     }
 
     override fun setOnViewportScrollChanged(listener: ((scrollOffsetPx: Float, viewportExtentPx: Float) -> Unit)?) {
@@ -103,6 +107,7 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["totalItemCount"] = viewportEngine.itemCount
         itemFactoryFn = itemFactory
         rematerializeVisibleWindow()
+        nativeWidget.notifyTreeInvalidated()
     }
 
     override fun notifyItemRangeChanged(startIndex: Int, count: Int) {
@@ -110,10 +115,13 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
             materializedItems.remove(i)?.let { removeChildNative(it) }
         }
         rematerializeVisibleWindow()
+        nativeWidget.notifyTreeInvalidated()
     }
 
     override fun scrollToIndex(index: Int) {
         viewportEngine.scrollOffsetPx = viewportEngine.computeScrollOffsetForIndex(index)
+        nativeWidget.attributes["hostSyncedScrollOffsetPx"] = viewportEngine.scrollOffsetPx.roundToInt()
+        nativeWidget.attributes["hostSyncedScrollVer"] = ((nativeWidget.attributes["hostSyncedScrollVer"] as? Long) ?: 0L) + 1L
         explicitViewportWindowProvided = false
         rematerializeVisibleWindow()
     }
@@ -148,15 +156,22 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
 
         val toEvict = materializedItems.keys.filter { it !in visibleRange }
         for (idx in toEvict) {
-            materializedItems.remove(idx)?.let { removeChildNative(it) }
+            materializedItems.remove(idx)?.let { evicted ->
+                if (evicted in childImpls) {
+                    removeChildNative(evicted)
+                }
+            }
         }
         for (idx in visibleRange) {
             if (idx !in materializedItems) {
                 val created = factory(idx)
                 materializedItems[idx] = created
-                val insertAt = (idx - visibleRange.first).coerceAtLeast(0)
-                addChildNative(created, insertAt)
+                if (created !in childImpls) {
+                    val insertAt = (idx - visibleRange.first).coerceAtLeast(0)
+                    addChildNative(created, insertAt)
+                }
             }
         }
+        nativeWidget.notifyTreeInvalidated()
     }
 }

@@ -1,5 +1,6 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.enums.bootstrap.*
 import com.nexustools.genericui.enums.css.CssCursor
@@ -22,6 +23,7 @@ import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.style.mapper.BootstrapClassMapper
 import com.nexustools.genericui.style.mapper.BootstrapStyleSnapshot
 import com.nexustools.genericui.style.theme.SystemThemeDetector
+import com.nexustools.genericui.style.transition.CssTransitionSpec
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
@@ -82,6 +84,7 @@ open class SwingBaseNativeImpl(
         val mouseAdapter = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
+                if (com.nexustools.genericui.event.PopupMouseCaptureManager.interceptClick(e.x.toFloat(), e.y.toFloat(), this@SwingBaseNativeImpl)) return
                 if (e.clickCount >= 2) {
                     onDoubleClickListener?.invoke()
                 } else if (e.button == MouseEvent.BUTTON1) {
@@ -91,6 +94,7 @@ open class SwingBaseNativeImpl(
 
             override fun mousePressed(e: MouseEvent) {
                 if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
+                if (com.nexustools.genericui.event.PopupMouseCaptureManager.interceptPointerDown(e.x.toFloat(), e.y.toFloat(), this@SwingBaseNativeImpl)) return
                 val pe = toPointerEvent(e)
                 onPointerDownListener?.invoke(pe)
                 if (e.isPopupTrigger || e.button == MouseEvent.BUTTON3) {
@@ -100,6 +104,7 @@ open class SwingBaseNativeImpl(
 
             override fun mouseReleased(e: MouseEvent) {
                 if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
+                if (com.nexustools.genericui.event.PopupMouseCaptureManager.interceptPointerUp(e.x.toFloat(), e.y.toFloat(), this@SwingBaseNativeImpl)) return
                 val pe = toPointerEvent(e)
                 onPointerUpListener?.invoke(pe)
                 if (e.isPopupTrigger) {
@@ -154,14 +159,28 @@ open class SwingBaseNativeImpl(
     }
 
     protected open fun syncSwingAppearance() {
-        val isDark = SystemThemeDetector.detectSystemTheme() == ThemeMode.DARK
+        val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
+        val isDark = effectiveTheme == ThemeMode.DARK
+        nativeWidget.putClientProperty("effectiveThemeMode", effectiveTheme)
+        nativeWidget.putClientProperty("themeMode", if (isDark) "dark" else "light")
+        // Desktop policy: backdrop-filter blur is explicitly ignored on desktop.
+        nativeWidget.putClientProperty("backdropBlurPx", null)
+        nativeWidget.putClientProperty("backdrop-filter", null)
+        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
+
         val semanticType = styleSnapshot.type?.takeIf { it.isSemantic }
             ?: styleSnapshot.backgroundType?.takeIf { it.isSemantic }
-        val bgRgba = customBackgroundColor
+        val explicitBg = customBackgroundColor
             ?: lastComponentStyle?.backgroundColor
+            ?: lastComputedStyle?.backgroundColor
+        val hasExplicitOrSemanticBg = explicitBg != null || semanticType != null
+        nativeWidget.putClientProperty("useSystemControlAppearance", if (hasExplicitOrSemanticBg) "false" else "true")
+
+        val bgRgba = explicitBg
             ?: semanticType?.let { BootstrapColorPalette.resolveColor(it, isDark) }
         val fgRgba = customTextColor
             ?: lastComponentStyle?.color
+            ?: lastComputedStyle?.textColor
             ?: styleSnapshot.textColorType?.takeIf { it.isSemantic }?.let { BootstrapColorPalette.resolveColor(it, isDark) }
             ?: semanticType?.let {
                 if (styleSnapshot.outline) BootstrapColorPalette.resolveColor(it, isDark)
@@ -173,13 +192,23 @@ open class SwingBaseNativeImpl(
             nativeWidget.isOpaque = bgRgba.a > 0
             (nativeWidget as? JButton)?.isContentAreaFilled = true
         } else {
-            nativeWidget.background = defaultComponentBackground
+            nativeWidget.background = when {
+                isDark && nativeWidget is JButton -> Color(45, 45, 50)
+                isDark -> Color(30, 30, 34)
+                nativeWidget is JButton -> defaultComponentBackground ?: Color(250, 250, 252)
+                else -> defaultComponentBackground ?: Color(245, 245, 247)
+            }
+            (nativeWidget as? JButton)?.isContentAreaFilled = true
         }
 
         if (fgRgba != null) {
             nativeWidget.foreground = Color(fgRgba.r.coerceIn(0, 255), fgRgba.g.coerceIn(0, 255), fgRgba.b.coerceIn(0, 255), fgRgba.a.coerceIn(0, 255))
         } else {
-            nativeWidget.foreground = defaultComponentForeground
+            nativeWidget.foreground = if (isDark) {
+                Color(235, 235, 240)
+            } else {
+                defaultComponentForeground ?: Color(28, 28, 30)
+            }
         }
 
         if (styleSnapshot.display == DisplayMode.NONE || styleSnapshot.visibility == BootstrapVisibility.INVISIBLE) {
@@ -187,7 +216,22 @@ open class SwingBaseNativeImpl(
         }
         styleSnapshot.opacity?.let {
             opacityVal = it.alpha.coerceIn(0f, 1f)
+            nativeWidget.putClientProperty("opacity", opacityVal)
         }
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        if (
+            name.equals("backdropBlurPx", ignoreCase = true) ||
+            name.equals("backdrop-filter", ignoreCase = true) ||
+            name.equals("-webkit-backdrop-filter", ignoreCase = true)
+        ) {
+            nativeWidget.putClientProperty("backdropBlurPx", null)
+            nativeWidget.putClientProperty("backdrop-filter", null)
+            nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
+            return
+        }
+        nativeWidget.putClientProperty(name, value)
     }
 
     override fun setClass(className: String) {
@@ -400,6 +444,8 @@ open class SwingBaseNativeImpl(
 
     override fun setOpacity(opacity: Float) {
         opacityVal = opacity.coerceIn(0f, 1f)
+        nativeWidget.putClientProperty("opacity", opacityVal)
+        nativeWidget.repaint()
     }
 
     override fun getOpacity(): Float = opacityVal
@@ -444,6 +490,9 @@ open class SwingBaseNativeImpl(
 
     override fun applyComputedStyle(style: ComputedStyle) {
         lastComputedStyle = style
+        nativeWidget.putClientProperty("backdropBlurPx", null)
+        nativeWidget.putClientProperty("backdrop-filter", null)
+        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
         style.backgroundColor?.let { c ->
             val alpha = c.a.coerceIn(0, 255)
             nativeWidget.background = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), alpha)
@@ -457,8 +506,39 @@ open class SwingBaseNativeImpl(
             val currentFont = nativeWidget.font ?: Font("SansSerif", Font.PLAIN, 14)
             nativeWidget.font = currentFont.deriveFont(sz)
         }
-        style.opacity.let { opacityVal = it.coerceIn(0f, 1f) }
+        style.opacity.let {
+            opacityVal = it.coerceIn(0f, 1f)
+            nativeWidget.putClientProperty("opacity", opacityVal)
+        }
         style.customCursor?.let { setCustomCursor(it) }
+        syncSwingAppearance()
+    }
+
+    override fun supportsNativeTransitions(): Boolean = true
+
+    override fun configureNativeTransitions(specs: List<CssTransitionSpec>) {
+        nativeWidget.putClientProperty("nativeTransitionSpecs", specs)
+    }
+
+    override fun runNativeTransition(
+        property: String,
+        fromValue: String?,
+        toValue: String,
+        spec: CssTransitionSpec,
+        onComplete: () -> Unit
+    ): Boolean {
+        nativeWidget.putClientProperty("activeNativeTransition:$property", "$fromValue->$toValue@${spec.durationMs}ms")
+        if (property.equals("opacity", ignoreCase = true)) {
+            val fromAlpha = (fromValue?.toFloatOrNull() ?: opacityVal).coerceIn(0f, 1f)
+            val targetAlpha = (toValue.toFloatOrNull() ?: opacityVal).coerceIn(0f, 1f)
+            nativeWidget.putClientProperty("transitionFromOpacity", fromAlpha)
+            nativeWidget.putClientProperty("transitionToOpacity", targetAlpha)
+            setOpacity(targetAlpha)
+            if (spec.durationMs <= 0f) {
+                onComplete()
+            }
+        }
+        return true
     }
 
     override fun setOnClick(listener: (() -> Unit)?) { onClickListener = listener }
@@ -504,14 +584,18 @@ open class SwingBaseNativeImpl(
         )
     }
 
-    private fun toKeyEvent(e: java.awt.event.KeyEvent): KeyEvent =
-        KeyEvent(
+    private fun toKeyEvent(e: java.awt.event.KeyEvent): KeyEvent {
+        val isTextComp = e.component is javax.swing.text.JTextComponent
+        com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = isTextComp
+        return KeyEvent(
             key = java.awt.event.KeyEvent.getKeyText(e.keyCode),
             code = e.keyCode.toString(),
             keyCode = e.keyCode,
             ctrlKey = e.isControlDown,
             shiftKey = e.isShiftDown,
             altKey = e.isAltDown,
-            metaKey = e.isMetaDown
+            metaKey = e.isMetaDown,
+            isTargetTextInput = isTextComp
         )
+    }
 }

@@ -176,8 +176,13 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         } else {
             size
         }
+        val prevSize = currentWindowSize
+        val boundsUnchanged = nativeWidget.bounds.width == clamped.width && nativeWidget.bounds.height == clamped.height
         currentWindowSize = clamped
         nativeWidget.bounds = Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, clamped.width, clamped.height)
+        if (prevSize == clamped && boundsUnchanged) {
+            return
+        }
         onWindowResizeListener?.invoke(
             WindowConfiguration(
                 widthPx = clamped.width,
@@ -194,6 +199,10 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     override fun setWindowState(state: WindowState) {
         currentWindowState = state
         fullscreenFlag = (state == WindowState.FULLSCREEN)
+        if (!fullscreenFlag) {
+            fullscreenElementImpl = null
+            nativeWidget.attributes.remove("fullscreenElement")
+        }
         nativeWidget.attributes["windowState"] = state
     }
 
@@ -217,6 +226,7 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         if (elementImpl != null) {
             nativeWidget.attributes["fullscreenElement"] = elementImpl.nativeWidget
         } else {
+            fullscreenFlag = false
             nativeWidget.attributes.remove("fullscreenElement")
         }
         setFullscreen(elementImpl != null, cutoutMode)

@@ -117,7 +117,7 @@ class WindowsHttpClientNativeImpl(
         val raw = when {
             trimmedUrl.startsWith("http://", ignoreCase = true) -> executeWinSockHttp(request, trimmedUrl)
             trimmedUrl.startsWith("https://", ignoreCase = true) -> {
-                if (request.headers.containsKey("X-Episode-Caster-Client-Id") || trimmedUrl.contains("/v1/")) {
+                if (trimmedUrl.contains("/v1/")) {
                     WindowsHttpResponseNativeImpl(
                         statusCode = 0,
                         statusText = "Connection failed: HTTPS not available",
@@ -198,7 +198,6 @@ class WindowsHttpClientNativeImpl(
         suspend fun handleConnectionFailure(reason: String): HttpResponse {
             val isSyntheticUnitTest = (host == "127.0.0.1" || host.equals("localhost", ignoreCase = true)) &&
                 port == 8080 &&
-                request.headers["X-Episode-Caster-Client-Id"] == null &&
                 !pathAndQuery.startsWith("/v1/")
             if (isSyntheticUnitTest) {
                 return super.execute(request)

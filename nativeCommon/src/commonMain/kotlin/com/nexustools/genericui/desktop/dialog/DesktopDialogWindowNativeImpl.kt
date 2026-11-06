@@ -31,6 +31,8 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
     protected var ownerWindowRef: WindowNativeImpl<*>? = null
     protected var onDialogClosedListener: (() -> Unit)? = null
     private var hasExplicitBounds: Boolean = false
+    private var isDialogShown: Boolean = false
+    private var isDialogVisible: Boolean = false
 
     var boundsWidth: Int = 560
         protected set
@@ -56,20 +58,26 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["minimizable"] = false
         nativeWidget.attributes["maximizable"] = false
         nativeWidget.attributes["closable"] = true
+        nativeWidget.attributes["dismissOnBackdropClick"] = true
         nativeWidget.attributes["modal"] = modalState
+        nativeWidget.attributes["backdropBlurPx"] = if (modalState) 6 else 0
         nativeWidget.attributes["presentationStyle"] = presentationStyleState
     }
 
     override fun setVisible(visible: Boolean) {
-        super.setVisible(visible)
-        if (visible) {
+        val changed = isDialogVisible != visible || nativeWidget.visible != visible
+        isDialogVisible = visible
+        nativeWidget.visible = visible
+        if (visible && isDialogShown) {
             if (!activeDialogs.contains(this)) {
                 activeDialogs.add(this)
             }
-        } else {
+        } else if (!visible) {
             activeDialogs.remove(this)
         }
-        nativeWidget.notifyTreeInvalidated()
+        if (changed) {
+            notifyTreeInvalidated()
+        }
     }
 
     override fun setTitle(title: String) {
@@ -90,11 +98,33 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
     override fun setModal(modal: Boolean) {
         modalState = modal
         nativeWidget.attributes["modal"] = modal
+        nativeWidget.attributes["backdropBlurPx"] = if (modal) 6 else 0
+    }
+
+    fun isBackdropDismissAllowed(): Boolean =
+        modalState &&
+            (nativeWidget.attributes["closable"] as? Boolean ?: true) &&
+            (nativeWidget.attributes["dismissOnBackdropClick"] as? Boolean ?: true)
+
+    fun dismissOnBackdropClick(): Boolean {
+        if (!isBackdropDismissAllowed()) return false
+        closeDialog()
+        return true
     }
 
     override fun setFullscreen(fullscreen: Boolean) {
         fullscreenState = fullscreen
         nativeWidget.attributes["fullscreen"] = fullscreen
+    }
+
+    override fun setBounds(x: Int, y: Int, width: Int, height: Int) {
+        hasExplicitBounds = true
+        nativeWidget.attributes["hasExplicitBounds"] = true
+        boundsWidth = width
+        boundsHeight = height
+        nativeWidget.bounds = Rect(x.toFloat(), y.toFloat(), width.toFloat(), height.toFloat())
+        nativeWidget.subtreeMutationVersion = ++DesktopNativeWidget.globalTreeMutationVersion
+        notifyTreeInvalidated()
     }
 
     override fun setPreferredSize(size: Size?) {
@@ -109,6 +139,8 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
             boundsHeight = size.height
             nativeWidget.bounds = Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, size.width, size.height)
         }
+        nativeWidget.subtreeMutationVersion = ++DesktopNativeWidget.globalTreeMutationVersion
+        notifyTreeInvalidated()
     }
 
     open fun bringToFront() {
@@ -125,13 +157,21 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["ownerWindow"] = ownerWindow
         nativeWidget.attributes["attachedToMainWindow"] = ownerWindow != null
         nativeWidget.attributes["transientFor"] = desktopOwner?.nativeWidget
-        setVisible(true)
+        isDialogShown = true
+        isDialogVisible = true
+        super.setVisible(true)
+        if (!activeDialogs.contains(this)) {
+            activeDialogs.add(this)
+        }
         bringToFront()
         onShowDialogHook?.invoke(this, desktopOwner)
+        notifyTreeInvalidated()
     }
 
     override fun closeDialog() {
         val wasVisible = isVisible() || activeDialogs.contains(this)
+        isDialogShown = false
+        isDialogVisible = false
         setVisible(false)
         activeDialogs.remove(this)
         (ownerWindowRef as? DesktopWindowNativeImpl<*>)?.unregisterOwnedDialogWindow(this)
@@ -146,6 +186,8 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun dispose() {
+        isDialogShown = false
+        isDialogVisible = false
         (ownerWindowRef as? DesktopWindowNativeImpl<*>)?.unregisterOwnedDialogWindow(this)
         activeDialogs.remove(this)
         onCloseDialogHook?.invoke(this)

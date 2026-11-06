@@ -4,6 +4,7 @@ import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.enums.ui.ObjectFit
 import com.nexustools.genericui.image.ImageBuffer
+import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.content.ImageNativeImpl
 import com.nexustools.genericui.style.color.ImageTintMode
 import com.nexustools.genericui.style.color.RgbaColor
@@ -33,6 +34,7 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
     protected var cssFilterState: CssFilter? = null
     protected var onLoadListener: (() -> Unit)? = null
     protected var onErrorListener: (() -> Unit)? = null
+    protected var loadGeneration: Int = 0
 
     var loadedImageBuffer: ImageBuffer? = null
     var activeLoadJob: Job? = null
@@ -42,10 +44,19 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun setSourceUrl(url: String?) {
+        val trimmed = url?.trim()
+        if (!trimmed.isNullOrEmpty() && trimmed.startsWith("memory://", ignoreCase = true)) {
+            ImageLoader.resolveMemoryBuffer(trimmed)?.let {
+                setImageBuffer(it)
+                return
+            }
+        }
         if (sourceUrlState != url) {
+            loadGeneration++
             activeLoadJob?.cancel()
             activeLoadJob = null
             loadedImageBuffer = null
+            nativeWidget.attributes.remove("imageBuffer")
         }
         sourceUrlState = url
         nativeWidget.attributes["sourceUrl"] = url
@@ -58,6 +69,32 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun getSourceUrl(): String? = sourceUrlState
+
+    override fun setImageBuffer(buffer: ImageBuffer?) {
+        loadGeneration++
+        activeLoadJob?.cancel()
+        activeLoadJob = null
+        if (buffer == null) {
+            sourceUrlState = null
+            loadedImageBuffer = null
+            loadingState = false
+            nativeWidget.attributes["sourceUrl"] = null
+            nativeWidget.attributes.remove("imageBuffer")
+            nativeWidget.attributes["isLoading"] = false
+            notifyTreeInvalidated()
+            return
+        }
+        val memoryUri = "memory://imagebuffer/${buffer.width}x${buffer.height}@${buffer.hashCode()}"
+        ImageLoader.registerMemoryBuffer(memoryUri, buffer)
+        sourceUrlState = memoryUri
+        loadedImageBuffer = buffer
+        loadingState = false
+        nativeWidget.attributes["sourceUrl"] = memoryUri
+        nativeWidget.attributes["imageBuffer"] = buffer
+        nativeWidget.attributes["isLoading"] = false
+        notifyTreeInvalidated()
+        onLoadListener?.invoke()
+    }
 
     override fun setPlaceholderUrl(url: String?) {
         placeholderUrlState = url

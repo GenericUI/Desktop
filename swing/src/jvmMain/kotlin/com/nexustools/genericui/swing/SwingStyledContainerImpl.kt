@@ -1,5 +1,6 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.enums.css.CssBorderStyle
 import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.nativeimpl.layout.StyledContainerNativeImpl
@@ -22,6 +23,7 @@ import java.awt.Graphics2D
 import java.awt.LinearGradientPaint
 import java.awt.RadialGradientPaint
 import java.awt.RenderingHints
+import java.awt.geom.Path2D
 import java.awt.geom.Point2D
 import java.awt.geom.RoundRectangle2D
 import javax.swing.BorderFactory
@@ -35,7 +37,8 @@ import kotlin.math.sin
  * [Gradient.LinearGradient] / [Gradient.RadialGradient], and rounded border rendering.
  */
 class SwingStyledContainerImpl(
-    classPrefix: String = "styled-container"
+    classPrefix: String = "styled-container",
+    val tagName: String = "div"
 ) : SwingContainerImpl(
     classPrefix,
     object : JPanel(BorderLayout()) {
@@ -46,7 +49,23 @@ class SwingStyledContainerImpl(
             val spec = provider?.invoke()
                 ?: (getClientProperty("styledVisuals") as? StyledVisualSpec)
                 ?: StyledVisualSpec.EMPTY
-            paintStyledSurface(g, width, height, spec, hasFocus())
+            val componentOpacity = (getClientProperty("opacity") as? Float) ?: 1f
+            val pointerSide = getClientProperty("pointerSide") as? String
+            val pointerOffset = (getClientProperty("pointerOffset") as? String)?.toFloatOrNull() ?: 0.5f
+            val pointerWidthPx = (getClientProperty("pointerWidthPx") as? String)?.toFloatOrNull() ?: 12f
+            val pointerHeightPx = (getClientProperty("pointerHeightPx") as? String)?.toFloatOrNull() ?: 8f
+            paintStyledSurface(
+                g = g,
+                width = width,
+                height = height,
+                spec = spec,
+                isFocused = hasFocus(),
+                componentOpacity = componentOpacity,
+                pointerSide = pointerSide,
+                pointerOffset = pointerOffset,
+                pointerWidthPx = pointerWidthPx,
+                pointerHeightPx = pointerHeightPx
+            )
         }
 
         override fun getPreferredSize(): Dimension {
@@ -66,11 +85,27 @@ class SwingStyledContainerImpl(
     init {
         nativeWidget.isOpaque = false
         nativeWidget.putClientProperty("antialiasing", true)
+        nativeWidget.putClientProperty("tagName", tagName)
         nativeWidget.putClientProperty("styledVisualsProvider", { getStyledVisuals() })
     }
 
+    override fun setAttribute(name: String, value: String?) {
+        super<SwingContainerImpl>.setAttribute(name, value)
+        nativeWidget.repaint()
+    }
+
     protected fun applyStyledVisuals(visuals: StyledVisualSpec) {
+        nativeWidget.putClientProperty("backdropBlurPx", null)
+        nativeWidget.putClientProperty("backdrop-filter", null)
+        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
         nativeWidget.putClientProperty("styledVisuals", visuals)
+        nativeWidget.putClientProperty("backgroundColor", visuals.backgroundColor)
+        nativeWidget.putClientProperty("backgroundGradient", visuals.backgroundGradient)
+        nativeWidget.putClientProperty("textColor", visuals.textColor)
+        nativeWidget.putClientProperty("borderColor", visuals.borderColor)
+        nativeWidget.putClientProperty("borderWidthPx", visuals.borderWidthPx)
+        nativeWidget.putClientProperty("borderStyle", visuals.borderStyle)
+        nativeWidget.putClientProperty("borderRadiusPx", visuals.borderRadiusPx)
         val bg = visuals.backgroundColor
         if (bg != null) {
             nativeWidget.background = Color(
@@ -116,7 +151,7 @@ class SwingStyledContainerImpl(
     }
 
     override fun getStyledVisuals(): StyledVisualSpec {
-        val isDark = SystemThemeDetector.detectSystemTheme() == ThemeMode.DARK
+        val isDark = (Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()) == ThemeMode.DARK
         val computedBase = StyledVisualSpec.fromComponentAndComputed(
             componentStyle = lastComponentStyle,
             computedStyle = lastComputedStyle,
@@ -142,14 +177,26 @@ class SwingStyledContainerImpl(
     }
 
     companion object {
-        internal fun paintStyledSurface(g: Graphics, width: Int, height: Int, spec: StyledVisualSpec, isFocused: Boolean = false) {
+        internal fun paintStyledSurface(
+            g: Graphics,
+            width: Int,
+            height: Int,
+            spec: StyledVisualSpec,
+            isFocused: Boolean = false,
+            componentOpacity: Float = 1f,
+            pointerSide: String? = null,
+            pointerOffset: Float = 0.5f,
+            pointerWidthPx: Float = 12f,
+            pointerHeightPx: Float = 8f
+        ) {
             if (width <= 0 || height <= 0) return
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
                 g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
-                val op = (spec.opacity ?: 1f).coerceIn(0f, 1f)
+                val op = ((spec.opacity ?: 1f) * componentOpacity).coerceIn(0f, 1f)
+                if (op <= 0.001f) return
                 if (op < 0.999f) {
                     g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, op)
                 }
@@ -158,15 +205,56 @@ class SwingStyledContainerImpl(
 
                 val grad = spec.backgroundGradient
                 val bg = spec.backgroundColor
-                if (grad != null) {
-                    val paint = toAwtPaint(grad, width.toFloat(), height.toFloat())
-                    if (paint != null) {
-                        g2.paint = paint
-                        g2.fill(shape)
-                    }
-                } else if (bg != null && bg.a > 0) {
-                    g2.color = toAwtColor(bg)
+                val fillPaint: java.awt.Paint? = when {
+                    grad != null -> toAwtPaint(grad, width.toFloat(), height.toFloat())
+                    bg != null && bg.a > 0 -> toAwtColor(bg)
+                    else -> null
+                }
+                if (fillPaint != null) {
+                    g2.paint = fillPaint
                     g2.fill(shape)
+                }
+
+                // Render TextBubble pointer triangle when configured
+                if (!pointerSide.isNullOrBlank() && pointerSide != "none" && pointerWidthPx > 0f && pointerHeightPx > 0f) {
+                    val clampedOffset = pointerOffset.coerceIn(0.1f, 0.9f)
+                    val triangle = Path2D.Float()
+                    when (pointerSide.lowercase()) {
+                        "bottom" -> {
+                            val cx = width * clampedOffset
+                            val baseY = (height - 1).toFloat()
+                            triangle.moveTo((cx - pointerWidthPx / 2f).toDouble(), baseY.toDouble())
+                            triangle.lineTo(cx.toDouble(), (baseY + pointerHeightPx).toDouble())
+                            triangle.lineTo((cx + pointerWidthPx / 2f).toDouble(), baseY.toDouble())
+                            triangle.closePath()
+                        }
+                        "top" -> {
+                            val cx = width * clampedOffset
+                            triangle.moveTo((cx - pointerWidthPx / 2f).toDouble(), 0.5)
+                            triangle.lineTo(cx.toDouble(), (0.5f - pointerHeightPx).toDouble())
+                            triangle.lineTo((cx + pointerWidthPx / 2f).toDouble(), 0.5)
+                            triangle.closePath()
+                        }
+                        "left" -> {
+                            val cy = height * clampedOffset
+                            triangle.moveTo(0.5, (cy - pointerWidthPx / 2f).toDouble())
+                            triangle.lineTo((0.5f - pointerHeightPx).toDouble(), cy.toDouble())
+                            triangle.lineTo(0.5, (cy + pointerWidthPx / 2f).toDouble())
+                            triangle.closePath()
+                        }
+                        "right" -> {
+                            val cy = height * clampedOffset
+                            val baseX = (width - 1).toFloat()
+                            triangle.moveTo(baseX.toDouble(), (cy - pointerWidthPx / 2f).toDouble())
+                            triangle.lineTo((baseX + pointerHeightPx).toDouble(), cy.toDouble())
+                            triangle.lineTo(baseX.toDouble(), (cy + pointerWidthPx / 2f).toDouble())
+                            triangle.closePath()
+                        }
+                    }
+                    if (fillPaint != null) {
+                        g2.paint = fillPaint
+                        g2.fill(triangle)
+                    }
                 }
 
                 val borderW = spec.borderWidthPx ?: 0f

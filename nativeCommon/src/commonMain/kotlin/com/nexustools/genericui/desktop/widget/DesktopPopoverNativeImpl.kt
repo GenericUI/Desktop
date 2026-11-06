@@ -31,9 +31,23 @@ open class DesktopPopoverNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["anchorX"] = x
         nativeWidget.attributes["anchorY"] = y
         setVisible(true)
+        com.nexustools.genericui.event.PopupMouseCaptureManager.registerNativePopup(
+            nativePopup = this,
+            hitTester = { px, py, target ->
+                nativeWidget.containsNativeWidget(target) ||
+                    (!px.isNaN() && !py.isNaN() && nativeWidget.bounds.width > 0 && nativeWidget.bounds.height > 0 && nativeWidget.bounds.contains(px.toInt(), py.toInt()))
+            },
+            onDismiss = { hide() }
+        )
     }
 
     override fun hide() {
+        com.nexustools.genericui.event.PopupMouseCaptureManager.unregisterNativePopup(this)
         setVisible(false)
+    }
+
+    override fun dispose() {
+        com.nexustools.genericui.event.PopupMouseCaptureManager.unregisterNativePopup(this)
+        super.dispose()
     }
 }

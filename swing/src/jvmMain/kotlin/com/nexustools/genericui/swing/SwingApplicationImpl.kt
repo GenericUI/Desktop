@@ -27,6 +27,9 @@ class SwingApplicationImpl : ApplicationNativeImpl<String> {
     override val isDisposed: Boolean
         get() = disposed
 
+    override fun detectSystemThemeMode(): ThemeMode =
+        SystemThemeDetector.overrideDetectedTheme?.takeIf { !it.isAuto } ?: detectJvmSystemTheme()
+
     override fun setThemeMode(mode: ThemeMode) {
         themeMode = mode
         installSwingThemeDetector()
@@ -107,6 +110,9 @@ class SwingApplicationImpl : ApplicationNativeImpl<String> {
 
         fun installSwingThemeDetector() {
             SystemThemeDetector.backendDetector = { detectJvmSystemTheme() }
+            SystemThemeDetector.onThemeAppliedHook = { _, effective ->
+                applySwingThemeDefaults(effective == ThemeMode.DARK)
+            }
         }
 
         fun applySwingThemeDefaults(isDark: Boolean) {

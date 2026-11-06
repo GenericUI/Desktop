@@ -56,9 +56,25 @@ object Win32NativeTitleBarRenderer {
     private val activeStateByHwnd = mutableMapOf<Long, Boolean>()
     private val hoveredNcButtonByHwnd = mutableMapOf<Long, Int>()
     private val pressedNcButtonByHwnd = mutableMapOf<Long, Int>()
+    private val lastSyncedCaptionStyleKeyByHwnd = HashMap<Long, Int>()
 
     private var cachedFluentIconsFont: HFONT? = null
     private var fluentIconsFontResolved: Boolean = false
+
+    private var cachedTitleBarDc: HDC? = null
+    private var cachedTitleBarBmp: HBITMAP? = null
+    private var cachedTitleBarOldBmp: HGDIOBJ? = null
+    private var cachedTitleBarPixels: CPointer<UIntVar>? = null
+    private var cachedTitleBarW: Int = 0
+    private var cachedTitleBarH: Int = 0
+
+    fun clearCachedHwndState(hwnd: HWND?) {
+        if (hwnd == null) {
+            lastSyncedCaptionStyleKeyByHwnd.clear()
+        } else {
+            lastSyncedCaptionStyleKeyByHwnd.remove(hwnd.toLong())
+        }
+    }
 
     fun isWindowActive(hwnd: HWND?): Boolean {
         if (hwnd == null) return true
@@ -80,6 +96,7 @@ object Win32NativeTitleBarRenderer {
         if (hwnd != null) pressedNcButtonByHwnd[hwnd.toLong()] ?: 0 else 0
 
     fun clearWindowState(hwnd: HWND?) {
+        clearCachedHwndState(hwnd)
         if (hwnd == null) {
             hitMapsByHwnd.clear()
             activeStateByHwnd.clear()
@@ -147,6 +164,14 @@ object Win32NativeTitleBarRenderer {
             titleBar?.showMaximizeButton ?: kind.defaultShowMaximizeButton
         }
         val allowClose = titleBar?.showCloseButton ?: kind.defaultShowCloseButton
+
+        val hwndKey = hwnd.toLong()
+        val stateKey = (if (allowMin) 1 else 0) or
+            (if (allowMax) 2 else 0) or
+            (if (allowClose) 4 else 0) or
+            (kind.ordinal shl 3)
+        if (lastSyncedCaptionStyleKeyByHwnd[hwndKey] == stateKey) return
+        lastSyncedCaptionStyleKeyByHwnd[hwndKey] = stateKey
 
         var style = GetWindowLongPtrW(hwnd, GWL_STYLE).toInt()
         style = if (allowMin) style or WS_MINIMIZEBOX else style and WS_MINIMIZEBOX.inv()
@@ -559,31 +584,55 @@ object Win32NativeTitleBarRenderer {
             )
         }
 
-        // Create a 32-bit top-down ARGB DIB section for `[0..width, 0..height]`
-        val bmi = alloc<BITMAPINFO>()
-        bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
-        bmi.bmiHeader.biWidth = width
-        bmi.bmiHeader.biHeight = -height // top-down
-        bmi.bmiHeader.biPlanes = 1u
-        bmi.bmiHeader.biBitCount = 32u
-        bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+        // Reuse or allocate a 32-bit top-down ARGB DIB section for `[0..width, 0..height]`
+        if (cachedTitleBarDc == null || cachedTitleBarBmp == null || cachedTitleBarPixels == null ||
+            cachedTitleBarW != width || cachedTitleBarH != height
+        ) {
+            if (cachedTitleBarDc != null && cachedTitleBarOldBmp != null) {
+                SelectObject(cachedTitleBarDc, cachedTitleBarOldBmp)
+                cachedTitleBarOldBmp = null
+            }
+            if (cachedTitleBarBmp != null) {
+                DeleteObject(cachedTitleBarBmp)
+                cachedTitleBarBmp = null
+            }
+            if (cachedTitleBarDc == null) {
+                cachedTitleBarDc = CreateCompatibleDC(targetHdc)
+            }
+            val dc = cachedTitleBarDc ?: return@memScoped height
+            val bmi = alloc<BITMAPINFO>()
+            bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+            bmi.bmiHeader.biWidth = width
+            bmi.bmiHeader.biHeight = -height // top-down
+            bmi.bmiHeader.biPlanes = 1u
+            bmi.bmiHeader.biBitCount = 32u
+            bmi.bmiHeader.biCompression = BI_RGB.toUInt()
 
-        val bitsPtrVar = alloc<COpaquePointerVar>()
-        val dibDc = CreateCompatibleDC(targetHdc) ?: return@memScoped height
-        val dibBmp = CreateDIBSection(targetHdc, bmi.ptr, DIB_RGB_COLORS.toUInt(), bitsPtrVar.ptr, null, 0u)
-        val pixelsPtr = bitsPtrVar.value?.reinterpret<UIntVar>()
-        if (dibBmp == null || pixelsPtr == null) {
-            if (dibBmp != null) DeleteObject(dibBmp)
-            DeleteDC(dibDc)
-            return@memScoped height
+            val bitsPtrVar = alloc<COpaquePointerVar>()
+            val newBmp = CreateDIBSection(targetHdc, bmi.ptr, DIB_RGB_COLORS.toUInt(), bitsPtrVar.ptr, null, 0u)
+            val newPixels = bitsPtrVar.value?.reinterpret<UIntVar>()
+            if (newBmp == null || newPixels == null) {
+                if (newBmp != null) DeleteObject(newBmp)
+                cachedTitleBarPixels = null
+                cachedTitleBarW = 0
+                cachedTitleBarH = 0
+                return@memScoped height
+            }
+            cachedTitleBarOldBmp = SelectObject(dc, newBmp)
+            cachedTitleBarBmp = newBmp
+            cachedTitleBarPixels = newPixels
+            cachedTitleBarW = width
+            cachedTitleBarH = height
         }
+
+        val dibDc = cachedTitleBarDc ?: return@memScoped height
+        val pixelsPtr = cachedTitleBarPixels ?: return@memScoped height
 
         val effectiveCaptionFont = if (kind.usesSmallCaptionMetrics) {
             fontSmall ?: fontCaption
         } else {
             fontCaption ?: fontSmall
         }
-        val oldBmp = SelectObject(dibDc, dibBmp)
         val oldFont = SelectObject(dibDc, effectiveCaptionFont)
         SetBkMode(dibDc, TRANSPARENT)
 
@@ -906,9 +955,6 @@ object Win32NativeTitleBarRenderer {
         BitBlt(targetHdc, left, top, width, height, dibDc, 0, 0, SRCCOPY)
 
         SelectObject(dibDc, oldFont)
-        SelectObject(dibDc, oldBmp)
-        DeleteObject(dibBmp)
-        DeleteDC(dibDc)
 
         return@memScoped height
     }

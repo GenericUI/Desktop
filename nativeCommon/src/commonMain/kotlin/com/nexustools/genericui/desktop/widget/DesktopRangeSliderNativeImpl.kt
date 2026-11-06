@@ -29,7 +29,7 @@ open class DesktopRangeSliderNativeImpl<out W : DesktopNativeWidget>(
         if (kotlin.math.abs(currentVal - clamped) > 1e-4) {
             currentVal = clamped
             nativeWidget.attributes["value"] = clamped
-            nativeWidget.notifyTreeInvalidated()
+            nativeWidget.notifyTreeInvalidated(visualOnly = true)
         }
     }
 

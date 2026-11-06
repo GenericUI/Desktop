@@ -625,4 +625,99 @@ class WindowsNativeTitleBarTest {
             WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
         }
     }
+
+    @Test
+    fun testWin32DialogBackdropDismissPopupMouseCaptureAndTextInputFocusTracking() {
+        val prevInteractive = WindowsApplicationNativeImpl.interactiveWin32GuiEnabled
+        WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = false
+        com.nexustools.genericui.event.PopupMouseCaptureManager.clear()
+        com.nexustools.genericui.event.InputFocusManager.reset()
+        try {
+            val factory = WindowsNativeFactory()
+            GenericUI.initialize(factory)
+            GenericUI.activeFactory = factory
+
+            val mainWindow = Window(title = "Main Window")
+            val root = Container("div", "w-100 h-100")
+
+            var underlyingClicks = 0
+            val underlyingButton = Button("Play").apply {
+                onClick = { underlyingClicks++ }
+            }
+
+            var popupChildClicks = 0
+            val popupPanel = Container("div", "settings-panel").apply {
+                hookMouseWhenPopupVisible = true
+                isVisible = false
+            }
+            val popupChildButton = Button("1080p").apply {
+                onClick = { popupChildClicks++ }
+            }
+            popupPanel.addChild(popupChildButton)
+
+            val searchInput = com.nexustools.genericui.component.form.TextField(placeholder = "Search")
+            root.addChild(underlyingButton)
+            root.addChild(popupPanel)
+            root.addChild(searchInput)
+            mainWindow.addChild(root)
+            mainWindow.setContent(root)
+            mainWindow.show(factory)
+
+            val rootImpl = root.ensureNativeImpl() as DesktopBaseNativeImpl<*>
+            val underlyingImpl = underlyingButton.ensureNativeImpl() as DesktopBaseNativeImpl<*>
+            val searchImpl = searchInput.ensureNativeImpl() as com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl<*>
+
+            // 1. Popup Mouse Capture & Outside-Click Swallow
+            popupPanel.isVisible = true
+            assertTrue(com.nexustools.genericui.event.PopupMouseCaptureManager.hasActivePopup)
+            val popupChildImpl = popupChildButton.ensureNativeImpl() as DesktopBaseNativeImpl<*>
+
+            // Clicking a child button inside the popup executes its click handler and keeps the popup open
+            popupChildImpl.dispatchClick()
+            assertEquals(1, popupChildClicks)
+            assertTrue(popupPanel.isVisible)
+
+            // Clicking the underlying button outside the popup swallows the click and dismisses the popup
+            val outsidePt = com.nexustools.genericui.event.PointerEvent(x = 200f, y = 200f)
+            underlyingImpl.dispatchPointerDown(outsidePt)
+            underlyingImpl.dispatchPointerUp(outsidePt)
+            underlyingImpl.dispatchClick()
+            assertEquals(0, underlyingClicks)
+            assertFalse(popupPanel.isVisible)
+            assertFalse(com.nexustools.genericui.event.PopupMouseCaptureManager.hasActivePopup)
+
+            // Subsequent click on the underlying button now fires normally
+            underlyingImpl.dispatchClick()
+            assertEquals(1, underlyingClicks)
+
+            // 2. Modal Dialog Backdrop Dismiss
+            val dialog = DialogWindow(title = "Details", modal = true)
+            dialog.open(mainWindow)
+            assertTrue(dialog.isWindowShown)
+
+            @Suppress("UNCHECKED_CAST")
+            val dialogImpl = dialog.ensureNativeImpl() as DesktopDialogWindowNativeImpl<Win32HwndHandle>
+            assertTrue(dialogImpl.isBackdropDismissAllowed())
+            dialogImpl.dismissOnBackdropClick()
+            assertFalse(dialog.isWindowShown)
+
+            // 3. TextInput Focus & Window Shortcut Suppression
+            var shortcutHits = 0
+            root.onKeyDown = { shortcutHits++ }
+
+            searchImpl.setFocusedState(true)
+            assertTrue(com.nexustools.genericui.event.InputFocusManager.isTypingInTextInput)
+            rootImpl.dispatchKeyDown(com.nexustools.genericui.event.KeyEvent(key = " ", code = "Space"))
+            assertEquals(0, shortcutHits)
+
+            searchImpl.setFocusedState(false)
+            assertFalse(com.nexustools.genericui.event.InputFocusManager.isTypingInTextInput)
+            rootImpl.dispatchKeyDown(com.nexustools.genericui.event.KeyEvent(key = " ", code = "Space"))
+            assertEquals(1, shortcutHits)
+        } finally {
+            com.nexustools.genericui.event.PopupMouseCaptureManager.clear()
+            com.nexustools.genericui.event.InputFocusManager.reset()
+            WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
+        }
+    }
 }

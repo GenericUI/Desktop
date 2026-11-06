@@ -2,6 +2,7 @@ package com.nexustools.genericui.gtk
 
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
+import com.nexustools.genericui.style.transition.CssTransitionSpec
 import com.nexustools.genericui.window.TitleBar
 import com.nexustools.genericui.window.TitleCapabilities
 
@@ -63,5 +64,26 @@ class GtkWindowNativeImpl : DesktopWindowNativeImpl<GtkWidgetHandle>(
         nativeWidget.attributes["decorationLayout"] = titleBar?.controlsPlacement?.name ?: "END"
         val allowMinimize = if (isToolModalWindow) minimizable else (titleBar?.showMinimizeButton ?: true)
         nativeWidget.attributes["gtkButtonsLayout"] = if (allowMinimize) ":minimize,maximize,close" else ":close"
+    }
+
+    override fun runNativeTransition(
+        property: String,
+        fromValue: String?,
+        toValue: String,
+        spec: CssTransitionSpec,
+        onComplete: () -> Unit
+    ): Boolean {
+        val handled = super.runNativeTransition(property, fromValue, toValue, spec, onComplete)
+        if (property.equals("opacity", ignoreCase = true)) {
+            val fromAlpha = (fromValue?.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
+            val targetAlpha = (toValue.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
+            nativeWidget.attributes["transitionFromOpacity"] = fromAlpha
+            nativeWidget.attributes["transitionToOpacity"] = targetAlpha
+            setOpacity(targetAlpha)
+            if (spec.durationMs <= 0f) {
+                onComplete()
+            }
+        }
+        return handled
     }
 }

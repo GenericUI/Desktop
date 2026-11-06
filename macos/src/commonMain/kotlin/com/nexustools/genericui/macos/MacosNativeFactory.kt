@@ -61,10 +61,7 @@ import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
 
 /**
  * macOS (`:macos`) implementation of [NativeFactory] backed by AppKit (`NSWindow`, `NSPanel`, `NSView`,
- * `NSMenu` on `NSApplication.mainMenu`), CoreGraphics (`Canvas2D`), Metal-backed OpenGL ES (`GLCanvas`),
- * MoltenVK (`VK_EXT_metal_surface` for `VKCanvas`), VLC (`libvlc.dylib` with Vulkan `#version 450` SPIR-V
- * primary and OpenGL ES `#version 300 es` fallback for `VideoPlayer` / `AudioPlayer`), `WKWebView`,
- * and Apple `ImageIO` + `libjpeg-turbo` ([MacosImageIoCodecNativeImpl]).
+ * `NSMenu` on `NSApplication.mainMenu`) and Apple `ImageIO` + `libjpeg-turbo` ([MacosImageIoCodecNativeImpl]).
  */
 class MacosNativeFactory : NativeFactory {
 
@@ -122,10 +119,10 @@ class MacosNativeFactory : NativeFactory {
         DesktopToolPaletteNativeImpl(MacosViewHandle("NSView_ToolPalette"))
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
-        DesktopContainerNativeImpl(MacosViewHandle("NSStackView"), classPrefix)
+        MacosContainerNativeImpl(MacosViewHandle("NSStackView"), classPrefix)
 
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
-        DesktopStyledContainerNativeImpl(MacosViewHandle("NSView_StyledContainer"), classPrefix)
+        MacosStyledContainerNativeImpl(MacosViewHandle("NSView_StyledContainer"), classPrefix, tagName)
 
     override fun createBookContainer(): BookContainerNativeImpl<*> =
         DesktopBookContainerNativeImpl(MacosViewHandle("NSView_BookPrintPreview"))
@@ -149,10 +146,10 @@ class MacosNativeFactory : NativeFactory {
         DesktopTableNativeImpl(MacosViewHandle("NSTableView"))
 
     override fun createButton(classPrefix: String): ButtonNativeImpl<*> =
-        DesktopButtonNativeImpl(MacosViewHandle("NSButton"), classPrefix)
+        MacosButtonNativeImpl(MacosViewHandle("NSButton"), classPrefix)
 
     override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> =
-        DesktopStyledButtonNativeImpl(MacosViewHandle("NSButton_Styled"), classPrefix)
+        MacosStyledButtonNativeImpl(MacosViewHandle("NSButton_Styled"), classPrefix)
 
     override fun createDropdown(): DropdownNativeImpl<*> =
         DesktopDropdownNativeImpl(MacosViewHandle("NSPopUpButton_PullDown"))

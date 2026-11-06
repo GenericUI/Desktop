@@ -19,7 +19,7 @@ kotlin {
             implementation(libs.kotlinx.coroutinesSwing)
             implementation(libs.sqlite.jdbc)
 
-            // Optional LWJGL OpenGL ES / OpenGL dependencies for GLCanvas on Java/Swing
+            // Optional LWJGL OpenGL ES / OpenGL dependencies for Canvas3D (GLContext) on Java/Swing
             // Downstream projects opt in via the GenericUI Gradle Plugin (`useLwjglGL = true`) or explicit runtime dependencies
             compileOnly(libs.lwjgl.core)
             compileOnly(libs.lwjgl.jawt)
@@ -27,7 +27,7 @@ kotlin {
             compileOnly(libs.lwjgl.opengles)
             compileOnly(libs.lwjgl.opengl)
 
-            // Optional Vulkan library dependencies for VKCanvas on Java/Swing
+            // Optional Vulkan library dependencies for Canvas3D (VKContext) on Java/Swing
             // Downstream projects opt in via the GenericUI Gradle Plugin (`useVulkan = true`) or explicit runtime dependencies
             compileOnly(libs.lwjgl.vulkan)
             compileOnly(libs.lwjgl.shaderc)

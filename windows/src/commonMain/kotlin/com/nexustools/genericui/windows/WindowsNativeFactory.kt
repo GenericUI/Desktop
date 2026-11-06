@@ -61,10 +61,7 @@ import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
 
 /**
  * Windows (`:windows`) implementation of [NativeFactory] backed by Win32 `HWND` controls (`comctl32.dll`),
- * Direct2D/DirectWrite (`Canvas2D`), Google ANGLE (`libEGL.dll` + `libGLESv2.dll` for `GLCanvas`),
- * Vulkan (`VK_KHR_win32_surface` for `VKCanvas`), VLC (`libvlc` with Vulkan `#version 450` SPIR-V primary
- * and OpenGL ES `#version 300 es` fallback for `VideoPlayer` / `AudioPlayer`), WebView2 (`ICoreWebView2`),
- * and WIC + `libjpeg-turbo` ([WindowsWicImageCodecNativeImpl]).
+ * Direct2D/DirectWrite, and WIC + `libjpeg-turbo` ([WindowsWicImageCodecNativeImpl]).
  */
 class WindowsNativeFactory : NativeFactory {
 

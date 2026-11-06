@@ -43,12 +43,11 @@ import com.nexustools.genericui.nativeimpl.typography.MarkdownViewNativeImpl
 import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
 
 /**
- * Java Swing (`javax.swing.*` + Java2D + `ImageIO` + optional LWJGL OpenGL ES / Vulkan) implementation of [NativeFactory].
+ * Java Swing (`javax.swing.*` + Java2D + `ImageIO`) implementation of [NativeFactory].
  *
  * Uses `JFileChooser` with `FILES_ONLY` and `DIRECTORIES_ONLY` folder mode ([SwingFileBrowserDialogImpl]),
  * `JScrollPane` viewport listeners for true lazy loading/unloading ([SwingLazyListImpl], [SwingLazyGridImpl],
- * [SwingTreeViewImpl]), `BufferedImage` + `Graphics2D` for [SwingCanvas2DImpl], runtime LWJGL detection for
- * [SwingGLCanvasImpl] and [SwingVKCanvasImpl], and `javax.imageio.ImageIO` ([SwingImageIoCodecImpl]) for [ImageLoader].
+ * [SwingTreeViewImpl]), and `javax.imageio.ImageIO` ([SwingImageIoCodecImpl]) for [ImageLoader].
  */
 class SwingNativeFactory : NativeFactory {
     override val backendTarget: com.nexustools.genericui.enums.system.BackendTarget =
@@ -82,7 +81,7 @@ class SwingNativeFactory : NativeFactory {
     // Layout & Printable Book Documents
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> = SwingContainerImpl(classPrefix)
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
-        SwingStyledContainerImpl(classPrefix)
+        SwingStyledContainerImpl(classPrefix, tagName)
     override fun createBookContainer(): BookContainerNativeImpl<*> = SwingBookContainerImpl()
     override fun createScrollView(): ScrollViewNativeImpl<*> = SwingScrollViewImpl()
     override fun createDivider(): DividerNativeImpl<*> = SwingDividerImpl()
