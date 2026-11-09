@@ -13,7 +13,7 @@ import javax.swing.JPopupMenu
  * Java Swing `JPopupMenu` implementation of [ContextMenuNativeImpl].
  */
 class SwingContextMenuImpl : SwingBaseContainerNativeImpl(JPopupMenu(), "dropdown-menu"), ContextMenuNativeImpl<JComponent> {
-    override val nativeWidget: JPopupMenu = super.nativeWidget as JPopupMenu
+    override val nativeWidget: JPopupMenu get() = super.nativeWidget as JPopupMenu
 
     val popupMenu: JPopupMenu
         get() = nativeWidget

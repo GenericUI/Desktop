@@ -13,6 +13,8 @@ open class DesktopMarkdownViewNativeImpl<out W : DesktopNativeWidget>(
 
     protected var markdownSource: String = ""
 
+    override fun acceptsTypographyStyles(): Boolean = true
+
     override fun setMarkdown(markdown: String) {
         markdownSource = markdown
         nativeWidget.attributes["markdown"] = markdown

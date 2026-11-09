@@ -12,7 +12,7 @@ import javax.swing.text.JTextComponent
 class SwingTextInputImpl(
     initialMultiline: Boolean = false
 ) : SwingBaseNativeImpl(if (initialMultiline) JTextArea(3, 20) else JTextField(20), "form-control"), TextInputNativeImpl<JComponent> {
-    override val nativeWidget: JTextComponent = super.nativeWidget as JTextComponent
+    override val nativeWidget: JTextComponent get() = super.nativeWidget as JTextComponent
 
     private var placeholderVal: String = ""
     private var onValueChangedListener: ((String) -> Unit)? = null

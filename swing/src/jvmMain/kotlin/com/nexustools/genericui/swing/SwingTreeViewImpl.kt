@@ -12,7 +12,7 @@ import javax.swing.JScrollPane
  * Java Swing `JScrollPane` viewport-windowed implementation of [TreeViewNativeImpl].
  */
 class SwingTreeViewImpl : SwingBaseNativeImpl(JScrollPane(JPanel(null)), "tree-view overflow-auto"), TreeViewNativeImpl<JComponent> {
-    override val nativeWidget: JScrollPane = super.nativeWidget as JScrollPane
+    override val nativeWidget: JScrollPane get() = super.nativeWidget as JScrollPane
     private val canvasPanel: JPanel = nativeWidget.viewport.view as JPanel
 
     private var roots: List<TreeNode<*>> = emptyList()

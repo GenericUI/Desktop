@@ -13,7 +13,7 @@ import javax.swing.JPopupMenu
  * Java Swing `JMenu` implementation of [MenuNativeImpl].
  */
 class SwingMenuImpl : SwingBaseContainerNativeImpl(JMenu(), "menu"), MenuNativeImpl<JComponent> {
-    override val nativeWidget: JMenu = super.nativeWidget as JMenu
+    override val nativeWidget: JMenu get() = super.nativeWidget as JMenu
 
     val menu: JMenu
         get() = nativeWidget

@@ -26,16 +26,18 @@ When `styles { globalStyleSheet = "styles/main.scss" }` is configured in `build.
 
 ---
 
-## Native AppKit Control Rendering (`BootstrapType.NONE` Default) & Semantic `BootstrapType` Tinting
+## Native AppKit Control Rendering (`BootstrapType.NONE`), Offscreen Sprite + `ThemeConfig` Tinting (`BootstrapType != NONE`), & `MacosControlRenderUtil`
 
-1. **`BootstrapType.NONE` Default & Zero Bootstrap CSS Styling**:
+1. **`BootstrapType.NONE` Default — 100% Unmodified AppKit System Controls**:
    - Native macOS applications **never** use Bootstrap CSS styling.
-   - When `component.getBootstrap().type == BootstrapType.NONE` (the default) and no inline `ComponentStyle` background/border is set, `:desktop:macos` renders the **authentic AppKit system control** (`NSButton`, `NSTextField`, `NSSlider`, `NSSwitch`, `NSPopUpButton`) styled by macOS Aqua / Dark Aqua (`NSApp.effectiveAppearance`).
-2. **Semantic `BootstrapType` Tinting**:
-   - When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is set on `component.getBootstrap().type`, `:desktop:macos` emulates `BootstrapType` by **tinting the native AppKit control** (`bezelColor` / `contentTintColor` / layer fill via `DesktopBaseNativeImpl.resolveSemanticBootstrapColor(darkTheme)`), supporting `outline = true/false`.
-   - `component.getStyle().setAccentColor(color)` (`accent-color`) sets the control's active accent fill color.
-   - Unsupported CSS properties and CSS transitions are **silently ignored** on native AppKit controls.
-3. **Strict User CSS Class Isolation**:
+   - When `component.getBootstrap().type == BootstrapType.NONE` (the default), `:desktop:macos` (`Macos*NativeImpl` + `MacosControlRenderUtil`) renders the **100% unmodified genuine AppKit system control** (`NSButton` / `NSButtonCell`, `NSTextField`, `NSSlider`, `NSSwitch`, `NSPopUpButton`) styled by macOS Aqua / Dark Aqua (`NSApp.effectiveAppearance`).
+2. **`BootstrapType != BootstrapType.NONE` — Empty-Text Offscreen Sprite + `ThemeConfig` Tint + Text Overlay**:
+   - When `BootstrapType != BootstrapType.NONE` (`PRIMARY`, `SECONDARY`, `SUCCESS`, `DANGER`, `WARNING`, `INFO`, `LIGHT`, `DARK`), `MacosControlRenderUtil` renders the native AppKit `NSButtonCell` / `NSControl` **with NO text** (`title = ""`) into an offscreen `CGBitmapContext` ARGB buffer, color-tints the native control pixels via `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer` and `ThemeConfig` while preserving macOS Aqua/Dark Aqua 3D bevels, borders, and hover/pressed/disabled states, blits the tinted `CGImage`, and draws the contrasting text label (`CoreText` / `NSAttributedString`) and icon on top afterward.
+3. **System Backend Typography vs. Aesthetic Style Restraints**:
+   - **Text / Typography Elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`)**: Honor typography and text-color properties (`color` / `textColor`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `lineHeight`, `letterSpacing`, `textAlign`, `textDecoration`, `textTransform`, `textOverflow`, `whiteSpace`, `wordBreak`).
+   - **Buttons, Inputs, Controls, & Standard Containers**: Aesthetic skinning and typography overrides on `ComponentStyle` (`backgroundColor`, `background`, `color`, `accentColor`, `borderColor`, `borderWidth`, `borderStyle`, `borderRadius`, `boxShadow`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`) are **silently ignored**. Standard components can **ONLY** be tinted via `BootstrapType`.
+   - **`StyledContainer` & `StyledButton` (and `:extensions:alien`)**: Honor full `ComponentStyle` aesthetic and typography properties.
+4. **Strict User CSS Class Isolation**:
    - `addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` return **only** user-added custom classes (`styleSnapshot.customClasses`).
 
 ---

@@ -41,6 +41,7 @@ import com.nexustools.genericui.nativeimpl.shell.*
 import com.nexustools.genericui.nativeimpl.system.*
 import com.nexustools.genericui.nativeimpl.typography.MarkdownViewNativeImpl
 import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
+import com.nexustools.genericui.threading.UiThreadDispatcherNativeImpl
 
 /**
  * Java Swing (`javax.swing.*` + Java2D + `ImageIO`) implementation of [NativeFactory].
@@ -121,6 +122,7 @@ class SwingNativeFactory : NativeFactory {
     override fun createTreeView(): TreeViewNativeImpl<*> = SwingTreeViewImpl()
 
     // System Services
+    override fun createUiThreadDispatcher(): UiThreadDispatcherNativeImpl = SwingUiThreadDispatcherNativeImpl()
     override fun createUiTimerScheduler(): UiTimerNativeImpl = SwingUiTimerImpl()
     override fun createPermissionManager(): PermissionManagerNativeImpl = SwingPermissionManagerImpl()
     override fun createSystemTray(): SystemTrayNativeImpl = SwingSystemTrayImpl()

@@ -3,6 +3,8 @@ package com.nexustools.genericui.gtk
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.desktop.widget.DesktopStyledButtonNativeImpl
 import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.gtk.render.GtkControlRenderUtil
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
@@ -33,8 +35,7 @@ class GtkStyledButtonNativeImpl(
         nativeWidget.attributes["adwColorScheme"] = if (isDark) "ADW_COLOR_SCHEME_FORCE_DARK" else "ADW_COLOR_SCHEME_FORCE_LIGHT"
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
         nativeWidget.attributes.remove("backdropBlurPx")
-        nativeWidget.styleProperties.remove("backdrop-filter")
-        nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
+        nativeWidget.attributes.remove("backdropFilter")
 
         val resolved = resolveCurrentVisuals()
         nativeWidget.attributes["styledButtonVisuals"] = resolved
@@ -56,6 +57,9 @@ class GtkStyledButtonNativeImpl(
         nativeWidget.notifyTreeInvalidated()
     }
 
+    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
+        GtkControlRenderUtil.renderStyledButton(this, renderContext, bounds)
+
     override fun setAttribute(name: String, value: String?) {
         if (
             name.equals("backdropBlurPx", ignoreCase = true) ||
@@ -63,8 +67,6 @@ class GtkStyledButtonNativeImpl(
             name.equals("-webkit-backdrop-filter", ignoreCase = true)
         ) {
             nativeWidget.attributes.remove("backdropBlurPx")
-            nativeWidget.styleProperties.remove("backdrop-filter")
-            nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
             return
         }
         super.setAttribute(name, value)

@@ -20,6 +20,7 @@ import com.nexustools.genericui.enums.bootstrap.BootstrapSize
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.image.ImageBuffer
 import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssLength
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.get
 import kotlinx.cinterop.reinterpret
@@ -85,7 +86,7 @@ class WindowsOverlayFlickerTest {
             addClass("w-100 h-100")
         }
         val stageLayered = LayeredContainer().apply {
-            setStyleProperty("height", "420px")
+            style.height = CssLength.px(420f)
         }
 
         val surfW = 320
@@ -296,7 +297,7 @@ class WindowsOverlayFlickerTest {
         var frameBgra = buildFilledBgraFrame(surfW, surfH, b = 180, g = 30, r = 30)
 
         val canvasSurface = Container("div", "canvas-surface").apply {
-            setStyleProperty("height", "240px")
+            style.height = CssLength.px(240f)
         }
         rootStack.addChild(canvasSurface)
 
@@ -342,7 +343,7 @@ class WindowsOverlayFlickerTest {
             addClass("w-100 h-100")
         }
         val hostLayered = LayeredContainer().apply {
-            setStyleProperty("height", "320px")
+            style.height = CssLength.px(320f)
         }
 
         val surfW = 240
@@ -480,7 +481,7 @@ class WindowsOverlayFlickerTest {
     @Test
     fun testMultiFrameRenderingWithoutMouseMovementUpdatesSeekBarAndTimeReadoutWithTranslucentHud() = withVisualHost { factory ->
         val rootStack = VStack(gapPx = 8).apply { addClass("w-100 h-100") }
-        val stageLayered = LayeredContainer().apply { setStyleProperty("height", "360px") }
+        val stageLayered = LayeredContainer().apply { style.height = CssLength.px(360f) }
 
         val surfW = 320
         val surfH = 180
@@ -605,7 +606,7 @@ class WindowsOverlayFlickerTest {
     @Test
     fun testHudButtonIconAlphaBlendsWithoutOpaqueDarkBlackBox() = withVisualHost { factory ->
         val rootStack = VStack(gapPx = 8).apply { addClass("w-100 h-100") }
-        val stageLayered = LayeredContainer().apply { setStyleProperty("height", "360px") }
+        val stageLayered = LayeredContainer().apply { style.height = CssLength.px(360f) }
 
         val surfW = 320
         val surfH = 180
@@ -703,7 +704,7 @@ class WindowsOverlayFlickerTest {
     @Test
     fun testOverlayHudSmoothOpacityFadeAndMouseReveal() = withVisualHost { factory ->
         val rootStack = VStack(gapPx = 8).apply { addClass("w-100 h-100") }
-        val stageLayered = LayeredContainer().apply { setStyleProperty("height", "360px") }
+        val stageLayered = LayeredContainer().apply { style.height = CssLength.px(360f) }
 
         val surfW = 320
         val surfH = 180

@@ -3,6 +3,8 @@ package com.nexustools.genericui.qt
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl
 import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.qt.render.QtControlRenderUtil
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
@@ -36,8 +38,7 @@ class QtStyledContainerNativeImpl(
         nativeWidget.attributes["qtColorScheme"] = if (isDark) "Qt::ColorScheme::Dark" else "Qt::ColorScheme::Light"
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
         nativeWidget.attributes.remove("backdropBlurPx")
-        nativeWidget.styleProperties.remove("backdrop-filter")
-        nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
+        nativeWidget.attributes.remove("backdropFilter")
 
         val resolved = getStyledVisuals()
         nativeWidget.attributes["styledVisuals"] = resolved
@@ -59,6 +60,9 @@ class QtStyledContainerNativeImpl(
         resolved.padding?.let { nativeWidget.padding = it }
         nativeWidget.notifyTreeInvalidated()
     }
+
+    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
+        QtControlRenderUtil.renderStyledContainer(this, renderContext, bounds)
 
     override fun setStyledVisuals(visuals: StyledVisualSpec) {
         explicitStyledVisuals = visuals
@@ -84,8 +88,6 @@ class QtStyledContainerNativeImpl(
             name.equals("-webkit-backdrop-filter", ignoreCase = true)
         ) {
             nativeWidget.attributes.remove("backdropBlurPx")
-            nativeWidget.styleProperties.remove("backdrop-filter")
-            nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
             return
         }
         super.setAttribute(name, value)

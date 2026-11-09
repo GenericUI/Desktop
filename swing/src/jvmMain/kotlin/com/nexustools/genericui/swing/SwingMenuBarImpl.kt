@@ -8,5 +8,5 @@ import javax.swing.JMenuBar
  * Java Swing `JMenuBar` implementation of [MenuBarNativeImpl].
  */
 class SwingMenuBarImpl : SwingBaseContainerNativeImpl(JMenuBar(), "menubar"), MenuBarNativeImpl<JComponent> {
-    override val nativeWidget: JMenuBar = super.nativeWidget as JMenuBar
+    override val nativeWidget: JMenuBar get() = super.nativeWidget as JMenuBar
 }

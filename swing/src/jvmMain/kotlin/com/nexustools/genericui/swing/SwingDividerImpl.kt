@@ -9,5 +9,5 @@ import javax.swing.SwingConstants
  * Java Swing `JSeparator` implementation of [DividerNativeImpl].
  */
 class SwingDividerImpl : SwingBaseNativeImpl(JSeparator(SwingConstants.HORIZONTAL), "hr"), DividerNativeImpl<JComponent> {
-    override val nativeWidget: JSeparator = super.nativeWidget as JSeparator
+    override val nativeWidget: JSeparator get() = super.nativeWidget as JSeparator
 }

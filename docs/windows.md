@@ -26,20 +26,43 @@ When `styles { globalStyleSheet = "styles/main.scss" }` is configured in `build.
 
 ---
 
-## Native `UxTheme` Control Rendering (`BootstrapType.NONE` Default) & Semantic `BootstrapType` Tinting
+## Native `UxTheme` Control Rendering (`BootstrapType.NONE`), Offscreen Sprite + `ThemeConfig` Tinting (`BootstrapType != NONE`), & Modular `Windows*NativeImpl` / `Win32*RenderUtil` Architecture
 
-### 1. `BootstrapType.NONE` Default & Authentic Win32 `UxTheme` Controls
+### 1. `BootstrapType.NONE` Default — 100% Unmodified Win32 `UxTheme` Controls
 Native Windows applications **never** use Bootstrap CSS styling:
-- When `component.getBootstrap().type == BootstrapType.NONE` (`BootstrapType.None`, the default) and no inline `ComponentStyle` (`component.getStyle()`) background or border is set, `:desktop:windows` renders the **genuine Windows `UxTheme` system control** via `Win32DwmUxThemeBridge`:
+- When `component.getBootstrap().type == BootstrapType.NONE` (`BootstrapType.None`, the default), `:desktop:windows` renders the **100% unmodified genuine Windows `UxTheme` / `comctl32.dll` / `user32.dll` system control** via `Win32DwmUxThemeBridge` and the `Win32*RenderUtil` classes:
   - Applies `SetWindowTheme(hwnd, "Explorer", null)` in `LIGHT` mode and `SetWindowTheme(hwnd, "DarkMode_Explorer", null)` in `DARK` mode (`Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, isDark)`).
   - Opens the theme class via `OpenThemeData(hwnd, "Explorer::BUTTON")` (`LIGHT`) or `OpenThemeData(hwnd, "DarkMode_Explorer::BUTTON")` (`DARK`) and paints native button parts (`BP_PUSHBUTTON`, `BP_CHECKBOX`, `BP_RADIOBUTTON`, `BP_GROUPBOX`, `BP_COMMANDLINK`) and states (`PBS_NORMAL`, `PBS_HOT`, `PBS_PRESSED`, `PBS_DISABLED`, `PBS_DEFAULTED`) using `DrawThemeBackground` and `DrawThemeTextEx` (`Win32DwmUxThemeBridge.drawUxThemeControlBackground`).
 
-### 2. Semantic `BootstrapType` Tinting
-When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is explicitly set on `component.getBootstrap().type`, `:desktop:windows` emulates `BootstrapType` by **tinting the native Win32 control** with the semantic color (`DesktopBaseNativeImpl.resolveSemanticBootstrapColor(darkTheme)` — red for `DANGER`, blue for `PRIMARY`, green for `SUCCESS`, amber for `WARNING`, cyan for `INFO`, supporting `outline = true/false`).
+### 2. `BootstrapType != BootstrapType.NONE` — Empty-Text Offscreen Sprite + `ThemeConfig` Pixel Tint + Contrasting Text Overlay
+When a semantic `BootstrapType` (`PRIMARY`, `SECONDARY`, `SUCCESS`, `DANGER`, `WARNING`, `INFO`, `LIGHT`, `DARK`) is explicitly set on `component.getBootstrap().type`:
+1. `:desktop:windows` renders the native Win32 `UxTheme` control **with NO text** into an offscreen 32-bit ARGB DIB section (`CreateDIBSection` + `DrawThemeBackground`).
+2. `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer` color-tints the offscreen native control pixels using the active `ThemeConfig` / `BootstrapColorPalette` color while preserving native Win32 3D bevels, borders, specular highlights, and hover/pressed/disabled states (`outline = true/false`).
+3. The tinted native control sprite is blitted onto the window DC, and the contrasting text label (`BootstrapColorPalette.resolveOnFillTextColor` / `ThemeConfig`) and icon are rendered cleanly on top afterward.
 
-For form controls such as checkboxes, radio buttons, sliders, and progress bars, `component.getStyle().setAccentColor(color)` (`accent-color`) sets the active indicator fill color. Unsupported CSS properties and CSS transitions are **silently ignored** on native Win32 controls (whereas `:extensions:alien` supports 100% of all CSS properties and transitions).
+### 3. System Backend Typography vs. Aesthetic Style Restraints
+- **Text / Typography Elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`)**: Honor typography and text-color properties (`color` / `textColor`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `lineHeight`, `letterSpacing`, `textAlign`, `textDecoration`, `textTransform`, `textOverflow`, `whiteSpace`, `wordBreak`, plus `bootstrap.textColorType`, `bootstrap.fontSize`, `bootstrap.fontWeight`, `bootstrap.textAlignment`).
+- **Buttons, Inputs, Controls, & Standard Containers (`Button`, `IconButton`, `ToggleButton`, `CheckBox`, `RadioButton`, `Switch`, `Select`, `DropdownButton`, `TextField`, `TextArea`, `RangeSlider`, `ProgressBar`, `Spinner`, `TabContainer`, `Tab`, `Container`, `Card`, etc.)**: Aesthetic skinning and typography overrides on `ComponentStyle` (`backgroundColor`, `background`, `color`, `accentColor`, `borderColor`, `borderWidth`, `borderStyle`, `borderRadius`, `boxShadow`, `textShadow`, `filter`, `backdropFilter`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`) are **silently ignored**. Standard components can **ONLY** be tinted via `BootstrapType`.
+- **`StyledContainer` & `StyledButton` (and `:extensions:alien`)**: Honor full `ComponentStyle` aesthetic and typography properties (`WindowsStyledContainerNativeImpl` and `WindowsStyledButtonNativeImpl`).
 
-### 3. Strict User CSS Class Isolation
+### 4. Modular Per-Component `Windows*NativeImpl` (36 Classes) + Type-Grouped `Win32*RenderUtil` (12 Classes) Architecture
+`:desktop:windows` strictly follows the **1-Class-Per-File** modular rendering architecture:
+- **12 Type-Grouped `Win32*RenderUtil` Classes** (`com.nexustools.genericui.windows.render`):
+  1. `Win32RenderContext`: Shared GDI/UxTheme handles, DPI scale, `ThemeConfig`, and viewport clip state.
+  2. `Win32ControlTintRenderUtil`: Offscreen empty-text `uxtheme.dll` sprite capture, `DesktopControlTintRenderUtil` pixel tinting, and post-tint text/icon overlay.
+  3. `Win32TextRenderUtil`: `Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView` (honoring `ComponentStyle` typography and text color properties).
+  4. `Win32ButtonRenderUtil`: `Button`, `IconButton`, `ToggleButton`, `SplitButton`, `FloatingActionButton`, `StyledButton`.
+  5. `Win32ToggleSelectionRenderUtil`: `CheckBox`, `RadioButton`, `Switch`, `Select`, `ComboBox`, `DropdownButton`, `SegmentedButton`.
+  6. `Win32InputFieldRenderUtil`: `TextField`, `PasswordField`, `SearchBox`, `NumberField`, `TextArea`, `RichTextEditor`, `CodeEditor`, `ColorPicker`, `DateTimePicker`, `FilePickerDropZone`.
+  7. `Win32SliderProgressRenderUtil`: `RangeSlider`, `ProgressBar`, `Spinner`, `Meter`, `RatingBar`.
+  8. `Win32ContainerChromeRenderUtil`: `Container`, `VStack`, `HStack`, `FlexBox`, `Grid`, `Card`, `Accordion`, `AlertBox`, `CollapsibleSection`, `FieldSet`, `Divider`, `StyledContainer`.
+  9. `Win32NavigationRenderUtil`: `TabContainer`, `Tab`, `MenuBar`, `ToolBar`, `Breadcrumb`, `Pagination`, `Stepper`, `BottomNavigationBar`, `NavigationRail`, `Drawer`, `StatusBar`.
+  10. `Win32DataDisplayRenderUtil`: `Table` (including proportional `getColumnWeights()`), `DataGrid`, `TreeView`, `VirtualList`, `LazyColumn`, `LazyRow`, `LazyGrid` (including `minColumnWidthPx`), `Timeline`, `Calendar`, `PropertyGrid`, `ImageView`, `Avatar`, `Carousel`, `Chip`, `TooltipPopover`.
+  11. `Win32WorkspaceWindowRenderUtil`: `SplitPane`, `ScrollView`, `MdiContainer`, `MdiWindow`, `DockWorkspace`, `DialogHost`, `ToastHost`, `SwipeRefreshPane`, `BookContainer`, `HorizontalCarouselSelector`.
+  12. `Win32MediaCanvasRenderUtil`: `Canvas2D`, `Canvas3D`, `VideoPlayer`, `AudioPlayer`, `WebView`, `NodeGraphEditor`, `ChartView`, `Sparkline`.
+- **36 Per-Component `Windows*NativeImpl` Classes** (`com.nexustools.genericui.windows.impl`): Every component has its own dedicated `Windows<Component>NativeImpl` class implementing `WindowsRenderableNativeImpl` (`renderWin32(...)`) and delegating to the corresponding `Win32*RenderUtil`.
+
+### 5. Strict User CSS Class Isolation
 `addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` return **only** user-added custom classes (`styleSnapshot.customClasses`). `ComponentBootstrap` (`getBootstrap()`) enum utilities are executed directly by the Win32 layout and painting engine.
 
 ---

@@ -3,6 +3,8 @@ package com.nexustools.genericui.macos
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl
 import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.macos.render.MacosControlRenderUtil
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
@@ -36,8 +38,7 @@ class MacosStyledContainerNativeImpl(
         nativeWidget.attributes["nsAppearance"] = if (isDark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua"
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
         nativeWidget.attributes.remove("backdropBlurPx")
-        nativeWidget.styleProperties.remove("backdrop-filter")
-        nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
+        nativeWidget.attributes.remove("backdropFilter")
 
         val resolved = getStyledVisuals()
         nativeWidget.attributes["styledVisuals"] = resolved
@@ -59,6 +60,9 @@ class MacosStyledContainerNativeImpl(
         resolved.padding?.let { nativeWidget.padding = it }
         nativeWidget.notifyTreeInvalidated()
     }
+
+    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
+        MacosControlRenderUtil.renderStyledContainer(this, renderContext, bounds)
 
     override fun setStyledVisuals(visuals: StyledVisualSpec) {
         explicitStyledVisuals = visuals
@@ -84,8 +88,6 @@ class MacosStyledContainerNativeImpl(
             name.equals("-webkit-backdrop-filter", ignoreCase = true)
         ) {
             nativeWidget.attributes.remove("backdropBlurPx")
-            nativeWidget.styleProperties.remove("backdrop-filter")
-            nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
             return
         }
         super.setAttribute(name, value)

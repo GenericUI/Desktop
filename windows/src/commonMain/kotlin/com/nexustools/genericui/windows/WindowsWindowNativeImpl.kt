@@ -116,22 +116,7 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
 
     override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
         super.setFullscreen(fullscreen, cutoutMode)
-        if (!fullscreen) {
-            nativeWidget.attributes.remove("fullscreenElement")
-        }
-        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
-            Win32NativeWindowHost.setWindowFullscreen(
-                windowImpl = this,
-                fullscreen = fullscreen,
-                targetElementWidget = if (fullscreen) getFullscreenElement()?.nativeWidget as? DesktopNativeWidget else null
-            )
-        }
-    }
-
-    override fun setFullscreenElement(elementImpl: NativeImpl<*>?, cutoutMode: DisplayCutoutMode) {
-        super.setFullscreenElement(elementImpl, cutoutMode)
-        val fullscreen = elementImpl != null
-        val targetWidget = elementImpl?.nativeWidget as? DesktopNativeWidget
+        val targetWidget = if (fullscreen) getFullscreenElement()?.nativeWidget as? DesktopNativeWidget else null
         if (fullscreen && targetWidget != null) {
             nativeWidget.attributes["fullscreenElement"] = targetWidget
         } else {
@@ -146,10 +131,24 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         }
     }
 
+    override fun setFullscreenElement(elementImpl: NativeImpl<*>?, cutoutMode: DisplayCutoutMode) {
+        super.setFullscreenElement(elementImpl, cutoutMode)
+    }
+
+    override fun setVisible(visible: Boolean) {
+        super.setVisible(visible)
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
+            Win32NativeWindowHost.setWindowVisible(this, visible)
+        }
+    }
+
     override fun showWindow() {
-        super.showWindow()
+        val visible = isVisible()
         if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
-            Win32NativeWindowHost.createAndShowWin32Window(this)
+            Win32NativeWindowHost.createAndShowWin32Window(this, startHidden = !visible)
+        }
+        if (visible) {
+            super.showWindow()
         }
     }
 }

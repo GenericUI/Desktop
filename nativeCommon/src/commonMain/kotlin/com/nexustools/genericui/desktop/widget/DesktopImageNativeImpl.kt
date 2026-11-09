@@ -158,11 +158,10 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setCssFilter(filter: CssFilter?) {
         cssFilterState = filter
-        nativeWidget.attributes["cssFilter"] = filter
         if (filter != null && !filter.isNone) {
-            nativeWidget.styleProperties["filter"] = filter.toCssString()
+            nativeWidget.attributes["cssFilter"] = filter
         } else {
-            nativeWidget.styleProperties.remove("filter")
+            nativeWidget.attributes.remove("cssFilter")
         }
     }
 

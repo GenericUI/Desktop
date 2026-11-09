@@ -8,7 +8,7 @@ import javax.swing.JPanel
  * Java Swing `JPanel` implementation of [BottomNavigationBarNativeImpl].
  */
 class SwingBottomNavigationBarImpl : SwingBaseNativeImpl(JPanel(), "navbar fixed-bottom"), BottomNavigationBarNativeImpl<JComponent> {
-    override val nativeWidget: JPanel = super.nativeWidget as JPanel
+    override val nativeWidget: JPanel get() = super.nativeWidget as JPanel
 
     private var selectedItemIdVal: String? = null
     private var onItemSelectedListener: ((String) -> Unit)? = null

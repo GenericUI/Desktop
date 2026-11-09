@@ -26,19 +26,22 @@ When `styles { globalStyleSheet = "styles/main.scss" }` is configured in `build.
 
 ---
 
-## Native GTK4 Control Rendering (`BootstrapType.NONE` Default), Semantic `BootstrapType` Tinting, & Custom Cursors
+## Native GTK4 Control Rendering (`BootstrapType.NONE`), Offscreen Sprite + `ThemeConfig` Tinting (`BootstrapType != NONE`), & `GtkControlRenderUtil`
 
-1. **`BootstrapType.NONE` Default & Zero Bootstrap CSS Styling**:
+1. **`BootstrapType.NONE` Default — 100% Unmodified GTK4 System Widgets**:
    - Native GTK applications **never** use Bootstrap CSS styling.
-   - When `component.getBootstrap().type == BootstrapType.NONE` (the default) and no inline `ComponentStyle` background/border is set, `:desktop:gtk` renders the **authentic GTK4 / Adwaita system widget** matching the active `LIGHT` / `DARK` desktop theme.
-2. **Semantic `BootstrapType` Tinting**:
-   - When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is set on `component.getBootstrap().type`, `:desktop:gtk` emulates `BootstrapType` by **tinting the native `GtkWidget`** with the semantic color (`DesktopBaseNativeImpl.resolveSemanticBootstrapColor(darkTheme)`, supporting `outline = true/false`).
-   - `component.getStyle().setAccentColor(color)` (`accent-color`) customizes active indicator fills on check/radio/scale/progress widgets. Unsupported CSS properties and CSS transitions are **silently ignored**.
-3. **Strict User CSS Class Isolation**:
+   - When `component.getBootstrap().type == BootstrapType.NONE` (the default), `:desktop:gtk` (`Gtk*NativeImpl` + `GtkControlRenderUtil`) renders the **100% unmodified genuine GTK4 / Adwaita system widget** matching the active `LIGHT` / `DARK` desktop theme.
+2. **`BootstrapType != BootstrapType.NONE` — Empty-Text Offscreen Sprite + `ThemeConfig` Tint + Text Overlay**:
+   - When `BootstrapType != BootstrapType.NONE` (`PRIMARY`, `SECONDARY`, `SUCCESS`, `DANGER`, `WARNING`, `INFO`, `LIGHT`, `DARK`), `GtkControlRenderUtil` renders the native `GtkWidget` **with NO text** into an offscreen Cairo `CAIRO_FORMAT_ARGB32` surface (`gtk_widget_snapshot` / `gtk_render_background` + `gtk_render_frame`), color-tints the native control pixels via `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer` and `ThemeConfig` while preserving native GTK4 bevels, borders, and hover/pressed/disabled states, blits the tinted surface, and renders the contrasting text label (`PangoLayout`) and icon on top afterward.
+3. **System Backend Typography vs. Aesthetic Style Restraints**:
+   - **Text / Typography Elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`)**: Honor typography and text-color properties (`color` / `textColor`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `lineHeight`, `letterSpacing`, `textAlign`, `textDecoration`, `textTransform`, `textOverflow`, `whiteSpace`, `wordBreak`).
+   - **Buttons, Inputs, Controls, & Standard Containers**: Aesthetic skinning and typography overrides on `ComponentStyle` (`backgroundColor`, `background`, `color`, `accentColor`, `borderColor`, `borderWidth`, `borderStyle`, `borderRadius`, `boxShadow`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`) are **silently ignored**. Standard components can **ONLY** be tinted via `BootstrapType`.
+   - **`StyledContainer` & `StyledButton` (and `:extensions:alien`)**: Honor full `ComponentStyle` aesthetic and typography properties.
+4. **Strict User CSS Class Isolation**:
    - `addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` return **only** user-added custom classes (`styleSnapshot.customClasses`).
-4. **Custom Cursor Translation (`CssCustomCursor` $\rightarrow$ `GdkCursor`)**:
+5. **Custom Cursor Translation (`CssCustomCursor` $\rightarrow$ `GdkCursor`)**:
    - Translates any PNG `ResourceID`, SVG `ResourceID`/markup, or `ImageBuffer` `CssCustomCursor` into a `GdkTexture` and constructs a native `GdkCursor` (`gdk_cursor_new_from_texture(texture, hotspotX, hotspotY, fallbackCursor)`) applied via `gtk_widget_set_cursor`.
-5. **`IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`)**:
+6. **`IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`)**:
    - Defaults to `ThemeMode.AUTO`, reading `gtk-application-prefer-dark-theme` from `GtkSettings` / FreeDesktop `org.freedesktop.portal.Settings` (`color-scheme`) and listening for live theme changes.
 
 ---

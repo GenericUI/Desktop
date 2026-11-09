@@ -1,5 +1,6 @@
 package com.nexustools.genericui.desktop.widget
 
+import com.nexustools.genericui.component.tabs.TabIconPlacement
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
@@ -22,6 +23,12 @@ open class DesktopTabNativeImpl<out W : DesktopNativeWidget>(
     var titleVal: String = ""
         private set
     var iconVal: String? = null
+        private set
+    var iconSizePxVal: Int = 20
+        private set
+    var iconPlacementVal: TabIconPlacement = TabIconPlacement.START
+        private set
+    var tintImageToThemeVal: Boolean = true
         private set
     var tooltipVal: String? = null
         private set
@@ -66,6 +73,21 @@ open class DesktopTabNativeImpl<out W : DesktopNativeWidget>(
         } else {
             nativeWidget.attributes.remove("icon")
         }
+    }
+
+    override fun setIconSizePxNative(sizePx: Int) {
+        iconSizePxVal = sizePx.coerceAtLeast(1)
+        nativeWidget.attributes["iconSizePx"] = iconSizePxVal
+    }
+
+    override fun setIconPlacementNative(placement: TabIconPlacement) {
+        iconPlacementVal = placement
+        nativeWidget.attributes["iconPlacement"] = placement.name
+    }
+
+    override fun setTintImageToThemeNative(tintToTheme: Boolean) {
+        tintImageToThemeVal = tintToTheme
+        nativeWidget.attributes["tintImageToTheme"] = tintToTheme
     }
 
     override fun setTooltipNative(tooltip: String?) {

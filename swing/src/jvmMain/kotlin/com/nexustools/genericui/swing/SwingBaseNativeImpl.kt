@@ -44,9 +44,12 @@ import javax.swing.JPanel
  * Base [NativeImpl] for the Java `:swing` backend.
  */
 open class SwingBaseNativeImpl(
-    override val nativeWidget: JComponent = JPanel(),
+    protected val baseWidget: JComponent = JPanel(),
     override val componentClassPrefix: String = ""
 ) : NativeImpl<JComponent> {
+
+    override val nativeWidget: JComponent
+        get() = baseWidget
 
     protected var styleSnapshot: BootstrapStyleSnapshot =
         BootstrapStyleSnapshot(componentPrefix = componentClassPrefix)
@@ -64,9 +67,9 @@ open class SwingBaseNativeImpl(
     private var customTextColor: RgbaColor? = null
     private var backgroundGradientState: Gradient? = null
 
-    private val defaultComponentBackground: Color? = nativeWidget.background
-    private val defaultComponentForeground: Color? = nativeWidget.foreground
-    private val defaultComponentBorder = nativeWidget.border
+    private val defaultComponentBackground: Color? = baseWidget.background
+    private val defaultComponentForeground: Color? = baseWidget.foreground
+    private val defaultComponentBorder = baseWidget.border
 
     protected var onClickListener: (() -> Unit)? = null
     protected var onDoubleClickListener: (() -> Unit)? = null
@@ -81,6 +84,7 @@ open class SwingBaseNativeImpl(
     protected var onKeyUpListener: ((KeyEvent) -> Unit)? = null
 
     init {
+        nativeWidget.putClientProperty("genericUiNativeImpl", this)
         val mouseAdapter = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (!nativeWidget.isEnabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
@@ -158,9 +162,22 @@ open class SwingBaseNativeImpl(
         })
     }
 
+    protected open fun allowsSystemAestheticStyles(): Boolean =
+        this is SwingStyledContainerImpl || this is SwingStyledButtonImpl
+
+    protected open fun allowsSystemTypographyStyles(): Boolean =
+        allowsSystemAestheticStyles() || this is SwingTextImpl || this is SwingMarkdownViewImpl
+
+    internal open fun refreshThemeAppearance() {
+        syncSwingAppearance()
+        nativeWidget.repaint()
+    }
+
     protected open fun syncSwingAppearance() {
         val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
         val isDark = effectiveTheme == ThemeMode.DARK
+        val activeThemeConfig = BootstrapColorPalette.activeThemeConfig
+        val themeColors = activeThemeConfig.resolveEffectiveColors(isDark)
         nativeWidget.putClientProperty("effectiveThemeMode", effectiveTheme)
         nativeWidget.putClientProperty("themeMode", if (isDark) "dark" else "light")
         // Desktop policy: backdrop-filter blur is explicitly ignored on desktop.
@@ -170,44 +187,86 @@ open class SwingBaseNativeImpl(
 
         val semanticType = styleSnapshot.type?.takeIf { it.isSemantic }
             ?: styleSnapshot.backgroundType?.takeIf { it.isSemantic }
-        val explicitBg = customBackgroundColor
-            ?: lastComponentStyle?.backgroundColor
-            ?: lastComputedStyle?.backgroundColor
+        val explicitBg = if (allowsSystemAestheticStyles()) {
+            customBackgroundColor
+                ?: lastComponentStyle?.backgroundColor
+                ?: lastComputedStyle?.backgroundColor
+        } else {
+            null
+        }
         val hasExplicitOrSemanticBg = explicitBg != null || semanticType != null
         nativeWidget.putClientProperty("useSystemControlAppearance", if (hasExplicitOrSemanticBg) "false" else "true")
+        nativeWidget.putClientProperty("bootstrapType", semanticType ?: BootstrapType.NONE)
+        nativeWidget.putClientProperty("bootstrapOutline", styleSnapshot.outline)
 
         val bgRgba = explicitBg
-            ?: semanticType?.let { BootstrapColorPalette.resolveColor(it, isDark) }
-        val fgRgba = customTextColor
-            ?: lastComponentStyle?.color
-            ?: lastComputedStyle?.textColor
-            ?: styleSnapshot.textColorType?.takeIf { it.isSemantic }?.let { BootstrapColorPalette.resolveColor(it, isDark) }
+            ?: semanticType?.let { BootstrapColorPalette.resolveColor(it, isDark, activeThemeConfig) }
+        val explicitFg = if (allowsSystemTypographyStyles()) {
+            customTextColor
+                ?: lastComponentStyle?.color
+                ?: lastComputedStyle?.textColor
+        } else {
+            null
+        }
+        val fgRgba = explicitFg
+            ?: styleSnapshot.textColorType?.takeIf { it.isSemantic }?.let {
+                BootstrapColorPalette.resolveColor(it, isDark, activeThemeConfig)
+            }
             ?: semanticType?.let {
-                if (styleSnapshot.outline) BootstrapColorPalette.resolveColor(it, isDark)
-                else BootstrapColorPalette.resolveForegroundOn(it)
+                if (styleSnapshot.outline) BootstrapColorPalette.resolveColor(it, isDark, activeThemeConfig)
+                else BootstrapColorPalette.resolveForegroundOn(it, isDark, activeThemeConfig)
             }
 
         if (bgRgba != null && !styleSnapshot.outline) {
-            nativeWidget.background = Color(bgRgba.r.coerceIn(0, 255), bgRgba.g.coerceIn(0, 255), bgRgba.b.coerceIn(0, 255), bgRgba.a.coerceIn(0, 255))
+            nativeWidget.background = Color(
+                bgRgba.r.coerceIn(0, 255),
+                bgRgba.g.coerceIn(0, 255),
+                bgRgba.b.coerceIn(0, 255),
+                bgRgba.a.coerceIn(0, 255)
+            )
             nativeWidget.isOpaque = bgRgba.a > 0
-            (nativeWidget as? JButton)?.isContentAreaFilled = true
+            (nativeWidget as? JButton)?.let { btn ->
+                btn.isContentAreaFilled = true
+                btn.isBorderPainted = true
+            }
         } else {
             nativeWidget.background = when {
-                isDark && nativeWidget is JButton -> Color(45, 45, 50)
+                nativeWidget is JButton -> defaultComponentBackground ?: if (isDark) Color(45, 45, 50) else Color(250, 250, 252)
+                themeColors.surface != null -> {
+                    val c = themeColors.surface!!
+                    Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), c.a.coerceIn(0, 255))
+                }
+                themeColors.background != null -> {
+                    val c = themeColors.background!!
+                    Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), c.a.coerceIn(0, 255))
+                }
                 isDark -> Color(30, 30, 34)
-                nativeWidget is JButton -> defaultComponentBackground ?: Color(250, 250, 252)
                 else -> defaultComponentBackground ?: Color(245, 245, 247)
             }
-            (nativeWidget as? JButton)?.isContentAreaFilled = true
+            (nativeWidget as? JButton)?.let { btn ->
+                btn.isContentAreaFilled = true
+                btn.isBorderPainted = true
+            }
         }
 
         if (fgRgba != null) {
-            nativeWidget.foreground = Color(fgRgba.r.coerceIn(0, 255), fgRgba.g.coerceIn(0, 255), fgRgba.b.coerceIn(0, 255), fgRgba.a.coerceIn(0, 255))
+            nativeWidget.foreground = Color(
+                fgRgba.r.coerceIn(0, 255),
+                fgRgba.g.coerceIn(0, 255),
+                fgRgba.b.coerceIn(0, 255),
+                fgRgba.a.coerceIn(0, 255)
+            )
         } else {
-            nativeWidget.foreground = if (isDark) {
-                Color(235, 235, 240)
-            } else {
-                defaultComponentForeground ?: Color(28, 28, 30)
+            val defaultFg = themeColors.onSurface ?: themeColors.onBackground
+            nativeWidget.foreground = when {
+                defaultFg != null -> Color(
+                    defaultFg.r.coerceIn(0, 255),
+                    defaultFg.g.coerceIn(0, 255),
+                    defaultFg.b.coerceIn(0, 255),
+                    defaultFg.a.coerceIn(0, 255)
+                )
+                isDark -> Color(235, 235, 240)
+                else -> defaultComponentForeground ?: Color(28, 28, 30)
             }
         }
 
@@ -277,14 +336,54 @@ open class SwingBaseNativeImpl(
     }
 
     override fun applyComponentStyle(style: ComponentStyle) {
-        lastComponentStyle = style
-        customBackgroundColor = style.backgroundColor
-        customTextColor = style.color
-        style.backgroundImage?.gradient?.let { backgroundGradientState = it }
-        style.opacity?.let { opacityVal = it.coerceIn(0f, 1f) }
-        style.cursor?.let { setCustomCursor(it) }
-        if (style.visibility == CssVisibility.HIDDEN || style.visibility == CssVisibility.COLLAPSE) {
+        val allowTypography = allowsSystemTypographyStyles()
+        val allowAesthetic = allowsSystemAestheticStyles()
+        val filtered = style.copyFilteredForSystemComponent(
+            allowTypography = allowTypography,
+            allowAestheticSkin = allowAesthetic
+        )
+        lastComponentStyle = filtered
+        customBackgroundColor = if (allowAesthetic) filtered.backgroundColor else null
+        customTextColor = if (allowTypography) filtered.color else null
+        backgroundGradientState = if (allowAesthetic) filtered.backgroundImage?.gradient else null
+
+        if (allowTypography) {
+            val baseFont = nativeWidget.font ?: Font("SansSerif", Font.PLAIN, 14)
+            val familyName = filtered.getFontFamily()?.resolvedPrimaryName() ?: baseFont.family
+            val isBold = (filtered.fontWeightNumeric ?: 400) >= 600 || filtered.getFontWeight() == FontWeight.BOLD
+            val isItalic = filtered.getFontStyle() == com.nexustools.genericui.enums.css.CssFontStyle.ITALIC ||
+                filtered.getFontStyle() == com.nexustools.genericui.enums.css.CssFontStyle.OBLIQUE
+            val fontStyleMask = (if (isBold) Font.BOLD else 0) or (if (isItalic) Font.ITALIC else 0)
+            val sizePx = filtered.fontSizePx ?: baseFont.size2D
+            nativeWidget.font = Font(familyName, fontStyleMask, sizePx.toInt().coerceAtLeast(1)).deriveFont(sizePx)
+            filtered.fontSizePx?.let { nativeWidget.putClientProperty("fontSizePx", it) }
+            filtered.getFontFamily()?.let { nativeWidget.putClientProperty("fontFamily", it.resolvedPrimaryName()) }
+        } else {
+            nativeWidget.putClientProperty("fontSizePx", null)
+            nativeWidget.putClientProperty("fontFamily", null)
+        }
+
+        filtered.opacity?.let { opacityVal = it.coerceIn(0f, 1f) }
+        filtered.cursor?.let { setCustomCursor(it) }
+        filtered.padding?.let { setPadding(it.toEdgeInsets()) }
+        filtered.margin?.let { setMargin(it.toEdgeInsets()) }
+        filtered.flexDirection?.let { styleSnapshot = styleSnapshot.copy(flexDirection = it) }
+        filtered.flexWrap?.let { styleSnapshot = styleSnapshot.copy(flexWrap = it) }
+        filtered.justifyContent?.let { styleSnapshot = styleSnapshot.copy(justifyContent = it) }
+        filtered.alignItems?.let { styleSnapshot = styleSnapshot.copy(alignItems = it) }
+        filtered.alignSelf?.let { styleSnapshot = styleSnapshot.copy(alignSelf = it) }
+
+        val wPx = filtered.width?.resolvePx()?.toInt()
+        val hPx = filtered.height?.resolvePx()?.toInt()
+        if (wPx != null || hPx != null) {
+            val cur = getBounds()
+            setPreferredSize(Size(wPx ?: cur.width, hPx ?: cur.height))
+        }
+
+        if (filtered.visibility == CssVisibility.HIDDEN || filtered.visibility == CssVisibility.COLLAPSE) {
             nativeWidget.isVisible = false
+        } else if (filtered.visibility == CssVisibility.VISIBLE) {
+            nativeWidget.isVisible = true
         }
         syncSwingAppearance()
     }
@@ -323,7 +422,20 @@ open class SwingBaseNativeImpl(
         }
     }
 
+    private val blankCursor: Cursor by lazy {
+        if (GraphicsEnvironment.isHeadless()) {
+            Cursor.getDefaultCursor()
+        } else {
+            Toolkit.getDefaultToolkit().createCustomCursor(
+                BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB),
+                Point(0, 0),
+                "none"
+            )
+        }
+    }
+
     private fun mapCssCursorToAwt(cursor: CssCursor): Cursor = when (cursor) {
+        CssCursor.NONE -> blankCursor
         CssCursor.POINTER -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
         CssCursor.TEXT -> Cursor.getPredefinedCursor(Cursor.TEXT_CURSOR)
         CssCursor.CROSSHAIR -> Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
@@ -489,28 +601,38 @@ open class SwingBaseNativeImpl(
     }
 
     override fun applyComputedStyle(style: ComputedStyle) {
-        lastComputedStyle = style
+        val allowTypography = allowsSystemTypographyStyles()
+        val allowAesthetic = allowsSystemAestheticStyles()
+        val filtered = style.copyFilteredForSystemComponent(
+            allowTypography = allowTypography,
+            allowAestheticSkin = allowAesthetic
+        )
+        lastComputedStyle = filtered
         nativeWidget.putClientProperty("backdropBlurPx", null)
         nativeWidget.putClientProperty("backdrop-filter", null)
         nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
-        style.backgroundColor?.let { c ->
-            val alpha = c.a.coerceIn(0, 255)
-            nativeWidget.background = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), alpha)
-            nativeWidget.isOpaque = alpha > 0
+        if (allowAesthetic) {
+            filtered.backgroundColor?.let { c ->
+                val alpha = c.a.coerceIn(0, 255)
+                nativeWidget.background = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), alpha)
+                nativeWidget.isOpaque = alpha > 0
+            }
         }
-        style.textColor?.let { c ->
-            val alpha = c.a.coerceIn(0, 255)
-            nativeWidget.foreground = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), alpha)
+        if (allowTypography) {
+            filtered.textColor?.let { c ->
+                val alpha = c.a.coerceIn(0, 255)
+                nativeWidget.foreground = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), alpha)
+            }
+            filtered.fontSizePx?.let { sz ->
+                val currentFont = nativeWidget.font ?: Font("SansSerif", Font.PLAIN, 14)
+                nativeWidget.font = currentFont.deriveFont(sz)
+            }
         }
-        style.fontSizePx?.let { sz ->
-            val currentFont = nativeWidget.font ?: Font("SansSerif", Font.PLAIN, 14)
-            nativeWidget.font = currentFont.deriveFont(sz)
-        }
-        style.opacity.let {
+        filtered.opacity.let {
             opacityVal = it.coerceIn(0f, 1f)
             nativeWidget.putClientProperty("opacity", opacityVal)
         }
-        style.customCursor?.let { setCustomCursor(it) }
+        filtered.customCursor?.let { setCustomCursor(it) }
         syncSwingAppearance()
     }
 

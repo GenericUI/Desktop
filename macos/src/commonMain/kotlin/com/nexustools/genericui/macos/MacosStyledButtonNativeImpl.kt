@@ -3,6 +3,8 @@ package com.nexustools.genericui.macos
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.desktop.widget.DesktopStyledButtonNativeImpl
 import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.macos.render.MacosControlRenderUtil
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
@@ -32,8 +34,7 @@ class MacosStyledButtonNativeImpl(
         nativeWidget.attributes["nsAppearance"] = if (isDark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua"
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
         nativeWidget.attributes.remove("backdropBlurPx")
-        nativeWidget.styleProperties.remove("backdrop-filter")
-        nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
+        nativeWidget.attributes.remove("backdropFilter")
 
         val resolved = resolveCurrentVisuals()
         nativeWidget.attributes["styledButtonVisuals"] = resolved
@@ -55,6 +56,9 @@ class MacosStyledButtonNativeImpl(
         nativeWidget.notifyTreeInvalidated()
     }
 
+    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
+        MacosControlRenderUtil.renderStyledButton(this, renderContext, bounds)
+
     override fun setAttribute(name: String, value: String?) {
         if (
             name.equals("backdropBlurPx", ignoreCase = true) ||
@@ -62,8 +66,6 @@ class MacosStyledButtonNativeImpl(
             name.equals("-webkit-backdrop-filter", ignoreCase = true)
         ) {
             nativeWidget.attributes.remove("backdropBlurPx")
-            nativeWidget.styleProperties.remove("backdrop-filter")
-            nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
             return
         }
         super.setAttribute(name, value)

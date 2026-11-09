@@ -13,6 +13,7 @@ open class DesktopProgressBarNativeImpl<out W : DesktopNativeWidget>(
 
     protected var progressValue: Float = 0f
     protected var indeterminateState: Boolean = false
+    protected var busyState: Boolean = false
     protected var labelText: String? = null
 
     override fun setProgress(progress: Float) {
@@ -24,10 +25,18 @@ open class DesktopProgressBarNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setIndeterminate(indeterminate: Boolean) {
         indeterminateState = indeterminate
-        nativeWidget.attributes["indeterminate"] = indeterminate
+        nativeWidget.attributes["indeterminate"] = indeterminate || busyState
     }
 
     override fun isIndeterminate(): Boolean = indeterminateState
+
+    override fun setBusy(busy: Boolean) {
+        busyState = busy
+        nativeWidget.attributes["busy"] = busy
+        nativeWidget.attributes["indeterminate"] = busy || indeterminateState
+    }
+
+    override fun isBusy(): Boolean = busyState
 
     override fun setLabel(label: String?) {
         labelText = label

@@ -2,7 +2,6 @@ package com.nexustools.genericui.qt
 
 import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.NativeFactory
-import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
@@ -10,7 +9,6 @@ import com.nexustools.genericui.desktop.dock.DesktopDockWorkspaceNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopToolPaletteNativeImpl
 import com.nexustools.genericui.desktop.image.DesktopImageCodecHooks
 import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
-import com.nexustools.genericui.desktop.lazy.DesktopLazyGridNativeImpl
 import com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl
 import com.nexustools.genericui.desktop.lazy.DesktopTreeViewNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopContextMenuNativeImpl
@@ -19,7 +17,13 @@ import com.nexustools.genericui.desktop.shell.DesktopMenuItemNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopPermissionManagerNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopUiTimerNativeImpl
-import com.nexustools.genericui.desktop.widget.*
+import com.nexustools.genericui.desktop.widget.DesktopBookContainerNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopBottomNavigationBarNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopDividerNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopImageNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopNavbarNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopPopoverNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.action.DropdownNativeImpl
@@ -29,7 +33,12 @@ import com.nexustools.genericui.nativeimpl.content.TableNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.DialogWindowNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.FileBrowserDialogNativeImpl
 import com.nexustools.genericui.nativeimpl.dialog.StandardDialogsNativeImpl
-import com.nexustools.genericui.nativeimpl.dock.*
+import com.nexustools.genericui.nativeimpl.dock.DockAreaNativeImpl
+import com.nexustools.genericui.nativeimpl.dock.DockGroupNativeImpl
+import com.nexustools.genericui.nativeimpl.dock.DockPanelNativeImpl
+import com.nexustools.genericui.nativeimpl.dock.DockWindowNativeImpl
+import com.nexustools.genericui.nativeimpl.dock.DockWorkspaceNativeImpl
+import com.nexustools.genericui.nativeimpl.dock.ToolPaletteNativeImpl
 import com.nexustools.genericui.nativeimpl.document.BookContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.feedback.ProgressBarNativeImpl
 import com.nexustools.genericui.nativeimpl.feedback.SpinnerNativeImpl
@@ -51,17 +60,46 @@ import com.nexustools.genericui.nativeimpl.net.HttpClientNativeImpl
 import com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl
 import com.nexustools.genericui.nativeimpl.net.UdpSocketNativeImpl
 import com.nexustools.genericui.nativeimpl.net.WebSocketNativeImpl
+import com.nexustools.genericui.nativeimpl.overlay.PopoverNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.ApplicationNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.ContextMenuNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.MenuItemNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.MenuNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
+import com.nexustools.genericui.nativeimpl.system.DatabaseNativeImpl
+import com.nexustools.genericui.nativeimpl.system.NetworkMonitorNativeImpl
+import com.nexustools.genericui.nativeimpl.system.NotificationManagerNativeImpl
+import com.nexustools.genericui.nativeimpl.system.PermissionManagerNativeImpl
+import com.nexustools.genericui.nativeimpl.system.PreferenceStoreNativeImpl
+import com.nexustools.genericui.nativeimpl.system.SystemTrayNativeImpl
+import com.nexustools.genericui.nativeimpl.system.UiTimerNativeImpl
+import com.nexustools.genericui.nativeimpl.system.UserDirectoryNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
-import com.nexustools.genericui.nativeimpl.overlay.PopoverNativeImpl
-import com.nexustools.genericui.nativeimpl.shell.*
-import com.nexustools.genericui.nativeimpl.system.*
 import com.nexustools.genericui.nativeimpl.typography.MarkdownViewNativeImpl
 import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
+import com.nexustools.genericui.qt.impl.QtButtonNativeImpl
+import com.nexustools.genericui.qt.impl.QtCheckboxNativeImpl
+import com.nexustools.genericui.qt.impl.QtContainerNativeImpl
+import com.nexustools.genericui.qt.impl.QtDropdownNativeImpl
+import com.nexustools.genericui.qt.impl.QtLazyGridNativeImpl
+import com.nexustools.genericui.qt.impl.QtMarkdownViewNativeImpl
+import com.nexustools.genericui.qt.impl.QtProgressBarNativeImpl
+import com.nexustools.genericui.qt.impl.QtRangeSliderNativeImpl
+import com.nexustools.genericui.qt.impl.QtSelectNativeImpl
+import com.nexustools.genericui.qt.impl.QtSpinnerNativeImpl
+import com.nexustools.genericui.qt.impl.QtTabContainerNativeImpl
+import com.nexustools.genericui.qt.impl.QtTabNativeImpl
+import com.nexustools.genericui.qt.impl.QtTableNativeImpl
+import com.nexustools.genericui.qt.impl.QtTextInputNativeImpl
+import com.nexustools.genericui.qt.impl.QtTextNativeImpl
+import com.nexustools.genericui.threading.UiThreadDispatcherNativeImpl
 
 /**
  * Qt 6 (`:qt`) implementation of [NativeFactory] backed by native `QWidget` / `QMainWindow` / `QDockWidget`
- * controls and `QImage` + `libjpeg-turbo` ([QtQImageCodecNativeImpl]).
+ * controls, [com.nexustools.genericui.qt.render.QtControlRenderUtil], and `QImage` + `libjpeg-turbo`
+ * ([QtQImageCodecNativeImpl]).
  */
 class QtNativeFactory : NativeFactory {
 
@@ -132,16 +170,16 @@ class QtNativeFactory : NativeFactory {
         DesktopDividerNativeImpl(QtWidgetHandle("QFrame_HLine"))
 
     override fun createText(tagName: String, classPrefix: String): TextNativeImpl<*> =
-        DesktopTextNativeImpl(QtWidgetHandle("QLabel"), tagName, classPrefix)
+        QtTextNativeImpl(QtWidgetHandle("QLabel"), tagName, classPrefix)
 
     override fun createMarkdownView(): MarkdownViewNativeImpl<*> =
-        DesktopMarkdownViewNativeImpl(QtWidgetHandle("QTextBrowser_Markdown"))
+        QtMarkdownViewNativeImpl(QtWidgetHandle("QTextBrowser_Markdown"))
 
     override fun createImage(): ImageNativeImpl<*> =
         DesktopImageNativeImpl(QtWidgetHandle("QLabel_QPixmap"))
 
     override fun createTable(): TableNativeImpl<*> =
-        DesktopTableNativeImpl(QtWidgetHandle("QTableWidget"))
+        QtTableNativeImpl(QtWidgetHandle("QTableWidget"))
 
     override fun createButton(classPrefix: String): ButtonNativeImpl<*> =
         QtButtonNativeImpl(QtWidgetHandle("QPushButton"), classPrefix)
@@ -150,28 +188,29 @@ class QtNativeFactory : NativeFactory {
         QtStyledButtonNativeImpl(QtWidgetHandle("QPushButton_Styled"), classPrefix)
 
     override fun createDropdown(): DropdownNativeImpl<*> =
-        DesktopDropdownNativeImpl(QtWidgetHandle("QToolButton_MenuButtonPopup"))
+        QtDropdownNativeImpl(QtWidgetHandle("QToolButton_MenuButtonPopup"))
 
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> =
-        DesktopTextInputNativeImpl(QtWidgetHandle(if (multiline) "QPlainTextEdit" else "QLineEdit"), multiline)
+        QtTextInputNativeImpl(QtWidgetHandle(if (multiline) "QPlainTextEdit" else "QLineEdit"), multiline)
 
     override fun createSelect(): SelectNativeImpl<*> =
-        DesktopSelectNativeImpl(QtWidgetHandle("QComboBox"))
+        QtSelectNativeImpl(QtWidgetHandle("QComboBox"))
 
     override fun createCheckbox(switchStyle: Boolean, radioStyle: Boolean): CheckboxNativeImpl<*> =
-        DesktopCheckboxNativeImpl(
+        QtCheckboxNativeImpl(
             QtWidgetHandle(if (radioStyle) "QRadioButton" else "QCheckBox"),
             switchStyle,
             radioStyle
         )
 
     override fun createRangeSlider(): RangeSliderNativeImpl<*> =
-        DesktopRangeSliderNativeImpl(QtWidgetHandle("QSlider"))
+        QtRangeSliderNativeImpl(QtWidgetHandle("QSlider"))
 
     override fun createTab(closable: Boolean): TabNativeImpl<*> =
-        DesktopTabNativeImpl(QtWidgetHandle(if (closable) "QTabBarItem_Closable" else "QTabBarItem"), closable)
+        QtTabNativeImpl(QtWidgetHandle(if (closable) "QTabBarItem_Closable" else "QTabBarItem"), closable)
 
-    override fun createTabContainer(): TabContainerNativeImpl<*> = QtTabContainerNativeImpl()
+    override fun createTabContainer(): TabContainerNativeImpl<*> =
+        QtTabContainerNativeImpl(QtWidgetHandle("QTabWidget"))
 
     override fun createNavbar(): NavbarNativeImpl<*> =
         DesktopNavbarNativeImpl(QtWidgetHandle("QToolBar_Navbar"))
@@ -180,22 +219,16 @@ class QtNativeFactory : NativeFactory {
         DesktopBottomNavigationBarNativeImpl(QtWidgetHandle("QTabBar_BottomNav"))
 
     override fun createProgressBar(): ProgressBarNativeImpl<*> =
-        DesktopProgressBarNativeImpl(QtWidgetHandle("QProgressBar"))
+        QtProgressBarNativeImpl(QtWidgetHandle("QProgressBar"))
 
     override fun createSpinner(): SpinnerNativeImpl<*> =
-        DesktopSpinnerNativeImpl(QtWidgetHandle("QWidget_QMovieSpinner"))
+        QtSpinnerNativeImpl(QtWidgetHandle("QWidget_QMovieSpinner"))
 
     override fun createPopover(): PopoverNativeImpl<*> =
         DesktopPopoverNativeImpl(QtWidgetHandle("QFrame_QtPopup"))
 
     override fun createDialogWindow(): DialogWindowNativeImpl<*> =
-        DesktopDialogWindowNativeImpl(
-            QtWidgetHandle("QDialog", QtWidgetHandle.Qt_Dialog).apply {
-                attributes["isSeparateNativeWindow"] = true
-                attributes["inWindowOverlay"] = false
-                attributes["attachedToMainWindow"] = true
-            }
-        )
+        QtDialogWindowNativeImpl()
 
     override fun createFileBrowserDialog(): FileBrowserDialogNativeImpl =
         QtFileBrowserDialogNativeImpl()
@@ -207,10 +240,13 @@ class QtNativeFactory : NativeFactory {
         DesktopLazyListNativeImpl(QtWidgetHandle("QListView_Virtualized"))
 
     override fun createLazyGrid(): LazyGridNativeImpl<*> =
-        DesktopLazyGridNativeImpl(QtWidgetHandle("QListView_IconMode_Virtualized"))
+        QtLazyGridNativeImpl(QtWidgetHandle("QListView_IconMode_Virtualized"))
 
     override fun createTreeView(): TreeViewNativeImpl<*> =
         DesktopTreeViewNativeImpl(QtWidgetHandle("QTreeView"))
+
+    override fun createUiThreadDispatcher(): UiThreadDispatcherNativeImpl =
+        QtUiThreadDispatcherNativeImpl()
 
     override fun createUiTimerScheduler(): UiTimerNativeImpl =
         DesktopUiTimerNativeImpl("Qt6 QTimer")

@@ -10,7 +10,7 @@ import javax.swing.JComponent
  */
 class SwingSelectImpl : SwingBaseNativeImpl(JComboBox<String>(), "form-select"), SelectNativeImpl<JComponent> {
     @Suppress("UNCHECKED_CAST")
-    override val nativeWidget: JComboBox<String> = super.nativeWidget as JComboBox<String>
+    override val nativeWidget: JComboBox<String> get() = super.nativeWidget as JComboBox<String>
 
     private var optionsList: List<Pair<String, String>> = emptyList()
     private var selectedVal: String? = null

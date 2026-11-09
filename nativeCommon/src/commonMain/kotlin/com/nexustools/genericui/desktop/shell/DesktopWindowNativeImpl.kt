@@ -319,9 +319,50 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     override fun isInPictureInPicture(): Boolean = inPipMode
 
     override fun showWindow() {
+        if (!isVisible()) {
+            return
+        }
         setVisible(true)
         bringToFront()
         onWindowFocusChangedListener?.invoke(true)
+    }
+
+    override fun dispatchKeyDown(event: com.nexustools.genericui.event.KeyEvent) {
+        super.dispatchKeyDown(event)
+        dispatchKeyDownToDescendants(nativeWidget, event)
+    }
+
+    override fun dispatchKeyUp(event: com.nexustools.genericui.event.KeyEvent) {
+        super.dispatchKeyUp(event)
+        dispatchKeyUpToDescendants(nativeWidget, event)
+    }
+
+    private fun dispatchKeyDownToDescendants(
+        parent: DesktopNativeWidget,
+        event: com.nexustools.genericui.event.KeyEvent
+    ) {
+        for (child in parent.children.toList()) {
+            if (!child.visible || !child.enabled || child.disposed) continue
+            val impl = child.attributes["nativeImpl"] as? com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<*>
+            if (impl != null && impl !== this) {
+                impl.dispatchKeyDown(event)
+            }
+            dispatchKeyDownToDescendants(child, event)
+        }
+    }
+
+    private fun dispatchKeyUpToDescendants(
+        parent: DesktopNativeWidget,
+        event: com.nexustools.genericui.event.KeyEvent
+    ) {
+        for (child in parent.children.toList()) {
+            if (!child.visible || !child.enabled || child.disposed) continue
+            val impl = child.attributes["nativeImpl"] as? com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<*>
+            if (impl != null && impl !== this) {
+                impl.dispatchKeyUp(event)
+            }
+            dispatchKeyUpToDescendants(child, event)
+        }
     }
 
     override fun closeWindow() {

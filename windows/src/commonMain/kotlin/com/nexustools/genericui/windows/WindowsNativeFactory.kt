@@ -6,20 +6,16 @@ import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopDockWorkspaceNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopToolPaletteNativeImpl
 import com.nexustools.genericui.desktop.image.DesktopImageCodecHooks
 import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
-import com.nexustools.genericui.desktop.lazy.DesktopLazyGridNativeImpl
-import com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl
-import com.nexustools.genericui.desktop.lazy.DesktopTreeViewNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopContextMenuNativeImpl
-import com.nexustools.genericui.desktop.shell.DesktopMenuBarNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuItemNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopPermissionManagerNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopUiTimerNativeImpl
-import com.nexustools.genericui.desktop.widget.*
+import com.nexustools.genericui.desktop.widget.DesktopPopoverNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.action.DropdownNativeImpl
@@ -51,13 +47,15 @@ import com.nexustools.genericui.nativeimpl.net.HttpClientNativeImpl
 import com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl
 import com.nexustools.genericui.nativeimpl.net.UdpSocketNativeImpl
 import com.nexustools.genericui.nativeimpl.net.WebSocketNativeImpl
-import com.nexustools.genericui.nativeimpl.tabs.TabContainerNativeImpl
-import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
 import com.nexustools.genericui.nativeimpl.overlay.PopoverNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.*
 import com.nexustools.genericui.nativeimpl.system.*
+import com.nexustools.genericui.nativeimpl.tabs.TabContainerNativeImpl
+import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
 import com.nexustools.genericui.nativeimpl.typography.MarkdownViewNativeImpl
 import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
+import com.nexustools.genericui.threading.UiThreadDispatcherNativeImpl
+import com.nexustools.genericui.windows.impl.*
 
 /**
  * Windows (`:windows`) implementation of [NativeFactory] backed by Win32 `HWND` controls (`comctl32.dll`),
@@ -88,101 +86,244 @@ class WindowsNativeFactory : NativeFactory {
     override fun createWindow(): WindowNativeImpl<*> = WindowsWindowNativeImpl()
 
     override fun createMenuBar(): MenuBarNativeImpl<*> =
-        DesktopMenuBarNativeImpl(Win32HwndHandle("Win32HMenuBar"))
+        WindowsMenuBarNativeImpl(Win32HwndHandle("Win32HMenuBar")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createMenu(): MenuNativeImpl<*> =
-        DesktopMenuNativeImpl(Win32HwndHandle("Win32HMenu"))
+        DesktopMenuNativeImpl(Win32HwndHandle("Win32HMenu")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createMenuItem(checkable: Boolean, radio: Boolean): MenuItemNativeImpl<*> =
-        DesktopMenuItemNativeImpl(Win32HwndHandle("Win32MenuItem"), checkable, radio)
+        DesktopMenuItemNativeImpl(Win32HwndHandle("Win32MenuItem"), checkable, radio).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createContextMenu(): ContextMenuNativeImpl<*> =
-        DesktopContextMenuNativeImpl(Win32HwndHandle("Win32PopupMenu"))
+        DesktopContextMenuNativeImpl(Win32HwndHandle("Win32PopupMenu")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDockWorkspace(): DockWorkspaceNativeImpl<*> =
-        DesktopDockWorkspaceNativeImpl(Win32HwndHandle("Win32DockWorkspaceW"))
+        WindowsDockWorkspaceNativeImpl(Win32HwndHandle("Win32DockWorkspaceW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDockArea(): DockAreaNativeImpl<*> =
-        DesktopDockAreaNativeImpl(Win32HwndHandle("Win32DockAreaW"))
+        DesktopDockAreaNativeImpl(Win32HwndHandle("Win32DockAreaW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDockGroup(): DockGroupNativeImpl<*> =
-        DesktopDockGroupNativeImpl(Win32HwndHandle("Win32DockGroupW"))
+        DesktopDockGroupNativeImpl(Win32HwndHandle("Win32DockGroupW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDockPanel(): DockPanelNativeImpl<*> =
-        DesktopDockPanelNativeImpl(Win32HwndHandle("Win32DockPanelW"))
+        DesktopDockPanelNativeImpl(Win32HwndHandle("Win32DockPanelW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDockWindow(): DockWindowNativeImpl<*> = WindowsDockWindowNativeImpl()
 
     override fun createToolPalette(): ToolPaletteNativeImpl<*> =
-        DesktopToolPaletteNativeImpl(Win32HwndHandle("Win32ToolPaletteW"))
+        DesktopToolPaletteNativeImpl(Win32HwndHandle("Win32ToolPaletteW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
-        DesktopContainerNativeImpl(Win32HwndHandle("GenericUIContainerW"), classPrefix)
+        createContainer(classPrefix, "div")
+
+    override fun createContainer(classPrefix: String, tagName: String): ContainerNativeImpl<*> {
+        val prefixLower = classPrefix.lowercase()
+        val tagLower = tagName.lowercase()
+        val impl = when {
+            prefixLower.contains("split-pane") || tagLower.contains("splitpane") ->
+                createSplitPane(classPrefix)
+            prefixLower.contains("mdi-container") || prefixLower.contains("mdi-window") || tagLower.contains("mdi") ->
+                createMdiContainer(classPrefix)
+            prefixLower.contains("accordion") || prefixLower.contains("collapse") || tagLower == "details" ->
+                createCollapsibleSection(classPrefix)
+            prefixLower.contains("file-drop-zone") || prefixLower.contains("drop-zone") ->
+                createFilePickerDropZone(classPrefix)
+            prefixLower.contains("offcanvas") ||
+                prefixLower.contains("side-nav") ||
+                prefixLower.contains("drawer") ||
+                prefixLower.contains("navigation-rail") ->
+                createDrawer(classPrefix)
+            prefixLower.contains("status-bar") || tagLower.contains("statusbar") ->
+                createStatusBar(classPrefix)
+            else -> WindowsContainerNativeImpl(Win32HwndHandle("GenericUIContainerW"), classPrefix)
+        }
+        impl.nativeWidget.attributes["nativeImpl"] = impl
+        return impl
+    }
+
+    fun createCollapsibleSection(classPrefix: String = "accordion"): WindowsCollapsibleSectionNativeImpl =
+        WindowsCollapsibleSectionNativeImpl(Win32HwndHandle("GenericUICollapsibleSectionClass"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createSplitPane(classPrefix: String = "split-pane"): WindowsSplitPaneNativeImpl =
+        WindowsSplitPaneNativeImpl(Win32HwndHandle("GenericUISplitPaneClass"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createMdiContainer(classPrefix: String = "mdi-container"): WindowsMdiContainerNativeImpl =
+        WindowsMdiContainerNativeImpl(Win32HwndHandle("MDICLIENT"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createDrawer(classPrefix: String = "offcanvas"): WindowsDrawerNativeImpl =
+        WindowsDrawerNativeImpl(Win32HwndHandle("GenericUIDrawerClass"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createStatusBar(classPrefix: String = "status-bar"): WindowsStatusBarNativeImpl =
+        WindowsStatusBarNativeImpl(Win32HwndHandle("msctls_statusbar32"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createToolBar(): WindowsToolBarNativeImpl =
+        WindowsToolBarNativeImpl(Win32HwndHandle("ToolbarWindow32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createRichTextEditor(): WindowsRichTextEditorNativeImpl =
+        WindowsRichTextEditorNativeImpl(Win32HwndHandle("RICHEDIT50W")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createCodeEditor(): WindowsCodeEditorNativeImpl =
+        WindowsCodeEditorNativeImpl(Win32HwndHandle("GenericUICodeEditorClass")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createColorPicker(): WindowsColorPickerNativeImpl =
+        WindowsColorPickerNativeImpl(Win32HwndHandle("GenericUIColorPickerClass")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createDateTimePicker(): WindowsDateTimePickerNativeImpl =
+        WindowsDateTimePickerNativeImpl(Win32HwndHandle("SysDateTimePick32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    fun createFilePickerDropZone(classPrefix: String = "file-drop-zone"): WindowsFilePickerDropZoneNativeImpl =
+        WindowsFilePickerDropZoneNativeImpl(Win32HwndHandle("GenericUIFileDropZoneClass"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
-        DesktopStyledContainerNativeImpl(Win32HwndHandle("GenericUIStyledContainerW"), classPrefix)
+        WindowsStyledContainerNativeImpl(Win32HwndHandle("GenericUIStyledContainerW"), classPrefix, tagName).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createBookContainer(): BookContainerNativeImpl<*> =
-        DesktopBookContainerNativeImpl(Win32HwndHandle("GenericUIBookContainerW"))
+        WindowsBookContainerNativeImpl(Win32HwndHandle("GenericUIBookContainerW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createScrollView(): ScrollViewNativeImpl<*> =
-        DesktopScrollViewNativeImpl(Win32HwndHandle("GenericUIScrollViewW"))
+        DesktopScrollViewNativeImpl(Win32HwndHandle("GenericUIScrollViewW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDivider(): DividerNativeImpl<*> =
-        DesktopDividerNativeImpl(Win32HwndHandle("STATIC_SS_ETCHEDHORZ"))
+        WindowsDividerNativeImpl(Win32HwndHandle("STATIC_SS_ETCHEDHORZ")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createText(tagName: String, classPrefix: String): TextNativeImpl<*> =
-        DesktopTextNativeImpl(Win32HwndHandle("STATIC"), tagName, classPrefix)
+        WindowsTextNativeImpl(Win32HwndHandle("STATIC"), tagName, classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createMarkdownView(): MarkdownViewNativeImpl<*> =
-        DesktopMarkdownViewNativeImpl(Win32HwndHandle("RichEdit50W"))
+        WindowsMarkdownViewNativeImpl(Win32HwndHandle("RichEdit50W")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createImage(): ImageNativeImpl<*> =
-        DesktopImageNativeImpl(Win32HwndHandle("STATIC_SS_BITMAP"))
+        WindowsImageNativeImpl(Win32HwndHandle("STATIC_SS_BITMAP")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createTable(): TableNativeImpl<*> =
-        DesktopTableNativeImpl(Win32HwndHandle("SysListView32"))
+        WindowsTableNativeImpl(Win32HwndHandle("SysListView32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createButton(classPrefix: String): ButtonNativeImpl<*> =
-        DesktopButtonNativeImpl(Win32HwndHandle("BUTTON"), classPrefix)
+        WindowsButtonNativeImpl(Win32HwndHandle("BUTTON"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> =
-        DesktopStyledButtonNativeImpl(Win32HwndHandle("BUTTON"), classPrefix)
+        WindowsStyledButtonNativeImpl(Win32HwndHandle("BUTTON"), classPrefix).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDropdown(): DropdownNativeImpl<*> =
-        DesktopDropdownNativeImpl(Win32HwndHandle("BUTTON_BS_SPLITBUTTON"))
+        WindowsDropdownNativeImpl(Win32HwndHandle("BUTTON_BS_SPLITBUTTON")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> =
-        DesktopTextInputNativeImpl(Win32HwndHandle("EDIT"), multiline)
+        WindowsTextInputNativeImpl(Win32HwndHandle(if (multiline) "EDIT_MULTILINE" else "EDIT"), multiline).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createSelect(): SelectNativeImpl<*> =
-        DesktopSelectNativeImpl(Win32HwndHandle("COMBOBOX"))
+        WindowsSelectNativeImpl(Win32HwndHandle("COMBOBOX")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createCheckbox(switchStyle: Boolean, radioStyle: Boolean): CheckboxNativeImpl<*> =
-        DesktopCheckboxNativeImpl(Win32HwndHandle("BUTTON_BS_AUTOCHECKBOX"), switchStyle, radioStyle)
+        WindowsCheckboxNativeImpl(Win32HwndHandle("BUTTON_BS_AUTOCHECKBOX"), switchStyle, radioStyle).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createRangeSlider(): RangeSliderNativeImpl<*> =
-        DesktopRangeSliderNativeImpl(Win32HwndHandle("msctls_trackbar32"))
+        WindowsRangeSliderNativeImpl(Win32HwndHandle("msctls_trackbar32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createTab(closable: Boolean): TabNativeImpl<*> =
-        DesktopTabNativeImpl(Win32HwndHandle(if (closable) "SysTabItem32_Closable" else "SysTabItem32"), closable)
+        WindowsTabNativeImpl(Win32HwndHandle(if (closable) "SysTabItem32_Closable" else "SysTabItem32"), closable).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
-    override fun createTabContainer(): TabContainerNativeImpl<*> = WindowsTabContainerNativeImpl()
+    override fun createTabContainer(): TabContainerNativeImpl<*> =
+        WindowsTabContainerNativeImpl(Win32HwndHandle("SysTabControl32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createNavbar(): NavbarNativeImpl<*> =
-        DesktopNavbarNativeImpl(Win32HwndHandle("ReBarWindow32"))
+        WindowsToolBarNativeImpl(Win32HwndHandle("ReBarWindow32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createBottomNavigationBar(): BottomNavigationBarNativeImpl<*> =
-        DesktopBottomNavigationBarNativeImpl(Win32HwndHandle("ToolbarWindow32"))
+        WindowsBottomNavigationBarNativeImpl(Win32HwndHandle("ToolbarWindow32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createProgressBar(): ProgressBarNativeImpl<*> =
-        DesktopProgressBarNativeImpl(Win32HwndHandle("msctls_progress32"))
+        WindowsProgressBarNativeImpl(Win32HwndHandle("msctls_progress32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createSpinner(): SpinnerNativeImpl<*> =
-        DesktopSpinnerNativeImpl(Win32HwndHandle("Win32ActivityRingW"))
+        WindowsSpinnerNativeImpl(Win32HwndHandle("Win32ActivityRingW")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createPopover(): PopoverNativeImpl<*> =
-        DesktopPopoverNativeImpl(Win32HwndHandle("tooltips_class32"))
+        DesktopPopoverNativeImpl(Win32HwndHandle("tooltips_class32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createDialogWindow(): DialogWindowNativeImpl<*> =
         DesktopDialogWindowNativeImpl(
@@ -195,7 +336,9 @@ class WindowsNativeFactory : NativeFactory {
                 attributes["inWindowOverlay"] = false
                 attributes["attachedToMainWindow"] = true
             }
-        )
+        ).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createFileBrowserDialog(): FileBrowserDialogNativeImpl =
         WindowsFileBrowserDialogNativeImpl()
@@ -204,13 +347,22 @@ class WindowsNativeFactory : NativeFactory {
         WindowsStandardDialogsNativeImpl()
 
     override fun createLazyList(): LazyListNativeImpl<*> =
-        DesktopLazyListNativeImpl(Win32HwndHandle("SysListView32_LVS_OWNERDATA"))
+        WindowsLazyListNativeImpl(Win32HwndHandle("SysListView32_LVS_OWNERDATA")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createLazyGrid(): LazyGridNativeImpl<*> =
-        DesktopLazyGridNativeImpl(Win32HwndHandle("SysListView32_ICON_OWNERDATA"))
+        WindowsLazyGridNativeImpl(Win32HwndHandle("SysListView32_ICON_OWNERDATA")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
 
     override fun createTreeView(): TreeViewNativeImpl<*> =
-        DesktopTreeViewNativeImpl(Win32HwndHandle("SysTreeView32"))
+        WindowsTreeViewNativeImpl(Win32HwndHandle("SysTreeView32")).also {
+            it.nativeWidget.attributes["nativeImpl"] = it
+        }
+
+    override fun createUiThreadDispatcher(): UiThreadDispatcherNativeImpl =
+        WindowsUiThreadDispatcherNativeImpl()
 
     override fun createUiTimerScheduler(): UiTimerNativeImpl =
         DesktopUiTimerNativeImpl("Win32 SetTimer")

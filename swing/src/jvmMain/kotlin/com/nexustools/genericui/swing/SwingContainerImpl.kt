@@ -1,8 +1,11 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.enums.bootstrap.FlexDirection
 import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
+import java.awt.Component
 import java.awt.FlowLayout
+import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JPanel
 
@@ -14,11 +17,16 @@ import javax.swing.JPanel
  */
 open class SwingContainerImpl(
     classPrefix: String = "container",
-    panel: JPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+    panel: JPanel = JPanel(FlowLayout(FlowLayout.LEFT, 8, 8))
 ) : SwingBaseContainerNativeImpl(panel, classPrefix), ContainerNativeImpl<JComponent> {
 
     init {
         syncSwingAppearance()
+    }
+
+    override fun setFlexDirection(direction: FlexDirection?) {
+        super.setFlexDirection(direction)
+        syncContainerLayout()
     }
 
     override fun syncSwingAppearance() {
@@ -28,6 +36,34 @@ open class SwingContainerImpl(
             nativeWidget.putClientProperty("backdrop-filter", null)
             nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
             nativeWidget.putClientProperty("backgroundGradient", null)
+        }
+        syncContainerLayout()
+    }
+
+    private fun syncContainerLayout() {
+        val dir = styleSnapshot.flexDirection
+        val isVertical = dir == FlexDirection.COLUMN ||
+            dir == FlexDirection.COLUMN_REVERSE ||
+            (dir == null && (
+                componentClassPrefix.contains("vstack", ignoreCase = true) ||
+                    componentClassPrefix.contains("card", ignoreCase = true) ||
+                    componentClassPrefix.contains("fragment", ignoreCase = true)
+                ))
+        if (isVertical) {
+            if (nativeWidget.layout !is BoxLayout) {
+                nativeWidget.layout = BoxLayout(nativeWidget, BoxLayout.Y_AXIS)
+            }
+            nativeWidget.alignmentX = Component.LEFT_ALIGNMENT
+            for (child in nativeWidget.components) {
+                if (child is JComponent) {
+                    child.alignmentX = Component.LEFT_ALIGNMENT
+                }
+            }
+        } else if (dir == FlexDirection.ROW || dir == FlexDirection.ROW_REVERSE || componentClassPrefix.contains("hstack", ignoreCase = true)) {
+            if (nativeWidget.layout !is FlowLayout) {
+                nativeWidget.layout = FlowLayout(FlowLayout.LEFT, 8, 6)
+            }
+            nativeWidget.alignmentX = Component.LEFT_ALIGNMENT
         }
     }
 

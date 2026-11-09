@@ -28,6 +28,7 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
     protected var selectedIndexVal: Int = 0
     protected var tabPositionVal: TabPosition = TabPosition.TOP
     protected var tabBarStyleVal: TabBarStyle = TabBarStyle.TABS
+    protected var fullWidthTabsVal: Boolean = false
     protected var onTabSelectedListener: ((Int) -> Unit)? = null
     protected var onTabCloseRequestedListener: ((Int) -> Boolean)? = null
 
@@ -196,6 +197,13 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
         tabBarStyleVal = style
         nativeWidget.attributes["tabBarStyle"] = style.name
     }
+
+    override fun setFullWidthTabsNative(fullWidth: Boolean) {
+        fullWidthTabsVal = fullWidth
+        nativeWidget.attributes["fullWidthTabs"] = fullWidth
+    }
+
+    fun isFullWidthTabs(): Boolean = fullWidthTabsVal
 
     override fun setSelectedTabIndex(index: Int, fadeTransition: Boolean) {
         if (tabTitles.isEmpty()) return

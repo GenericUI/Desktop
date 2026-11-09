@@ -54,8 +54,10 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     val jFrame: JFrame? = if (!GraphicsEnvironment.isHeadless()) {
         try {
             JFrame("GenericUI").apply {
+                defaultCloseOperation = JFrame.DISPOSE_ON_CLOSE
                 contentPane.add(nativeWidget, BorderLayout.CENTER)
                 setSize(1280, 800)
+                setLocationRelativeTo(null)
                 loadDefaultWindowIcon()?.let { iconImage = it }
             }
         } catch (_: Throwable) {
@@ -334,7 +336,16 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     override fun isInPictureInPicture(): Boolean = pipActive
 
+    override fun setVisible(visible: Boolean) {
+        super.setVisible(visible)
+        jFrame?.isVisible = visible
+    }
+
     override fun showWindow() {
+        if (!isVisible()) {
+            jFrame?.isVisible = false
+            return
+        }
         setVisible(true)
         jFrame?.isVisible = true
         bringToFront()

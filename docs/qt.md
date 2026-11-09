@@ -26,19 +26,22 @@ When `styles { globalStyleSheet = "styles/main.scss" }` is configured in `build.
 
 ---
 
-## Native Qt6 Control Rendering (`BootstrapType.NONE` Default), Semantic `BootstrapType` Tinting, & Custom Cursors
+## Native Qt6 Control Rendering (`BootstrapType.NONE`), Offscreen Sprite + `ThemeConfig` Tinting (`BootstrapType != NONE`), & `QtControlRenderUtil`
 
-1. **`BootstrapType.NONE` Default & Zero Bootstrap CSS Styling**:
+1. **`BootstrapType.NONE` Default — 100% Unmodified Qt6 `QStyle` System Widgets**:
    - Native Qt6 applications **never** use Bootstrap CSS styling.
-   - When `component.getBootstrap().type == BootstrapType.NONE` (the default) and no inline `ComponentStyle` background/border is set, `:desktop:qt` renders the **authentic Qt6 `QStyle` / `QPalette` system widget** for the active `LIGHT` / `DARK` theme.
-2. **Semantic `BootstrapType` Tinting**:
-   - When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is set on `component.getBootstrap().type`, `:desktop:qt` emulates `BootstrapType` by **tinting the native `QWidget`** (`QPalette::Button`, `QPalette::ButtonText`, `QPalette::Highlight` via `DesktopBaseNativeImpl.resolveSemanticBootstrapColor(darkTheme)`), supporting `outline = true/false`.
-   - `component.getStyle().setAccentColor(color)` (`accent-color`) sets `QPalette::Highlight` on interactive controls. Unsupported CSS properties and CSS transitions are **silently ignored**.
-3. **Strict User CSS Class Isolation**:
+   - When `component.getBootstrap().type == BootstrapType.NONE` (the default), `:desktop:qt` (`Qt*NativeImpl` + `QtControlRenderUtil`) renders the **100% unmodified genuine Qt6 `QApplication::style()` (`QStyle` / `QPalette`) system widget** for the active `LIGHT` / `DARK` theme.
+2. **`BootstrapType != BootstrapType.NONE` — Empty-Text Offscreen Sprite + `ThemeConfig` Tint + Text Overlay**:
+   - When `BootstrapType != BootstrapType.NONE` (`PRIMARY`, `SECONDARY`, `SUCCESS`, `DANGER`, `WARNING`, `INFO`, `LIGHT`, `DARK`), `QtControlRenderUtil` renders the native `QStyle` control (`QStyle::CE_PushButtonBevel`, `PE_PanelButtonCommand`, etc.) **with NO text** (`QStyleOptionButton.text = ""`) into an offscreen `QImage(w, h, QImage::Format_ARGB32)`, color-tints the native control pixels via `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer` and `ThemeConfig` while preserving native Qt6 bevels, borders, and hover/pressed/disabled states, blits the tinted `QImage`, and draws the contrasting text label (`QPainter::drawText`) and icon on top afterward.
+3. **System Backend Typography vs. Aesthetic Style Restraints**:
+   - **Text / Typography Elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`)**: Honor typography and text-color properties (`color` / `textColor`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `lineHeight`, `letterSpacing`, `textAlign`, `textDecoration`, `textTransform`, `textOverflow`, `whiteSpace`, `wordBreak`).
+   - **Buttons, Inputs, Controls, & Standard Containers**: Aesthetic skinning and typography overrides on `ComponentStyle` (`backgroundColor`, `background`, `color`, `accentColor`, `borderColor`, `borderWidth`, `borderStyle`, `borderRadius`, `boxShadow`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`) are **silently ignored**. Standard components can **ONLY** be tinted via `BootstrapType`.
+   - **`StyledContainer` & `StyledButton` (and `:extensions:alien`)**: Honor full `ComponentStyle` aesthetic and typography properties.
+4. **Strict User CSS Class Isolation**:
    - `addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` return **only** user-added custom classes (`styleSnapshot.customClasses`).
-4. **Custom Cursor Translation (`CssCustomCursor` $\rightarrow$ `QCursor`)**:
+5. **Custom Cursor Translation (`CssCustomCursor` $\rightarrow$ `QCursor`)**:
    - Translates any PNG `ResourceID`, SVG `ResourceID`/markup, or `ImageBuffer` `CssCustomCursor` into a `QImage` / `QPixmap` and constructs `QCursor(pixmap, hotspotX, hotspotY)` applied via `QWidget::setCursor`.
-5. **`IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`)**:
+6. **`IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`)**:
    - Defaults to `ThemeMode.AUTO`, querying `QGuiApplication::styleHints()->colorScheme()` (`Qt::ColorScheme::Dark` vs. `Qt::ColorScheme::Light`) and listening to `colorSchemeChanged`.
 
 ---

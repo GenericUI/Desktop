@@ -22,7 +22,7 @@ class SwingMenuItemImpl(
     },
     "dropdown-item"
 ), MenuItemNativeImpl<JComponent> {
-    override val nativeWidget: JMenuItem = super.nativeWidget as JMenuItem
+    override val nativeWidget: JMenuItem get() = super.nativeWidget as JMenuItem
 
     private var checkedState: Boolean = false
     private var iconName: String? = null

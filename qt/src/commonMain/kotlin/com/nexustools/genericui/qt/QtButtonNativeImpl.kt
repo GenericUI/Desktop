@@ -1,22 +1,24 @@
 package com.nexustools.genericui.qt
 
-import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.desktop.widget.DesktopButtonNativeImpl
+import com.nexustools.genericui.enums.bootstrap.BootstrapSize
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
-import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.qt.render.QtControlRenderUtil
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
-import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
-import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.style.transition.CssTransitionSpec
 
 /**
  * Qt6 `QPushButton` implementation of [com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl].
  *
  * Non-styled [QtButtonNativeImpl] instances use native Qt6 `QPalette` / `QStyle` rendering (`Qt::ColorScheme::Dark` /
- * `Qt::ColorScheme::Light` for Dark / Light / Auto themes) and ignore custom CSS gradients and `backdrop-filter` blur.
+ * `Qt::ColorScheme::Light` for Dark / Light / Auto themes), ignore aesthetic and typography `ComponentStyle`
+ * overrides unless hosted in a custom style engine, and support [BootstrapType] tinting via
+ * [QtControlRenderUtil].
  */
 open class QtButtonNativeImpl(
     nativeWidget: QtWidgetHandle = QtWidgetHandle("QPushButton"),
@@ -28,27 +30,28 @@ open class QtButtonNativeImpl(
     }
 
     protected open fun syncQtButtonAppearance() {
-        val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
-        val isDark = effectiveTheme == ThemeMode.DARK
-        nativeWidget.attributes["effectiveThemeMode"] = effectiveTheme
-        nativeWidget.attributes["qtColorScheme"] = if (isDark) "Qt::ColorScheme::Dark" else "Qt::ColorScheme::Light"
-        nativeWidget.attributes.remove("backdropBlurPx")
-        nativeWidget.styleProperties.remove("backdrop-filter")
-        nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
+        QtControlRenderUtil.syncStandardControlAppearance(this, "QStyle::CE_PushButton[QStyleOptionButton]")
+    }
 
-        nativeWidget.attributes.remove("backgroundGradient")
-        nativeWidget.styleProperties.remove("background-image")
-        val semanticType = styleSnapshot.type?.takeIf { it.isSemantic }
-            ?: styleSnapshot.backgroundType?.takeIf { it.isSemantic }
-        val explicitBg = lastComponentStyle?.backgroundColor ?: getComputedStyle()?.backgroundColor
-        if (semanticType != null || explicitBg != null) {
-            nativeWidget.attributes["useSystemControlAppearance"] = "false"
-            val resolvedBg = explicitBg ?: BootstrapColorPalette.resolveColor(semanticType!!, isDark)
-            nativeWidget.attributes["bootstrapTintColor"] = resolvedBg.toHex()
-        } else {
-            nativeWidget.attributes["useSystemControlAppearance"] = "true"
-            nativeWidget.attributes.remove("bootstrapTintColor")
-        }
+    override fun measureDesktopNode(parentWidthPx: Int, parentHeightPx: Int, dpiScale: Float): Size =
+        QtControlRenderUtil.measureButton(this, dpiScale)
+
+    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
+        QtControlRenderUtil.renderButton(this, renderContext, bounds)
+
+    override fun setText(text: String) {
+        super.setText(text)
+        syncQtButtonAppearance()
+    }
+
+    override fun setIcon(icon: String?) {
+        super.setIcon(icon)
+        syncQtButtonAppearance()
+    }
+
+    override fun setSize(size: BootstrapSize?) {
+        super.setSize(size)
+        syncQtButtonAppearance()
     }
 
     override fun setAttribute(name: String, value: String?) {
@@ -58,8 +61,6 @@ open class QtButtonNativeImpl(
             name.equals("-webkit-backdrop-filter", ignoreCase = true)
         ) {
             nativeWidget.attributes.remove("backdropBlurPx")
-            nativeWidget.styleProperties.remove("backdrop-filter")
-            nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
             return
         }
         super.setAttribute(name, value)
@@ -68,7 +69,6 @@ open class QtButtonNativeImpl(
     override fun setBackgroundGradient(gradient: Gradient?) {
         super.setBackgroundGradient(null)
         nativeWidget.attributes.remove("backgroundGradient")
-        nativeWidget.styleProperties.remove("background-image")
     }
 
     override fun getBackgroundGradient(): Gradient? = null

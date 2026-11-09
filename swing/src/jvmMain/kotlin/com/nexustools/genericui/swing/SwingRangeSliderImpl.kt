@@ -8,7 +8,7 @@ import javax.swing.JSlider
  * Java Swing `JSlider` implementation of [RangeSliderNativeImpl].
  */
 class SwingRangeSliderImpl : SwingBaseNativeImpl(JSlider(0, 1000, 0), "form-range"), RangeSliderNativeImpl<JComponent> {
-    override val nativeWidget: JSlider = super.nativeWidget as JSlider
+    override val nativeWidget: JSlider get() = super.nativeWidget as JSlider
 
     private var minVal: Double = 0.0
     private var maxVal: Double = 100.0

@@ -1,12 +1,15 @@
 @file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 
-package com.nexustools.genericui.windows
+package com.nexustools.genericui.windows.render
 
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.core.DesktopStageOverlaySpec
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
+import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
+import com.nexustools.genericui.desktop.dock.DesktopDockWorkspaceNativeImpl
 import com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopBookContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopBottomNavigationBarNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopButtonNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopCheckboxNativeImpl
@@ -25,6 +28,7 @@ import com.nexustools.genericui.desktop.widget.DesktopTabNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
+import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.image.ImageBuffer
 import com.nexustools.genericui.image.ImageDecodeOptions
@@ -34,16 +38,27 @@ import com.nexustools.genericui.image.cache.ImageCacheManager
 import com.nexustools.genericui.net.http.HttpRequest
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.ComponentStyle
+import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.CssFilter
+import com.nexustools.genericui.style.css.CssLength
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.util.WeakReference
+import com.nexustools.genericui.windows.Win32DwmUxThemeBridge
+import com.nexustools.genericui.windows.Win32NativeWindowHost
+import com.nexustools.genericui.windows.WindowsHttpClientNativeImpl
+import com.nexustools.genericui.windows.WindowsWicImageCodecNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsContainerNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsLazyListNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsRenderableNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsStyledContainerNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsTabContainerNativeImpl
 import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.get
-import kotlinx.cinterop.set
-import platform.windows.DT_CENTER
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.get
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.set
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CoroutineScope
@@ -56,6 +71,7 @@ import platform.windows.BITMAPINFO
 import platform.windows.BITMAPINFOHEADER
 import platform.windows.BI_RGB
 import platform.windows.DIB_RGB_COLORS
+import platform.windows.DT_CENTER
 import platform.windows.DT_END_ELLIPSIS
 import platform.windows.DT_LEFT
 import platform.windows.DT_NOPREFIX
@@ -82,14 +98,288 @@ import kotlin.concurrent.AtomicInt
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+object Win32WorkspaceWindowRenderUtil {
 
-/**
- * Recursive Win32 GDI layout and rendering engine for general non-studio `GenericUI` applications
- * (`Navbar`, `CollapsibleBottomDockLayout`, `HybridColumnLayout`, `HybridSplitNavigationLayout`,
- * `TabContainer`, `BottomNavigationBar`, `Card`, `Alert`, `VStack`, `HStack`, `ScrollView`,
- * `LazyList`/`LazyColumn`, interactive stage surfaces, and all form/typography controls).
- */
-internal object Win32GeneralComponentTreeRenderer {
+    fun canRender(widget: DesktopNativeWidget): Boolean {
+        val impl = widget.attributes["nativeImpl"]
+        if (impl is DesktopScrollViewNativeImpl<*> ||
+            impl is DesktopDockWorkspaceNativeImpl<*> ||
+            impl is DesktopDockPanelNativeImpl<*> ||
+            impl is DesktopBookContainerNativeImpl<*>
+        ) {
+            return true
+        }
+        val cls = widget.nativeClassName.lowercase()
+        val role = (widget.attributes["componentRole"] as? String ?: "").lowercase()
+        return cls in WORKSPACE_CLASSES || role in WORKSPACE_ROLES
+    }
+
+    fun render(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        left: Int,
+        top: Int,
+        right: Int
+    ): Int {
+        val impl = widget.attributes["nativeImpl"]
+        val cls = widget.nativeClassName.lowercase()
+        val role = (widget.attributes["componentRole"] as? String ?: "").lowercase()
+
+        return when {
+            impl is DesktopScrollViewNativeImpl<*> || cls == "scrollview" || role == "scroll-view" ->
+                renderScrollView(ctx, widget, impl as? DesktopScrollViewNativeImpl<*>, left, top, right)
+            cls == "splitpane" || role == "split-pane" ->
+                renderSplitPane(ctx, widget, left, top, right)
+            impl is DesktopDockWorkspaceNativeImpl<*> || cls == "dockworkspace" || role == "dock-workspace" ->
+                renderDockWorkspace(ctx, widget, impl as? DesktopDockWorkspaceNativeImpl<*>, left, top, right)
+            impl is DesktopBookContainerNativeImpl<*> || cls == "bookcontainer" || role == "book-container" ->
+                renderBookContainer(ctx, widget, impl as? DesktopBookContainerNativeImpl<*>, left, top, right)
+            cls == "mdicontainer" || role == "mdi-container" || cls == "mdiwindow" || role == "mdi-window" ->
+                renderMdiContainerOrWindow(ctx, widget, left, top, right)
+            cls == "dialoghost" || role == "dialog-host" || cls == "toasthost" || role == "toast-host" ->
+                renderDialogOrToastHost(ctx, widget, left, top, right)
+            else ->
+                Win32ContainerChromeRenderUtil.render(ctx, widget, left, top, right)
+        }
+    }
+
+    /**
+     * Renders a `ScrollView` with clipped viewport content and a native `uxtheme.dll` `SCROLLBAR`
+     * vertical track and thumb when content overflows.
+     */
+    fun renderScrollView(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        scrollImpl: DesktopScrollViewNativeImpl<*>?,
+        left: Int,
+        top: Int,
+        right: Int
+    ): Int {
+        val viewportH = (widget.preferredSize?.height ?: 180).coerceIn(48, 600)
+        val bottom = top + viewportH
+        widget.bounds = Rect(left, top, (right - left).coerceAtLeast(1), viewportH)
+
+        val scrollY = scrollImpl?.currentScrollY() ?: 0
+        val scrollbarW = 14
+        val contentRight = (right - scrollbarW - 2).coerceAtLeast(left + 16)
+
+        val savedClip = Win32NativeWindowHost.pushClipRect(ctx.hdc, left, top, right, bottom)
+        var unclippedBottom = top - scrollY
+        try {
+            for (child in ctx.visibleChildrenOf(widget)) {
+                unclippedBottom = ctx.renderChild(child, left, unclippedBottom, contentRight) + 6
+            }
+        } finally {
+            Win32NativeWindowHost.popClipRect(ctx.hdc, savedClip)
+        }
+
+        val totalContentH = (unclippedBottom - (top - scrollY)).coerceAtLeast(viewportH)
+        if (totalContentH > viewportH) {
+            val sbLeft = right - scrollbarW
+            val sbClassList = Win32DwmUxThemeBridge.resolveExplorerClassList("SCROLLBAR", ctx.darkMode)
+            Win32DwmUxThemeBridge.drawUxThemeControlBackground(
+                hwnd = ctx.hwnd,
+                hdc = ctx.hdc,
+                classList = sbClassList,
+                partId = Win32DwmUxThemeBridge.SBP_LOWERTRACKVERT,
+                stateId = Win32DwmUxThemeBridge.SCRBS_NORMAL,
+                left = sbLeft,
+                top = top,
+                right = right,
+                bottom = bottom
+            )
+            val thumbH = ((viewportH.toFloat() / totalContentH.toFloat()) * viewportH).roundToInt().coerceIn(20, viewportH)
+            val maxScroll = (totalContentH - viewportH).coerceAtLeast(1)
+            val thumbTop = top + ((scrollY.coerceIn(0, maxScroll).toFloat() / maxScroll.toFloat()) * (viewportH - thumbH)).roundToInt()
+            Win32DwmUxThemeBridge.drawUxThemeControlBackground(
+                hwnd = ctx.hwnd,
+                hdc = ctx.hdc,
+                classList = sbClassList,
+                partId = Win32DwmUxThemeBridge.SBP_THUMBBTNVERT,
+                stateId = Win32DwmUxThemeBridge.SCRBS_NORMAL,
+                left = sbLeft,
+                top = thumbTop,
+                right = right,
+                bottom = (thumbTop + thumbH).coerceAtMost(bottom)
+            )
+        }
+        return bottom
+    }
+
+    /**
+     * Renders a `SplitPane` with two resizable child panes and a native splitter bar.
+     */
+    fun renderSplitPane(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        left: Int,
+        top: Int,
+        right: Int
+    ): Int {
+        val children = ctx.visibleChildrenOf(widget)
+        val ratio = ((widget.attributes["splitRatio"] as? Number)?.toFloat() ?: 0.5f).coerceIn(0.15f, 0.85f)
+        val totalW = (right - left).coerceAtLeast(64)
+        val splitX = left + (totalW * ratio).roundToInt()
+        val firstPane = children.getOrNull(0)
+        val secondPane = children.getOrNull(1)
+        val b1 = if (firstPane != null) ctx.renderChild(firstPane, left, top, splitX - 3) else top + 60
+        val b2 = if (secondPane != null) ctx.renderChild(secondPane, splitX + 3, top, right) else top + 60
+        val bottom = max(b1, b2)
+        Win32NativeWindowHost.fillRectColor(ctx.hdc, splitX - 1, top, splitX + 1, bottom, ctx.borderSubtleColorRef)
+        widget.bounds = Rect(left, top, totalW, (bottom - top).coerceAtLeast(24))
+        return bottom
+    }
+
+    /**
+     * Renders a `DockWorkspace` and its docked panels.
+     */
+    fun renderDockWorkspace(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        dockImpl: DesktopDockWorkspaceNativeImpl<*>?,
+        left: Int,
+        top: Int,
+        right: Int
+    ): Int {
+        val children = ctx.visibleChildrenOf(widget)
+        var curY = top
+        for (panel in children) {
+            val panelImpl = panel.attributes["nativeImpl"] as? DesktopDockPanelNativeImpl<*>
+            val title = panelImpl?.getTitle() ?: (panel.attributes["title"] as? String) ?: "Dock Panel"
+            Win32ControlTintRenderUtil.drawNativeOrTintedControlWithTextOverlay(
+                ctx = ctx,
+                widget = panel,
+                baseClass = "HEADER",
+                partId = Win32DwmUxThemeBridge.HP_HEADERITEM,
+                stateId = Win32DwmUxThemeBridge.HIS_NORMAL,
+                left = left,
+                top = curY,
+                right = right,
+                bottom = curY + 26,
+                text = title,
+                font = ctx.fontSmallBold ?: ctx.fontNormal,
+                centerText = false
+            )
+            curY += 28
+            if (panelImpl?.isCollapsed() != true) {
+                curY = ctx.renderChild(panel, left + 4, curY, right - 4) + 6
+            }
+        }
+        val bottom = max(top + 48, curY)
+        widget.bounds = Rect(left, top, (right - left).coerceAtLeast(1), bottom - top)
+        return bottom
+    }
+
+    /**
+     * Renders a `BookContainer` page spread.
+     */
+    fun renderBookContainer(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        bookImpl: DesktopBookContainerNativeImpl<*>?,
+        left: Int,
+        top: Int,
+        right: Int
+    ): Int {
+        val pages = ctx.visibleChildrenOf(widget)
+        val attrs = bookImpl?.nativeWidget?.attributes ?: widget.attributes
+        val curPage = ((attrs["currentPage"] as? Number)?.toInt() ?: 0).coerceIn(0, (pages.size - 1).coerceAtLeast(0))
+        val activePage = pages.getOrNull(curPage)
+        val bottom = if (activePage != null) {
+            ctx.renderChild(activePage, left + 8, top + 8, right - 8) + 8
+        } else {
+            top + 120
+        }
+        widget.bounds = Rect(left, top, (right - left).coerceAtLeast(1), bottom - top)
+        return bottom
+    }
+
+    /**
+     * Renders an `MdiContainer` or `MdiWindow` with native `uxtheme.dll` `WINDOW` caption chrome.
+     */
+    fun renderMdiContainerOrWindow(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        left: Int,
+        top: Int,
+        right: Int
+    ): Int {
+        val title = (widget.attributes["title"] as? String) ?: widget.nativeClassName.ifBlank { "Window" }
+        val captionH = 28
+        Win32DwmUxThemeBridge.drawUxThemeControlBackground(
+            hwnd = ctx.hwnd,
+            hdc = ctx.hdc,
+            classList = "WINDOW",
+            partId = Win32DwmUxThemeBridge.WP_CAPTION,
+            stateId = Win32DwmUxThemeBridge.CS_ACTIVE,
+            left = left,
+            top = top,
+            right = right,
+            bottom = top + captionH
+        )
+        ctx.selectFont(ctx.fontBold ?: ctx.fontNormal)
+        Win32NativeWindowHost.drawTextInRect(
+            hdc = ctx.hdc,
+            text = title,
+            left = left + 10,
+            top = top,
+            right = right - 32,
+            bottom = top + captionH,
+            colorRef = ctx.textPrimaryColorRef
+        )
+        var curY = top + captionH + 6
+        for (child in ctx.visibleChildrenOf(widget)) {
+            curY = ctx.renderChild(child, left + 8, curY, right - 8) + 6
+        }
+        val bottom = max(top + 80, curY + 6)
+        widget.bounds = Rect(left, top, (right - left).coerceAtLeast(1), bottom - top)
+        return bottom
+    }
+
+    /**
+     * Renders a `DialogHost` or `ToastHost`.
+     */
+    fun renderDialogOrToastHost(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        left: Int,
+        top: Int,
+        right: Int
+    ): Int {
+        var curY = top
+        for (child in ctx.visibleChildrenOf(widget)) {
+            curY = ctx.renderChild(child, left, curY, right) + 6
+        }
+        widget.bounds = Rect(left, top, (right - left).coerceAtLeast(1), (curY - top).coerceAtLeast(0))
+        return curY
+    }
+
+    private val WORKSPACE_CLASSES = setOf(
+        "splitpane",
+        "scrollview",
+        "mdicontainer",
+        "mdiwindow",
+        "dockworkspace",
+        "dockpanel",
+        "dialoghost",
+        "toasthost",
+        "swiperefreshpane",
+        "bookcontainer",
+        "horizontalcarouselselector"
+    )
+    private val WORKSPACE_ROLES = setOf(
+        "split-pane",
+        "scroll-view",
+        "mdi-container",
+        "mdi-window",
+        "dock-workspace",
+        "dock-panel",
+        "dialog-host",
+        "toast-host",
+        "swipe-refresh-pane",
+        "book-container",
+        "horizontal-carousel-selector"
+    )
 
     private class CompositeBgraEntry(
         val bgra: ByteArray,
@@ -118,7 +408,11 @@ internal object Win32GeneralComponentTreeRenderer {
         val hitRegions: List<RelativeHitRegion>,
         val scrollRegions: List<IntArray> = emptyList(),
         val subtitleBannerRelBounds: com.nexustools.genericui.geometry.Rect? = null,
-        val timePillRelBounds: com.nexustools.genericui.geometry.Rect? = null
+        val timePillRelBounds: com.nexustools.genericui.geometry.Rect? = null,
+        val videoStageRect: IntArray? = null,
+        val videoSwapCount: Long = -1L,
+        val overlaySubtreeVer: Long = -1L,
+        val hudAlphaQuantized: Int = -1
     )
 
     private data class RowSurfaceCacheKey(
@@ -453,7 +747,11 @@ internal object Win32GeneralComponentTreeRenderer {
         reuseBuffer: ByteArray? = null,
         cacheKey: StripSurfaceCacheKey? = null,
         hitEndIdxOverride: Int = -1,
-        alreadyFlushedGdi: Boolean = false
+        alreadyFlushedGdi: Boolean = false,
+        videoStageRect: IntArray? = null,
+        videoSwapCount: Long = -1L,
+        overlaySubtreeVer: Long = -1L,
+        hudAlphaQuantized: Int = -1
     ): CachedSurfaceRegion? {
         val w = right - left
         val h = bottom - top
@@ -528,7 +826,11 @@ internal object Win32GeneralComponentTreeRenderer {
             hitRegions = relHits,
             scrollRegions = relScrolls,
             subtitleBannerRelBounds = subtitleBannerRelBounds,
-            timePillRelBounds = timePillRelBounds
+            timePillRelBounds = timePillRelBounds,
+            videoStageRect = videoStageRect,
+            videoSwapCount = videoSwapCount,
+            overlaySubtreeVer = overlaySubtreeVer,
+            hudAlphaQuantized = hudAlphaQuantized
         )
     }
 
@@ -552,8 +854,8 @@ internal object Win32GeneralComponentTreeRenderer {
         videoWidget: DesktopNativeWidget? = null,
         overlayWidget: DesktopNativeWidget? = null
     ): Int {
-        val explicitH = videoWidget?.styleProperties?.get("height")?.removeSuffix("px")?.trim()?.toFloatOrNull()
-            ?: videoWidget?.parentWidget?.styleProperties?.get("height")?.removeSuffix("px")?.trim()?.toFloatOrNull()
+        val explicitH = videoWidget?.resolveCssValue("height")?.removeSuffix("px")?.trim()?.toFloatOrNull()
+            ?: videoWidget?.parentWidget?.resolveCssValue("height")?.removeSuffix("px")?.trim()?.toFloatOrNull()
         if (explicitH != null && explicitH > 40f) {
             return explicitH.roundToInt().coerceAtLeast(180)
         }
@@ -562,10 +864,26 @@ internal object Win32GeneralComponentTreeRenderer {
             ?: (videoWidget?.attributes?.get("aspectRatio") as? Number)?.toFloat()
             ?: (videoWidget?.parentWidget?.attributes?.get("aspectRatio") as? Number)?.toFloat()
             ?: (overlayWidget?.parentWidget?.attributes?.get("aspectRatio") as? Number)?.toFloat()
-            ?: videoWidget?.styleProperties?.get("aspect-ratio")?.toFloatOrNull()
-            ?: videoWidget?.parentWidget?.styleProperties?.get("aspect-ratio")?.toFloatOrNull()
+            ?: videoWidget?.resolveCssValue("aspect-ratio")?.toFloatOrNull()
+            ?: videoWidget?.parentWidget?.resolveCssValue("aspect-ratio")?.toFloatOrNull()
         val aspect = if (ratioAttr != null && ratioAttr > 0.1f) ratioAttr else (16f / 9f)
         return (availW.toFloat() / aspect).roundToInt().coerceAtLeast(180)
+    }
+
+    private fun isFullViewportVideoStage(vararg widgets: DesktopNativeWidget?): Boolean {
+        if (Win32NativeWindowHost.isFullscreenActiveForMainWindow()) return true
+        for (w in widgets) {
+            var cur = w
+            var depth = 0
+            while (cur != null && depth < 10) {
+                if (Win32NativeWindowHost.widgetHasClass(cur, "full-viewport-video-stage")) {
+                    return true
+                }
+                cur = cur.parentWidget
+                depth++
+            }
+        }
+        return false
     }
 
     internal fun renderCachedVideoStageFastPath(
@@ -581,7 +899,7 @@ internal object Win32GeneralComponentTreeRenderer {
         val vWidget = cachedVideoWidget ?: return false
         val oWidget = cachedOverlayWidget ?: return false
         if (vWidget.disposed || !vWidget.visible || oWidget.disposed || !oWidget.visible) return false
-        if (cachedVideoFullViewportMode != Win32NativeWindowHost.isFullscreenActiveForMainWindow()) return false
+        if (cachedVideoFullViewportMode != isFullViewportVideoStage(vWidget, oWidget)) return false
         val vr = Win32NativeWindowHost.lastRenderedVideoStageRect
         if (vr[2] <= vr[0] || vr[3] <= vr[1]) return false
         val savedClip = Win32NativeWindowHost.pushClipRect(hdc, vr[0], vr[1], vr[2], vr[3])
@@ -902,7 +1220,7 @@ internal object Win32GeneralComponentTreeRenderer {
                     val forceSingleLine = maxLines == 1 ||
                         Win32NativeWindowHost.widgetHasClass(widget, "text-nowrap") ||
                         Win32NativeWindowHost.widgetHasClass(widget, "text-truncate") ||
-                        widget.styleProperties["white-space"]?.lowercase() == "nowrap"
+                        widget.resolveCssValue("white-space")?.lowercase() == "nowrap"
                     if (forceSingleLine || isHeading) {
                         min(maxAvailW, rawW)
                     } else {
@@ -939,16 +1257,16 @@ internal object Win32GeneralComponentTreeRenderer {
                     ?: 48).coerceIn(16, maxAvailW)
             }
             is DesktopLazyListNativeImpl<*> -> {
-                val minW = widget.styleProperties["min-width"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: 340
+                val minW = widget.resolveCssValue("min-width")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: 340
                 min(maxAvailW, max(minW, 340))
             }
             else -> {
                 if (widget.attributes["isLazyList"] == true) {
-                    val minW = widget.styleProperties["min-width"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: 340
+                    val minW = widget.resolveCssValue("min-width")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: 340
                     min(maxAvailW, max(minW, 340))
                 } else {
-                    val explicitMinW = widget.styleProperties["min-width"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
-                        ?: widget.styleProperties["width"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
+                    val explicitMinW = widget.resolveCssValue("min-width")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
+                        ?: widget.resolveCssValue("width")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
                         ?: 0
                     val kids = visibleChildrenOf(widget, emptySet())
                     val contentW = if (kids.isEmpty()) {
@@ -1050,7 +1368,7 @@ internal object Win32GeneralComponentTreeRenderer {
                 (useCache || !Win32NativeWindowHost.isWidgetMountedInTitleBar(child, titleBarWidgets)) &&
                 child.attributes["nativeImpl"] !is DesktopDialogWindowNativeImpl<*> &&
                 child.attributes["data-modal-host"] != "true" &&
-                child.styleProperties["display"]?.lowercase() != "none"
+                child.resolveCssValue("display")?.lowercase() != "none"
             ) {
                 result.add(child)
             }
@@ -1391,6 +1709,7 @@ internal object Win32GeneralComponentTreeRenderer {
             val otherChildren = visibleChildrenOf(node, titleBarWidgets).filter {
                 it !== stageWidget && it !== overlayWidget
             }
+            val fullViewport = isFullViewportVideoStage(node, stageWidget, overlayWidget)
             renderVideoStageWithOverlay(
                 hwnd = hwnd,
                 hdc = hdc,
@@ -1404,10 +1723,11 @@ internal object Win32GeneralComponentTreeRenderer {
                 overlayWidget = overlayWidget,
                 otherChildren = otherChildren,
                 titleBarWidgets = titleBarWidgets,
-                left = left + 12,
-                top = curTop + 10,
-                right = right - 12,
-                bottomLimit = curBottom
+                left = if (fullViewport) 0 else left + 12,
+                top = if (fullViewport) curTop else curTop + 10,
+                right = if (fullViewport) right else right - 12,
+                bottomLimit = curBottom,
+                fullViewportMode = fullViewport
             )
             return
         }
@@ -1453,9 +1773,9 @@ internal object Win32GeneralComponentTreeRenderer {
             val cardNodes = if (isNodeItselfCard) listOf(node) else remainingChildren
             val availW = right - left
             val availH = curBottom - curTop
-            val rawMaxWStr = node.styleProperties["max-width"]
-                ?: cardNodes.firstOrNull()?.styleProperties?.get("max-width")
-                ?: cardNodes.firstOrNull()?.let { visibleChildrenOf(it, titleBarWidgets).firstOrNull()?.styleProperties?.get("max-width") }
+            val rawMaxWStr = node.resolveCssValue("max-width")
+                ?: cardNodes.firstOrNull()?.resolveCssValue("max-width")
+                ?: cardNodes.firstOrNull()?.let { visibleChildrenOf(it, titleBarWidgets).firstOrNull()?.resolveCssValue("max-width") }
             val configuredMaxW = rawMaxWStr?.removeSuffix("px")?.trim()?.toIntOrNull()
                 ?: (node.attributes["maxWidthPx"] as? Number)?.toInt()
                 ?: (cardNodes.firstOrNull()?.attributes?.get("maxWidthPx") as? Number)?.toInt()
@@ -1769,8 +2089,8 @@ internal object Win32GeneralComponentTreeRenderer {
             return span.toFloat()
         }
         val impl = col.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
-        val growStr = col.styleProperties["flex-grow"]
-            ?: impl?.nativeWidget?.styleProperties?.get("flex-grow")
+        val growStr = col.resolveCssValue("flex-grow")
+            ?: impl?.nativeWidget?.resolveCssValue("flex-grow")
         return growStr?.toFloatOrNull()?.coerceAtLeast(0.2f) ?: 1f
     }
 
@@ -1832,8 +2152,7 @@ internal object Win32GeneralComponentTreeRenderer {
                             stageRect[0] >= colSlotLeft &&
                             stageRect[2] <= colSlotRight)
                     val isHoveredInCol = Win32NativeWindowHost.isRectHovered(hwnd, colSlotLeft, colSlotTop, colSlotRight, colSlotBottom)
-                    val canCacheCol = !hasStageInCol &&
-                        !isHoveredInCol &&
+                    val canCacheCol = !isHoveredInCol &&
                         Win32NativeWindowHost.pressedWidget == null &&
                         !com.nexustools.genericui.event.PopupMouseCaptureManager.hasActivePopup &&
                         canUseSurfaceRegionCache(colSlotLeft, colSlotTop, colSlotRight, colSlotBottom)
@@ -1880,16 +2199,28 @@ internal object Win32GeneralComponentTreeRenderer {
                             )
                         ) {
                             if (hasStageInCol) {
-                                renderCachedVideoStageFastPath(
-                                    hwnd = hwnd,
-                                    hdc = hdc,
-                                    theme = theme,
-                                    fontSmall = fontSmall,
-                                    fontSmallBold = fontSmallBold,
-                                    fontNormal = fontNormal,
-                                    fontBold = fontBold,
-                                    fontTitle = fontTitle
-                                )
+                                if (cachedCol.videoStageRect != null && cachedCol.videoStageRect.size >= 4) {
+                                    Win32NativeWindowHost.lastRenderedVideoStageRect = cachedCol.videoStageRect.copyOf()
+                                }
+                                val curSwapCount = (cachedVideoWidget?.attributes?.get("swapCount") as? (() -> Long))?.invoke() ?: 0L
+                                val curOverlayVer = cachedOverlayWidget?.subtreeMutationVersion ?: -1L
+                                val curHudAlphaQ = (Win32NativeWindowHost.overlayHudCurrentAlpha.coerceIn(0f, 1f) * 100f).roundToInt()
+                                val stageUnchanged = cachedCol.videoSwapCount >= 0L &&
+                                    curSwapCount == cachedCol.videoSwapCount &&
+                                    curOverlayVer == cachedCol.overlaySubtreeVer &&
+                                    curHudAlphaQ == cachedCol.hudAlphaQuantized
+                                if (!stageUnchanged) {
+                                    renderCachedVideoStageFastPath(
+                                        hwnd = hwnd,
+                                        hdc = hdc,
+                                        theme = theme,
+                                        fontSmall = fontSmall,
+                                        fontSmallBold = fontSmallBold,
+                                        fontNormal = fontNormal,
+                                        fontBold = fontBold,
+                                        fontTitle = fontTitle
+                                    )
+                                }
                                 lastBackBufferStripKeys[packRectKey(colSlotLeft, colSlotTop, colSlotRight, colSlotBottom)] = colCacheKey
                             }
                             if (i < cols.lastIndex && !Win32NativeWindowHost.activeMainBackBufferPreserved) {
@@ -1922,6 +2253,10 @@ internal object Win32GeneralComponentTreeRenderer {
                                 reuseBuffer = cachedColumnSurfaces.remove(oldestKey)?.bgra
                             }
                         }
+                        val capturedStageRect = if (hasStageInCol) Win32NativeWindowHost.lastRenderedVideoStageRect.copyOf() else null
+                        val capturedSwapCount = if (hasStageInCol) ((cachedVideoWidget?.attributes?.get("swapCount") as? (() -> Long))?.invoke() ?: 0L) else -1L
+                        val capturedOverlayVer = if (hasStageInCol) (cachedOverlayWidget?.subtreeMutationVersion ?: -1L) else -1L
+                        val capturedHudAlphaQ = if (hasStageInCol) (Win32NativeWindowHost.overlayHudCurrentAlpha.coerceIn(0f, 1f) * 100f).roundToInt() else -1
                         val capturedCol = captureCachedRegion(
                             left = colSlotLeft,
                             top = colSlotTop,
@@ -1930,7 +2265,11 @@ internal object Win32GeneralComponentTreeRenderer {
                             hitStartIdx = colHitStartIdx,
                             scrollStartIdx = colScrollStartIdx,
                             reuseBuffer = reuseBuffer,
-                            cacheKey = colCacheKey
+                            cacheKey = colCacheKey,
+                            videoStageRect = capturedStageRect,
+                            videoSwapCount = capturedSwapCount,
+                            overlaySubtreeVer = capturedOverlayVer,
+                            hudAlphaQuantized = capturedHudAlphaQ
                         )
                         if (capturedCol != null) {
                             cachedColumnSurfaces[colCacheKey] = capturedCol
@@ -2131,11 +2470,14 @@ internal object Win32GeneralComponentTreeRenderer {
                     val hc = children[i]
                     hdrMutVer = hdrMutVer * 31L + hc.nativePointer * 17L + hc.subtreeMutationVersion
                 }
-                val cachedHdrH = if (
-                    (container.attributes["_cachedLazyHdrVer"] as? Long) == hdrMutVer &&
-                    (container.attributes["_cachedLazyHdrW"] as? Int) == (innerR - innerL)
-                ) {
-                    container.attributes["_cachedLazyHdrH"] as? Int
+                val hdrWidth = innerR - innerL
+                val cachedHdrH = if ((container.attributes["_cachedLazyHdrVer"] as? Long) == hdrMutVer) {
+                    (container.attributes["_cachedLazyHdrH_$hdrWidth"] as? Int)
+                        ?: if ((container.attributes["_cachedLazyHdrW"] as? Int) == hdrWidth) {
+                            container.attributes["_cachedLazyHdrH"] as? Int
+                        } else {
+                            null
+                        }
                 } else {
                     null
                 }
@@ -2148,7 +2490,7 @@ internal object Win32GeneralComponentTreeRenderer {
                     Win32NativeWindowHost.isRectHovered(hwnd, innerL, hdrTop, innerR, estHdrBottom)
                 val hoveredLazyHdrPtr = if (isHoveredInLazyHdr) (Win32NativeWindowHost.hoveredWidget?.nativePointer ?: 0L) else 0L
                 val pressedLazyHdrPtr = Win32NativeWindowHost.pressedWidget?.nativePointer ?: 0L
-                val lazyHdrCacheKey = if (!isResizeFrame && estHdrBottom > hdrTop && canUseSurfaceRegionCache(innerL, hdrTop, innerR, estHdrBottom)) {
+                val lazyHdrCacheKey = if (estHdrBottom > hdrTop && canUseSurfaceRegionCache(innerL, hdrTop, innerR, estHdrBottom)) {
                     StripSurfaceCacheKey(
                         widgetPtr = container.nativePointer xor 0x5A17L,
                         mutVer = hdrMutVer,
@@ -2204,8 +2546,9 @@ internal object Win32GeneralComponentTreeRenderer {
                     }
                     val actualHdrH = (curY - hdrTop).coerceAtLeast(0)
                     container.attributes["_cachedLazyHdrVer"] = hdrMutVer
-                    container.attributes["_cachedLazyHdrW"] = innerR - innerL
+                    container.attributes["_cachedLazyHdrW"] = hdrWidth
                     container.attributes["_cachedLazyHdrH"] = actualHdrH
+                    container.attributes["_cachedLazyHdrH_$hdrWidth"] = actualHdrH
                     val actualHdrBottom = (hdrTop + actualHdrH).coerceAtMost(innerBottom)
                     if (!isResizeFrame && actualHdrBottom > hdrTop && canUseSurfaceRegionCache(innerL, hdrTop, innerR, actualHdrBottom)) {
                         val captureKey = StripSurfaceCacheKey(
@@ -2308,8 +2651,8 @@ internal object Win32GeneralComponentTreeRenderer {
     ) {
         if (!overlayLayer.visible || overlayLayer.disposed) return
         val layerImpl = overlayLayer.attributes["nativeImpl"]
-        val bottomOffsetPx = overlayLayer.styleProperties["bottom"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
-        val rightOffsetPx = overlayLayer.styleProperties["right"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
+        val bottomOffsetPx = overlayLayer.resolveCssValue("bottom")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
+        val rightOffsetPx = overlayLayer.resolveCssValue("right")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
         val isFloatingAnchor = bottomOffsetPx != null || rightOffsetPx != null || layerImpl is DesktopButtonNativeImpl<*>
         val overlayKids = visibleChildrenOf(overlayLayer, titleBarWidgets)
         val floatingBtnWidget = when {
@@ -2317,17 +2660,17 @@ internal object Win32GeneralComponentTreeRenderer {
             isFloatingAnchor && overlayKids.size == 1 && overlayKids.first().attributes["nativeImpl"] is DesktopButtonNativeImpl<*> -> overlayKids.first()
             overlayKids.size == 1 && overlayKids.first().let {
                 it.attributes["nativeImpl"] is DesktopButtonNativeImpl<*> &&
-                    (it.styleProperties["bottom"] != null || it.styleProperties["right"] != null || overlayLayer.styleProperties["pointer-events"] == "none")
+                    (it.resolveCssValue("bottom") != null || it.resolveCssValue("right") != null || overlayLayer.resolveCssValue("pointer-events") == "none")
             } -> overlayKids.first()
             else -> null
         }
         if (floatingBtnWidget != null) {
             val btnImpl = floatingBtnWidget.attributes["nativeImpl"] as DesktopButtonNativeImpl<*>
             val bOff = bottomOffsetPx
-                ?: floatingBtnWidget.styleProperties["bottom"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
+                ?: floatingBtnWidget.resolveCssValue("bottom")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
                 ?: 20
             val rOff = rightOffsetPx
-                ?: floatingBtnWidget.styleProperties["right"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
+                ?: floatingBtnWidget.resolveCssValue("right")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt()
                 ?: 20
             val btnW = measureButtonWidth(btnImpl).coerceIn(72, 220)
             val btnH = 34
@@ -2367,11 +2710,11 @@ internal object Win32GeneralComponentTreeRenderer {
         val firstChildVisuals = (overlayKids.firstOrNull()?.attributes?.get("nativeImpl") as? DesktopStyledContainerNativeImpl<*>)?.getStyledVisuals()
         val hasBackdropOverlay = layerVisuals?.backgroundColor != null ||
             firstChildVisuals?.backgroundColor != null ||
-            overlayLayer.styleProperties["background-color"] != null ||
-            overlayLayer.styleProperties["backdrop-filter"] != null ||
+            overlayLayer.resolveCssValue("background-color") != null ||
+            overlayLayer.resolveCssValue("backdrop-filter") != null ||
             (Win32NativeWindowHost.widgetHasClass(overlayLayer, "align-items-center") &&
                 Win32NativeWindowHost.widgetHasClass(overlayLayer, "justify-content-center")) ||
-            overlayLayer.styleProperties["justify-content"]?.lowercase() == "center"
+            overlayLayer.resolveCssValue("justify-content")?.lowercase() == "center"
         val fillCol = layerVisuals?.backgroundColor
             ?: firstChildVisuals?.backgroundColor
             ?: if (hasBackdropOverlay) {
@@ -2555,15 +2898,16 @@ internal object Win32GeneralComponentTreeRenderer {
         val lastScrolledY = (node.attributes["_lastRenderedLazyScrollY"] as? Int) ?: -1
         node.attributes["_lastRenderedLazyScrollY"] = scrollY
         val firstPaintOfThisLazy = (lastScrolledY == -1)
-        if (firstPaintOfThisLazy) {
+        if (firstPaintOfThisLazy || (childrenChangedInPass && scrollY != 0)) {
             hadFirstLazyPaintInFrame = true
         }
         val effectiveMutVer = node.subtreeMutationVersion xor lazyChildrenSig
-        val canCacheLazyViewport = !isResizeFrame && !firstPaintOfThisLazy && !childrenChangedInPass && (scrollY == 0 || scrollY == lastScrolledY) && canUseSurfaceRegionCache(left, top, right, bottom)
+        val canLookupLazyViewport = !firstPaintOfThisLazy && canUseSurfaceRegionCache(left, top, right, bottom)
+        val canCaptureLazyViewport = canLookupLazyViewport && !isResizeFrame && (scrollY == 0 || (!childrenChangedInPass && scrollY == lastScrolledY))
         val isHoveredInLazy = Win32NativeWindowHost.isRectHovered(hwnd, left, top, right, bottom)
         val hoveredLazyPtr = if (isHoveredInLazy) (Win32NativeWindowHost.hoveredWidget?.nativePointer ?: 0L) else 0L
         val pressedLazyPtr = Win32NativeWindowHost.pressedWidget?.nativePointer ?: 0L
-        val baseLazyCacheKey = if (canCacheLazyViewport) {
+        val baseLazyCacheKey = if (canLookupLazyViewport) {
             StripSurfaceCacheKey(
                 widgetPtr = node.nativePointer,
                 mutVer = effectiveMutVer,
@@ -2579,7 +2923,7 @@ internal object Win32GeneralComponentTreeRenderer {
         } else {
             null
         }
-        val effectiveLazyStateKey = if (canCacheLazyViewport) {
+        val effectiveLazyStateKey = if (canLookupLazyViewport) {
             StripSurfaceCacheKey(
                 widgetPtr = node.nativePointer,
                 mutVer = effectiveMutVer,
@@ -2920,7 +3264,7 @@ internal object Win32GeneralComponentTreeRenderer {
             }
             pendingRowCaptures.clear()
         }
-        if (baseLazyCacheKey != null) {
+        if (canCaptureLazyViewport && baseLazyCacheKey != null) {
             var reuseBuffer: ByteArray? = null
             if (!cachedLazyViewportSurfaces.containsKey(baseLazyCacheKey) && cachedLazyViewportSurfaces.size >= MAX_CACHED_LAZY_VIEWPORT_SURFACES) {
                 val oldestKey = cachedLazyViewportSurfaces.keys.firstOrNull()
@@ -3050,7 +3394,7 @@ internal object Win32GeneralComponentTreeRenderer {
                 val isHoveredInHeader = Win32NativeWindowHost.isRectHovered(hwnd, left, curTop, right, slotBottom)
                 val hoveredHdrPtr = if (isHoveredInHeader) (Win32NativeWindowHost.hoveredWidget?.nativePointer ?: 0L) else 0L
                 val pressedHdrPtr = Win32NativeWindowHost.pressedWidget?.nativePointer ?: 0L
-                val hdrCacheKey = if (!isResizeFrame && canUseSurfaceRegionCache(left, curTop, right, slotBottom)) {
+                val hdrCacheKey = if (canUseSurfaceRegionCache(left, curTop, right, slotBottom)) {
                     StripSurfaceCacheKey(
                         widgetPtr = headerSlot.nativePointer,
                         mutVer = headerSlot.subtreeMutationVersion,
@@ -3089,7 +3433,7 @@ internal object Win32GeneralComponentTreeRenderer {
                             hc, titleBarWidgets, left + 10, hy, right - 10, slotBottom
                         )
                     }
-                    if (hdrCacheKey != null) {
+                    if (hdrCacheKey != null && !isResizeFrame) {
                         var reuseBuffer: ByteArray? = null
                         if (!cachedSectionSurfaces.containsKey(hdrCacheKey) && cachedSectionSurfaces.size >= MAX_CACHED_SECTION_SURFACES) {
                             val oldestKey = cachedSectionSurfaces.keys.firstOrNull()
@@ -3446,7 +3790,7 @@ internal object Win32GeneralComponentTreeRenderer {
             }
         }
 
-        if (navCacheKey != null) {
+        if (navCacheKey != null && !isResizeFrame) {
             var reuseBuffer: ByteArray? = null
             if (!cachedNavbarSurfaces.containsKey(navCacheKey) && cachedNavbarSurfaces.size >= MAX_CACHED_STRIP_SURFACES) {
                 val oldestKey = cachedNavbarSurfaces.keys.firstOrNull()
@@ -3529,8 +3873,13 @@ internal object Win32GeneralComponentTreeRenderer {
         if (titles.isEmpty()) return
 
         val activeIdx = (tabContainerImpl?.getSelectedTabIndex() ?: 0).coerceIn(0, titles.lastIndex)
+        val fullWidth = tabContainerImpl?.isFullWidthTabs() == true
         val availW = (right - left - 16).coerceAtLeast(80)
-        val equalTabW = (availW / titles.size).coerceIn(72, 180)
+        val equalTabW = if (fullWidth) {
+            ((availW - (titles.size - 1).coerceAtLeast(0) * 4) / titles.size).coerceAtLeast(48)
+        } else {
+            (availW / titles.size).coerceIn(72, 180)
+        }
 
         var tx = left + 8
         val tabLefts = IntArray(titles.size)
@@ -3539,7 +3888,15 @@ internal object Win32GeneralComponentTreeRenderer {
         for (idx in titles.indices) {
             val title = titles[idx]
             val isActive = idx == activeIdx
-            val tabW = max(equalTabW, min(200, measureSingleLineTextWidth(title, 7) + 26))
+            val tabImplForMeasure = (orderedTabImpls.getOrNull(idx) as? DesktopTabNativeImpl<*>)
+                ?: (tabWidgets.getOrNull(idx)?.attributes?.get("nativeImpl") as? DesktopTabNativeImpl<*>)
+            val hasIcon = !tabImplForMeasure?.iconVal.isNullOrBlank()
+            val iconExtraW = if (hasIcon) (tabImplForMeasure?.iconSizePxVal ?: 18).coerceIn(14, 22) + 6 else 0
+            val tabW = if (fullWidth) {
+                equalTabW
+            } else {
+                max(equalTabW, min(220, measureSingleLineTextWidth(title, 7) + 26 + iconExtraW))
+            }
             val tabRight = min(right - 4, tx + tabW)
             if (tabRight <= tx + 24) break
             tabLefts[idx] = tx
@@ -3573,23 +3930,56 @@ internal object Win32GeneralComponentTreeRenderer {
             val isActive = idx == activeIdx
             val hitL = tabLefts[idx]
             val hitR = tabRights[idx]
+            val capturedIdx = idx
+            val tabImpl = (orderedTabImpls.getOrNull(idx) as? DesktopTabNativeImpl<*>)
+                ?: (tabWidgets.getOrNull(idx)?.attributes?.get("nativeImpl") as? DesktopTabNativeImpl<*>)
+            val tabWidget = (tabImpl?.nativeWidget as? DesktopNativeWidget)
+                ?: tabWidgets.getOrNull(idx)
+                ?: tabContainerWidget
+            val iconUrl = tabImpl?.iconVal?.trim().orEmpty()
+            var textLeft = hitL + 8
+            if (iconUrl.isNotEmpty()) {
+                val iconBoxSize = (tabImpl?.iconSizePxVal ?: 18).coerceIn(14, (bottom - top - 6).coerceAtLeast(14))
+                val iconLeft = hitL + 8
+                val iconTop = top + 4 + ((bottom - (top + 4) - iconBoxSize) / 2).coerceAtLeast(0)
+                val isHovered = Win32NativeWindowHost.isRectHovered(hwnd, hitL, top + 4, hitR, bottom - 1)
+                val tabBg = when {
+                    isActive -> theme.bgCard
+                    isHovered -> theme.bgElevated
+                    else -> theme.bgPanel
+                }
+                drawCachedOrAsyncImageBox(
+                    hwnd = hwnd,
+                    hdc = hdc,
+                    theme = theme,
+                    fontFallback = fontSmall,
+                    url = iconUrl,
+                    ownerWidget = tabWidget,
+                    fallbackLabel = title,
+                    cssFilter = resolveWidgetCssFilter(tabWidget, tabContainerWidget),
+                    left = iconLeft,
+                    top = iconTop,
+                    right = iconLeft + iconBoxSize,
+                    bottom = iconTop + iconBoxSize,
+                    surfaceBgColorRef = tabBg,
+                    drawBoxBackground = false,
+                    drawBackground = true,
+                    drawForeground = false,
+                    transparentBackground = true
+                )
+                textLeft = iconLeft + iconBoxSize + 4
+            }
             SelectObject(hdc, if (isActive) fontBold else fontSmall)
             Win32NativeWindowHost.drawTextInRect(
                 hdc = hdc,
                 text = title,
-                left = hitL + 8,
+                left = textLeft,
                 top = top + 4,
                 right = hitR - 8,
                 bottom = bottom - 2,
                 colorRef = if (isActive) theme.accentBlueText else theme.textSecondary,
                 center = true
             )
-
-            val capturedIdx = idx
-            val tabImpl = orderedTabImpls.getOrNull(idx) as? DesktopTabNativeImpl<*>
-            val tabWidget = (tabImpl?.nativeWidget as? DesktopNativeWidget)
-                ?: tabWidgets.getOrNull(idx)
-                ?: tabContainerWidget
             val isButtonTab = tabWidget.attributes["isButtonTab"] == true ||
                 Win32NativeWindowHost.widgetHasClass(tabWidget, "nav-button-tab")
             Win32NativeWindowHost.addHitRegion(
@@ -4019,22 +4409,22 @@ internal object Win32GeneralComponentTreeRenderer {
                 val forceSingleLine = maxLines == 1 ||
                     Win32NativeWindowHost.widgetHasClass(node, "text-nowrap") ||
                     Win32NativeWindowHost.widgetHasClass(node, "text-truncate") ||
-                    node.styleProperties["white-space"]?.lowercase() == "nowrap"
+                    node.resolveCssValue("white-space")?.lowercase() == "nowrap"
                 val parent = node.parentWidget
                 val isCentered = Win32NativeWindowHost.widgetHasClass(node, "text-center") ||
                     Win32NativeWindowHost.widgetHasClass(node, "capabilities-info") ||
                     node.attributes["id"] == "capabilities-info" ||
-                    node.styleProperties["text-align"]?.lowercase() == "center" ||
+                    node.resolveCssValue("text-align")?.lowercase() == "center" ||
                     (node.attributes["textAlignment"] as? String)?.equals("CENTER", ignoreCase = true) == true ||
                     (parent != null && (
                         Win32NativeWindowHost.widgetHasClass(parent, "text-center") ||
-                            parent.styleProperties["text-align"]?.lowercase() == "center" ||
+                            parent.resolveCssValue("text-align")?.lowercase() == "center" ||
                             (Win32NativeWindowHost.widgetHasClass(parent, "align-items-center") && !isHorizontalRowContainer(parent))
                         ))
                 val isRightAligned = !isCentered && (
                     Win32NativeWindowHost.widgetHasClass(node, "text-end") ||
-                        node.styleProperties["text-align"]?.lowercase() == "right" ||
-                        node.styleProperties["text-align"]?.lowercase() == "end" ||
+                        node.resolveCssValue("text-align")?.lowercase() == "right" ||
+                        node.resolveCssValue("text-align")?.lowercase() == "end" ||
                         (node.attributes["textAlignment"] as? String)?.equals("END", ignoreCase = true) == true ||
                         (node.attributes["textAlignment"] as? String)?.equals("RIGHT", ignoreCase = true) == true
                     )
@@ -4093,7 +4483,7 @@ internal object Win32GeneralComponentTreeRenderer {
             is DesktopButtonNativeImpl<*> -> {
                 val btnH = 28
                 val isFullWidthBtn = Win32NativeWindowHost.widgetHasClass(node, "w-100") ||
-                    node.styleProperties["width"] == "100%" ||
+                    node.resolveCssValue("width") == "100%" ||
                     impl.resolveBootstrapWidthFraction() == 1.0f
                 val bw = if (isFullWidthBtn) availW else min(availW, max(32, measureButtonWidth(impl)))
                 val isPrimary = impl.getType() == BootstrapType.PRIMARY
@@ -4252,6 +4642,32 @@ internal object Win32GeneralComponentTreeRenderer {
                 Win32NativeWindowHost.drawTextInRect(hdc, "⟳ Loading...", left + 8, top + 2, left + spW - 8, top + spH - 2, theme.accentBlueText, center = true)
                 return top + spH
             }
+
+            is WindowsRenderableNativeImpl -> {
+                if (impl !is WindowsContainerNativeImpl &&
+                    impl !is WindowsStyledContainerNativeImpl &&
+                    impl !is WindowsTabContainerNativeImpl &&
+                    impl !is WindowsLazyListNativeImpl
+                ) {
+                    val ctx = buildFlowRenderContext(
+                        hwnd = hwnd,
+                        hdc = hdc,
+                        theme = theme,
+                        fontSmall = fontSmall,
+                        fontSmallBold = fontSmallBold,
+                        fontNormal = fontNormal,
+                        fontBold = fontBold,
+                        fontTitle = fontTitle,
+                        fontMetricBig = fontMetricBig,
+                        titleBarWidgets = titleBarWidgets,
+                        left = left,
+                        top = top,
+                        right = right,
+                        bottomLimit = bottomLimit
+                    )
+                    return impl.renderWin32(ctx, left, top, right)
+                }
+            }
         }
 
         // 5. Alert container (`Alert`)
@@ -4355,6 +4771,7 @@ internal object Win32GeneralComponentTreeRenderer {
         val stageAndOverlay = findStageAndOverlay(node, titleBarWidgets)
         if (stageAndOverlay != null) {
             val (videoChild, overlayChild) = stageAndOverlay
+            val fullViewport = isFullViewportVideoStage(node, videoChild, overlayChild)
             return renderVideoStageWithOverlay(
                 hwnd = hwnd,
                 hdc = hdc,
@@ -4371,7 +4788,8 @@ internal object Win32GeneralComponentTreeRenderer {
                 left = left,
                 top = top,
                 right = right,
-                bottomLimit = bottomLimit
+                bottomLimit = bottomLimit,
+                fullViewportMode = fullViewport
             )
         }
 
@@ -4449,8 +4867,8 @@ internal object Win32GeneralComponentTreeRenderer {
             val fullW = (right - left).coerceAtLeast(120)
             val isZeroFrameCard = isZeroFrameStageCard(node, titleBarWidgets)
             val isBorderlessCard = isZeroFrameCard ||
-                node.styleProperties["border"] == "none" ||
-                node.styleProperties["border"] == "0"
+                node.resolveCssValue("border") == "none" ||
+                node.resolveCssValue("border") == "0"
             val isPlayerOrFullWidthCard = isZeroFrameCard ||
                 Win32NativeWindowHost.widgetHasClass(node, "w-100") ||
                 children.any { hasVideoAndOverlay(it, titleBarWidgets) } ||
@@ -4561,7 +4979,7 @@ internal object Win32GeneralComponentTreeRenderer {
                 }
             }
             val finalCardBottom = max(cardBottom, cy + if (isZeroFrameCard) 0 else 8)
-            if (cardCacheKey != null && canUseSurfaceRegionCache(cardLeft, cardTop, cardRight, finalCardBottom, checkScrollClip = true)) {
+            if (cardCacheKey != null && !isResizeFrame && canUseSurfaceRegionCache(cardLeft, cardTop, cardRight, finalCardBottom, checkScrollClip = true)) {
                 var reuseBuffer: ByteArray? = null
                 if (!cachedSectionSurfaces.containsKey(cardCacheKey) && cachedSectionSurfaces.size >= MAX_CACHED_SECTION_SURFACES) {
                     val oldestKey = cachedSectionSurfaces.keys.firstOrNull()
@@ -5113,19 +5531,34 @@ internal object Win32GeneralComponentTreeRenderer {
         }
         val hudAlpha = Win32NativeWindowHost.overlayHudCurrentAlpha.coerceIn(0f, 1f)
 
-        // Active Subtitle Cue Text (locked at the bottom of the video stage at 1.0 opacity even when HUD fades out!)
-        val activeSubtitleCue = videoWidget.interactiveSurfaceSpec?.activeCaptionText?.invoke()?.trim()?.takeIf { it.isNotEmpty() }
-            ?: overlayWidget.stageOverlaySpec?.activeCaptionText?.invoke(overlayWidget)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: (videoWidget.attributes["activeSubtitleCueText"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: (overlayWidget.attributes["subtitleText"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: (subtitleBannerWidget?.attributes?.get("bubbleText") as? String)?.trim()?.takeIf { it.isNotEmpty() }
-            ?: subtitleBannerWidget?.let { Win32NativeWindowHost.extractWidgetText(it).trim().takeIf { s -> s.isNotEmpty() } }
+        val suppressInternalBanner = Win32NativeWindowHost.widgetHasClass(videoWidget, "suppress-internal-subtitle-banner") ||
+            Win32NativeWindowHost.widgetHasClass(overlayWidget, "suppress-internal-subtitle-banner")
 
+        // Active Subtitle Cue Text (locked at the bottom of the video stage at 1.0 opacity even when HUD fades out!)
+        val activeSubtitleCue = if (suppressInternalBanner) {
+            if (subtitleBannerWidget != null && subtitleBannerWidget.visible) {
+                (subtitleBannerWidget.attributes["bubbleText"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: Win32NativeWindowHost.extractWidgetText(subtitleBannerWidget).trim().takeIf { it.isNotEmpty() }
+            } else {
+                null
+            }
+        } else {
+            videoWidget.interactiveSurfaceSpec?.activeCaptionText?.invoke()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: overlayWidget.stageOverlaySpec?.activeCaptionText?.invoke(overlayWidget)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: (videoWidget.attributes["activeSubtitleCueText"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: (overlayWidget.attributes["subtitleText"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: (subtitleBannerWidget?.attributes?.get("bubbleText") as? String)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: subtitleBannerWidget?.let { Win32NativeWindowHost.extractWidgetText(it).trim().takeIf { s -> s.isNotEmpty() } }
+        }
+
+        val cueLines = activeSubtitleCue?.lines()?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
+        val lineCount = cueLines.size.coerceAtLeast(1)
         val subBottomFixed = stageBottom - 18
-        val subHFixed = 28
+        val subHFixed = 22 * lineCount + 6
         val subTopFixed = (subBottomFixed - subHFixed).coerceAtLeast(top + 48)
-        val subWFixed = if (!activeSubtitleCue.isNullOrEmpty()) {
-            (measureSingleLineTextWidth(activeSubtitleCue, 8) + 28).coerceIn(80, (availW * 88 / 100).coerceAtLeast(120))
+        val subWFixed = if (cueLines.isNotEmpty()) {
+            val maxLineW = cueLines.maxOf { measureSingleLineTextWidth(it, 8) }
+            (maxLineW + 28).coerceIn(80, (availW * 88 / 100).coerceAtLeast(120))
         } else {
             160.coerceAtMost(availW)
         }
@@ -5142,8 +5575,7 @@ internal object Win32GeneralComponentTreeRenderer {
             drawBackground: Boolean = true,
             drawForeground: Boolean = true
         ) {
-            val cue = activeSubtitleCue ?: return
-            if (cue.isEmpty()) return
+            if (cueLines.isEmpty()) return
             if (drawBackground) {
                 Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                     hdc = hdc,
@@ -5159,16 +5591,20 @@ internal object Win32GeneralComponentTreeRenderer {
             }
             if (drawForeground) {
                 SelectObject(hdc, fontBold ?: fontNormal)
-                Win32NativeWindowHost.drawTextInRect(
-                    hdc = hdc,
-                    text = cue,
-                    left = subLeftFixed + 12,
-                    top = subTopFixed + 2,
-                    right = subRightFixed - 12,
-                    bottom = subBottomFixed - 2,
-                    colorRef = 0xFFFFFFu,
-                    center = true
-                )
+                for ((idx, lineText) in cueLines.withIndex()) {
+                    val lineTop = subTopFixed + 3 + idx * 22
+                    val lineBottom = (lineTop + 22).coerceAtMost(subBottomFixed - 2)
+                    Win32NativeWindowHost.drawTextInRect(
+                        hdc = hdc,
+                        text = lineText,
+                        left = subLeftFixed + 12,
+                        top = lineTop,
+                        right = subRightFixed - 12,
+                        bottom = lineBottom,
+                        colorRef = 0xFFFFFFu,
+                        center = true
+                    )
+                }
             }
         }
 
@@ -5314,7 +5750,7 @@ internal object Win32GeneralComponentTreeRenderer {
                     pendingBubbleText = bubbleText
                     val bubbleW = (measureSingleLineTextWidth(bubbleText, 7) + 18).coerceIn(48, 120)
                     val bubbleH = 24
-                    val leftProp = seekHoverBubbleWidget.styleProperties["left"]?.trim().orEmpty()
+                    val leftProp = seekHoverBubbleWidget.resolveCssValue("left")?.trim().orEmpty()
                     val pctAttr = (seekHoverBubbleWidget.attributes["layerLeftPercent"] as? String)?.toFloatOrNull()
                         ?: leftProp.takeIf { it.endsWith("%") }?.removeSuffix("%")?.trim()?.toFloatOrNull()
                     val rawBubbleL = if (pctAttr != null) {
@@ -5573,7 +6009,7 @@ internal object Win32GeneralComponentTreeRenderer {
                     val pillB = pillT + 26
                     if (pillL <= left + 160) break
                     if (hasOverlayRole(item, DesktopStageOverlaySpec.ROLE_OUTLINED_FEATURE_BADGE) ||
-                        item.styleProperties["border-radius"] == "999px"
+                        item.resolveCssValue("border-radius") == "999px"
                     ) {
                         if (drawBg) {
                             Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
@@ -5787,7 +6223,7 @@ internal object Win32GeneralComponentTreeRenderer {
                         val centerGap = 18
                         val buttonDims = centerButtons.map { btnW ->
                             val isMainPlay = hasOverlayRole(btnW, DesktopStageOverlaySpec.ROLE_PRIMARY_CENTER_ACTION) ||
-                                btnW.styleProperties["width"] == "64px" ||
+                                btnW.resolveCssValue("width") == "64px" ||
                                 centerButtons.size == 1
                             val dim = if (isMainPlay) 64 else 56
                             Triple(btnW, dim, isMainPlay)
@@ -6001,7 +6437,7 @@ internal object Win32GeneralComponentTreeRenderer {
                             val sliderHost = w.children.getOrNull(1)
                             val animSliderW = (w.attributes["data-animated-slider-width-px"] as? String)?.toIntOrNull()
                                 ?: (sliderHost?.attributes?.get("data-animated-width-px") as? String)?.toIntOrNull()
-                                ?: sliderHost?.styleProperties?.get("width")?.removeSuffix("px")?.trim()?.toIntOrNull()
+                                ?: sliderHost?.resolveCssValue("width")?.removeSuffix("px")?.trim()?.toIntOrNull()
                                 ?: if (w.attributes["data-expanded"] == "true") 92 else 0
                             return if (animSliderW > 0) 40 + 4 + animSliderW + 8 else 40
                         }
@@ -6017,7 +6453,7 @@ internal object Win32GeneralComponentTreeRenderer {
                                 }
                             }
                             is DesktopButtonNativeImpl<*> -> {
-                                val explicitW = w.styleProperties["width"]?.removeSuffix("px")?.trim()?.toIntOrNull()
+                                val explicitW = w.resolveCssValue("width")?.removeSuffix("px")?.trim()?.toIntOrNull()
                                 val lbl = compactOverlayLabel(impl.getText())
                                 val hasImgChild = safeChildrenSnapshot(w).any {
                                     it.visible && !it.disposed && it.attributes["nativeImpl"] is DesktopImageNativeImpl<*>
@@ -6098,7 +6534,7 @@ internal object Win32GeneralComponentTreeRenderer {
                                 val sliderHost = item.children.getOrNull(1)
                                 val animSliderW = (item.attributes["data-animated-slider-width-px"] as? String)?.toIntOrNull()
                                     ?: (sliderHost?.attributes?.get("data-animated-width-px") as? String)?.toIntOrNull()
-                                    ?: sliderHost?.styleProperties?.get("width")?.removeSuffix("px")?.trim()?.toIntOrNull()
+                                    ?: sliderHost?.resolveCssValue("width")?.removeSuffix("px")?.trim()?.toIntOrNull()
                                     ?: if (item.attributes["data-expanded"] == "true") 92 else 0
                                 val sliderWidget = sliderHost?.children?.firstOrNull()
                                 val sliderImpl = sliderWidget?.attributes?.get("nativeImpl") as? DesktopRangeSliderNativeImpl<*>
@@ -6441,7 +6877,7 @@ internal object Win32GeneralComponentTreeRenderer {
                     right = right - 4,
                     bottom = stageBottom - 4,
                     tooltip = nonRedundantTooltip(playPauseBtnImpl?.getTooltipText()),
-                    widget = centerOverlay ?: playPauseBtnWidget ?: videoWidget,
+                    widget = overlayWidget ?: videoWidget,
                     onClick = { _, _ ->
                         Win32NativeWindowHost.lastVideoStageMouseMoveTickMs = GetTickCount64().toLong()
                         Win32NativeWindowHost.isPointerInVideoStage = true
@@ -7974,7 +8410,7 @@ internal object Win32GeneralComponentTreeRenderer {
 
         val isCenteredRow = !hasFillSpacer && (
             Win32NativeWindowHost.widgetHasClass(rowWidget, "justify-content-center") ||
-                rowWidget.styleProperties["justify-content"]?.lowercase() == "center"
+                rowWidget.resolveCssValue("justify-content")?.lowercase() == "center"
             )
         if (isCenteredRow) {
             val totalItemsW = children.sumOf { measureInlineChildWidth(it, availW).coerceAtMost(availW) } +
@@ -8310,8 +8746,8 @@ internal object Win32GeneralComponentTreeRenderer {
         val estimated = when {
             isSpacerWidget(child) -> getFixedSpacerHeight(child)
             impl is DesktopLazyListNativeImpl<*> || child.attributes["isLazyList"] == true -> {
-                val minH = child.styleProperties["min-height"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: 56
-                val maxH = child.styleProperties["max-height"]?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: Int.MAX_VALUE
+                val minH = child.resolveCssValue("min-height")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: 56
+                val maxH = child.resolveCssValue("max-height")?.removeSuffix("px")?.trim()?.toFloatOrNull()?.roundToInt() ?: Int.MAX_VALUE
                 val rawExtent = (child.attributes["totalContentExtentPx"] as? Number)?.toFloat()?.roundToInt() ?: 0
                 val childCount = (child.attributes["totalItemCount"] as? Number)?.toInt()
                     ?: visibleChildrenOf(child, titleBarWidgets).size
@@ -8369,7 +8805,7 @@ internal object Win32GeneralComponentTreeRenderer {
                     val forceSingleLine = maxLines == 1 ||
                         Win32NativeWindowHost.widgetHasClass(child, "text-nowrap") ||
                         Win32NativeWindowHost.widgetHasClass(child, "text-truncate") ||
-                        child.styleProperties["white-space"]?.lowercase() == "nowrap"
+                        child.resolveCssValue("white-space")?.lowercase() == "nowrap"
                     val singleLineW = max(
                         measureSingleLineTextWidth(t, avgCharPx),
                         Win32NativeWindowHost.measureSingleLineTextWidthWithFont(t, fontKind)
@@ -8490,10 +8926,10 @@ internal object Win32GeneralComponentTreeRenderer {
         val cacheHost = widget ?: rowWidget
         val rawStr = (widget?.attributes?.get("cssFilter") as? String)
             ?: (widget?.attributes?.get("rowImageFilter") as? String)
-            ?: widget?.styleProperties?.get("filter")
+            ?: widget?.resolveCssValue("filter")
             ?: (rowWidget?.attributes?.get("rowImageFilter") as? String)
             ?: (rowWidget?.attributes?.get("cssFilter") as? String)
-            ?: rowWidget?.styleProperties?.get("filter")
+            ?: rowWidget?.resolveCssValue("filter")
         if (rawStr != null) {
             if (rawStr == "none") return CssFilter.NONE
             if (cacheHost != null && cacheHost.attributes["_cachedFilterRaw"] == rawStr) {
@@ -9126,8 +9562,8 @@ internal object Win32GeneralComponentTreeRenderer {
         titleBarWidgets: Set<DesktopNativeWidget>
     ): Boolean {
         if (node.attributes["data-zero-frame-card"] == "true") return true
-        val pad = node.styleProperties["padding"]?.trim()?.lowercase()
-        val border = node.styleProperties["border"]?.trim()?.lowercase()
+        val pad = node.resolveCssValue("padding")?.trim()?.lowercase()
+        val border = node.resolveCssValue("border")?.trim()?.lowercase()
         if ((pad == "0" || pad == "0px") && (border == "none" || border == "0")) return true
         return containsStageWithOverlay(node, titleBarWidgets)
     }
@@ -9142,7 +9578,7 @@ internal object Win32GeneralComponentTreeRenderer {
         if (hasOverlayRole(widget, DesktopStageOverlaySpec.ROLE_CONTROLS_ROW) ||
             Win32NativeWindowHost.widgetHasClass(widget, "settings-row")
         ) return true
-        val flexDir = widget.styleProperties["flex-direction"]?.lowercase()
+        val flexDir = widget.resolveCssValue("flex-direction")?.lowercase()
         if (flexDir == "row") return true
         return false
     }
@@ -9212,7 +9648,7 @@ internal object Win32GeneralComponentTreeRenderer {
             impl !is DesktopRangeSliderNativeImpl<*> &&
             safeChildrenSnapshot(widget).isEmpty() &&
             !widget.attributes.containsKey("captureBgra") &&
-            (widget.styleProperties["flex-grow"]?.toFloatOrNull() ?: 0f) >= 1f
+            (widget.resolveCssValue("flex-grow")?.toFloatOrNull() ?: 0f) >= 1f
         ) {
             return true
         }
@@ -9221,7 +9657,7 @@ internal object Win32GeneralComponentTreeRenderer {
 
     private fun getSpacerWeight(widget: DesktopNativeWidget): Float {
         return (widget.attributes["spacerWeight"] as? Number)?.toFloat()
-            ?: widget.styleProperties["flex-grow"]?.toFloatOrNull()
+            ?: widget.resolveCssValue("flex-grow")?.toFloatOrNull()
             ?: 0f
     }
 
@@ -9231,15 +9667,15 @@ internal object Win32GeneralComponentTreeRenderer {
 
     private fun getFixedSpacerWidth(widget: DesktopNativeWidget): Int {
         return ((widget.attributes["spacerWidthPx"] as? Number)?.toFloat()
-            ?: widget.styleProperties["width"]?.removeSuffix("px")?.trim()?.toFloatOrNull()
-            ?: widget.styleProperties["min-width"]?.removeSuffix("px")?.trim()?.toFloatOrNull()
+            ?: widget.resolveCssValue("width")?.removeSuffix("px")?.trim()?.toFloatOrNull()
+            ?: widget.resolveCssValue("min-width")?.removeSuffix("px")?.trim()?.toFloatOrNull()
             ?: 0f).roundToInt().coerceAtLeast(0)
     }
 
     private fun getFixedSpacerHeight(widget: DesktopNativeWidget): Int {
         return ((widget.attributes["spacerHeightPx"] as? Number)?.toFloat()
-            ?: widget.styleProperties["height"]?.removeSuffix("px")?.trim()?.toFloatOrNull()
-            ?: widget.styleProperties["min-height"]?.removeSuffix("px")?.trim()?.toFloatOrNull()
+            ?: widget.resolveCssValue("height")?.removeSuffix("px")?.trim()?.toFloatOrNull()
+            ?: widget.resolveCssValue("min-height")?.removeSuffix("px")?.trim()?.toFloatOrNull()
             ?: 0f).roundToInt().coerceAtLeast(0)
     }
 
@@ -9423,4 +9859,124 @@ internal object Win32GeneralComponentTreeRenderer {
         DrawTextW(hdc, text, -1, r.ptr, flags)
         Win32NativeWindowHost.markGdiRectDirty(left, top, right, bottom)
     }
+
+    private fun DesktopNativeWidget.resolveCssValue(prop: String): String? {
+        val compStyle = (attributes["componentStyle"] as? ComponentStyle)
+            ?: (attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>)?.getComponentStyle()
+        val fromStyle: String? = when (prop) {
+            "width" -> (attributes["styleWidth"] as? CssLength)?.toCssString()
+                ?: compStyle?.width?.toCssString()
+            "height" -> (attributes["styleHeight"] as? CssLength)?.toCssString()
+                ?: compStyle?.height?.toCssString()
+            "min-width" -> (attributes["styleMinWidth"] as? CssLength)?.toCssString()
+                ?: compStyle?.minWidth?.toCssString()
+            "min-height" -> (attributes["styleMinHeight"] as? CssLength)?.toCssString()
+                ?: compStyle?.minHeight?.toCssString()
+            "max-width" -> (attributes["styleMaxWidth"] as? CssLength)?.toCssString()
+                ?: compStyle?.maxWidth?.toCssString()
+            "max-height" -> (attributes["styleMaxHeight"] as? CssLength)?.toCssString()
+                ?: compStyle?.maxHeight?.toCssString()
+            "top" -> (attributes["styleTop"] as? CssLength)?.toCssString()
+                ?: compStyle?.top?.toCssString()
+            "right" -> (attributes["styleRight"] as? CssLength)?.toCssString()
+                ?: compStyle?.right?.toCssString()
+            "bottom" -> (attributes["styleBottom"] as? CssLength)?.toCssString()
+                ?: compStyle?.bottom?.toCssString()
+            "left" -> (attributes["styleLeft"] as? CssLength)?.toCssString()
+                ?: compStyle?.left?.toCssString()
+            "flex-grow" -> (attributes["flexGrow"] as? Number)?.toString()
+                ?: compStyle?.flexGrow?.toString()
+            "flex-direction" -> (attributes["flexDirection"] as? String)
+                ?: compStyle?.flexDirection?.name?.lowercase()?.replace('_', '-')
+            "justify-content" -> (attributes["justifyContent"] as? String)
+                ?: compStyle?.justifyContent?.name?.lowercase()?.replace('_', '-')
+            "display" -> (attributes["display"] as? String)
+                ?: compStyle?.display?.name?.lowercase()?.replace('_', '-')
+            "aspect-ratio" -> attributes["aspectRatio"]?.toString()
+                ?: compStyle?.aspectRatio?.toString()
+            "white-space" -> compStyle?.whiteSpace?.name?.lowercase()?.replace('_', '-')
+            "text-align" -> compStyle?.textAlign?.name?.lowercase()
+            "border" -> compStyle?.borderWidth?.top?.resolvePx()?.let { if (it <= 0f) "0" else "{it}px" }
+            "padding" -> compStyle?.padding?.top?.resolvePx()?.let { if (it <= 0f) "0" else "{it}px" }
+            "border-radius" -> (attributes["borderRadiusPx"] as? Number)?.let { "{it.toInt()}px" }
+                ?: compStyle?.borderRadius?.topLeft?.toCssString()
+            "background-color" -> compStyle?.backgroundColor?.toString()
+            "backdrop-filter" -> compStyle?.backdropFilter?.toCssString()
+            "pointer-events" -> compStyle?.pointerEvents?.name?.lowercase()
+            "filter" -> compStyle?.filter?.toCssString()
+            else -> null
+        }
+        if (fromStyle != null) return fromStyle
+        return attributes[prop] as? String
+    }
+
+    private fun buildFlowRenderContext(
+        hwnd: HWND,
+        hdc: HDC?,
+        theme: Win32NativeWindowHost.SystemThemePalette,
+        fontSmall: HFONT?,
+        fontSmallBold: HFONT?,
+        fontNormal: HFONT?,
+        fontBold: HFONT?,
+        fontTitle: HFONT?,
+        fontMetricBig: HFONT?,
+        titleBarWidgets: Set<DesktopNativeWidget>,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottomLimit: Int
+    ): Win32RenderContext = Win32RenderContext(
+        hwnd = hwnd,
+        hdc = hdc,
+        bounds = Rect(left, top, (right - left).coerceAtLeast(1), (bottomLimit - top).coerceAtLeast(1)),
+        darkMode = theme.isDark,
+        fontSmall = fontSmall,
+        fontSmallBold = fontSmallBold,
+        fontNormal = fontNormal,
+        fontBold = fontBold,
+        fontTitle = fontTitle,
+        fontMetricBig = fontMetricBig,
+        titleBarWidgets = titleBarWidgets,
+        renderChildCallback = { childCtx, childWidget, cLeft, cTop, cRight ->
+            renderFlowNode(
+                hwnd = childCtx.hwnd,
+                hdc = childCtx.hdc,
+                theme = theme,
+                fontSmall = childCtx.fontSmall,
+                fontSmallBold = childCtx.fontSmallBold,
+                fontNormal = childCtx.fontNormal,
+                fontBold = childCtx.fontBold,
+                fontTitle = childCtx.fontTitle,
+                fontMetricBig = childCtx.fontMetricBig,
+                node = childWidget,
+                titleBarWidgets = childCtx.titleBarWidgets,
+                left = cLeft,
+                top = cTop,
+                right = cRight,
+                bottomLimit = bottomLimit
+            )
+        },
+        measureInlineChildWidthCallback = { _, childWidget, cAvailW ->
+            measureInlineChildWidth(childWidget, cAvailW)
+        },
+        drawImageBoxCallback = { childCtx, imgWidget, url, placeholderUrl, antialiasing, fallbackLabel, iLeft, iTop, iRight, iBottom, bgColorRef ->
+            drawCachedOrAsyncImageBox(
+                hwnd = childCtx.hwnd,
+                hdc = childCtx.hdc,
+                theme = theme,
+                fontFallback = childCtx.fontSmallBold ?: childCtx.fontBold,
+                url = url,
+                placeholderUrl = placeholderUrl,
+                antialiasing = antialiasing,
+                ownerWidget = imgWidget,
+                fallbackLabel = fallbackLabel,
+                cssFilter = resolveWidgetCssFilter(imgWidget, null),
+                left = iLeft,
+                top = iTop,
+                right = iRight,
+                bottom = iBottom,
+                surfaceBgColorRef = bgColorRef
+            )
+        }
+    )
 }

@@ -4,8 +4,9 @@
 `:desktop:swing` is the cross-platform JVM Swing / AWT backend for GenericUI (`jvmMain`).
 
 ### Key Highlights
-- **Genuine Swing Look-and-Feel Controls (`BootstrapType.NONE` Default)**: When `getBootstrap().type == BootstrapType.NONE` (the default), components render as untinted Look-and-Feel `JComponent` peers with zero Bootstrap CSS styling.
-- **Semantic `BootstrapType` Tinting**: Setting `DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, or `LINK` tints the `JComponent` with the semantic color (`outline = true/false`). Unsupported CSS properties and transitions are silently ignored.
+- **Genuine Swing Look-and-Feel Controls (`BootstrapType.NONE` Default)**: When `getBootstrap().type == BootstrapType.NONE` (the default), components render as 100% unmodified Look-and-Feel `JComponent` peers with zero Bootstrap CSS styling.
+- **Semantic `BootstrapType != NONE` Tinting + `ThemeConfig`**: Setting `PRIMARY`, `SECONDARY`, `SUCCESS`, `DANGER`, `WARNING`, `INFO`, `LIGHT`, or `DARK` tints the native `JComponent` using the active `ThemeConfig` / `BootstrapColorPalette` while preserving native Look-and-Feel borders/bevels and rendering contrasting text (`outline = true/false`).
+- **System Backend Typography vs. Aesthetic Style Restraints**: Typography styles (`fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `color`, `lineHeight`, `letterSpacing`, `textAlign`, etc.) are honored on text elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`). Aesthetic skinning and font overrides on `ComponentStyle` are **silently ignored** on standard controls/containers (which can only be tinted via `BootstrapType`), while `StyledContainer` and `StyledButton` honor full `ComponentStyle` aesthetics.
 - **Strict User CSS Class Isolation**: `getClasses()`, `getClass()`, and `hasClass()` return only user-added `customClasses`.
 - **Custom Cursor Translation (`Toolkit.createCustomCursor`)**: Converts any PNG, SVG, or `ImageBuffer` `CssCustomCursor` into a `BufferedImage` and `java.awt.Cursor` with `(hotspotX, hotspotY)`.
 - **Live System Theme Detection (`ThemeMode.AUTO`)**: Detects host OS dark/light theme across Windows, macOS, and Linux.

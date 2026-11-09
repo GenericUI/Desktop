@@ -49,7 +49,7 @@ class SwingImageImpl : SwingBaseNativeImpl(
     },
     "img-fluid"
 ), ImageNativeImpl<JComponent> {
-    override val nativeWidget: JLabel = super.nativeWidget as JLabel
+    override val nativeWidget: JLabel get() = super.nativeWidget as JLabel
 
     private var sourceUrlVal: String? = null
     private var placeholderUrlVal: String? = "res://drawable/loading"

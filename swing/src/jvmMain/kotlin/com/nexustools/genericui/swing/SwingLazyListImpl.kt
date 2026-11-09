@@ -16,7 +16,7 @@ import javax.swing.JScrollPane
  * off-screen components.
  */
 class SwingLazyListImpl : SwingBaseContainerNativeImpl(JScrollPane(JPanel(null)), "list-group overflow-auto"), LazyListNativeImpl<JComponent> {
-    override val nativeWidget: JScrollPane = super.nativeWidget as JScrollPane
+    override val nativeWidget: JScrollPane get() = super.nativeWidget as JScrollPane
     private val canvasPanel: JPanel = nativeWidget.viewport.view as JPanel
 
     private var orientationVal: Orientation = Orientation.VERTICAL

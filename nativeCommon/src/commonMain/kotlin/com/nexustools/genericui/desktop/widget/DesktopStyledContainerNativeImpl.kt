@@ -41,6 +41,10 @@ open class DesktopStyledContainerNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.notifyTreeInvalidated(visualOnly = true)
     }
 
+    override fun acceptsAestheticSkinStyles(): Boolean = true
+
+    override fun acceptsTypographyStyles(): Boolean = true
+
     override fun applyComponentStyle(style: ComponentStyle) {
         cachedMergedVisuals = null
         super<DesktopContainerNativeImpl>.applyComponentStyle(style)

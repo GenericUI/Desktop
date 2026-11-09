@@ -41,6 +41,7 @@ import com.nexustools.genericui.style.css.CssCustomCursor
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.window.TitleBar
+import com.nexustools.genericui.windows.render.Win32WorkspaceWindowRenderUtil
 import kotlinx.cinterop.*
 import platform.windows.*
 import kotlin.math.max
@@ -147,7 +148,7 @@ object Win32NativeWindowHost {
     private val shortcutCommandHandlers = mutableMapOf<String, () -> Unit>()
     private var nextMenuCommandId = 1001
 
-    class HitRegion(
+    internal class HitRegion(
         val left: Int,
         val top: Int,
         val right: Int,
@@ -194,6 +195,15 @@ object Win32NativeWindowHost {
         val successText: UInt get() = accentGreen
         val warningText: UInt get() = accentAmber
     }
+
+    private class FormFieldRenderItem(
+        val label: String,
+        val textInput: DesktopTextInputNativeImpl<*>?,
+        val select: DesktopSelectNativeImpl<*>?,
+        val checkbox: DesktopCheckboxNativeImpl<*>?,
+        val buttons: List<DesktopButtonNativeImpl<*>>,
+        val readOnlyText: String? = null
+    )
 
     private val darkSystemPalette = SystemThemePalette(
         isDark = true,
@@ -287,6 +297,13 @@ object Win32NativeWindowHost {
             } else if (!isPaintingWindow && !isSyncingFromNativeEdit) {
                 overlayMutatedDuringVBlank = true
                 markAllVideoStagesDirty()
+            }
+        }
+        DesktopNativeWidget.onCursorUpdated = {
+            activeHwnd?.let { hwnd ->
+                if (IsWindow(hwnd) != 0) {
+                    updateCursorForWindow(hwnd, forceSet = true)
+                }
             }
         }
     }
@@ -463,7 +480,7 @@ object Win32NativeWindowHost {
         )
     }
 
-    fun getLastRenderedHitRegionsSnapshot(): List<HitRegion> {
+    internal fun getLastRenderedHitRegionsSnapshot(): List<HitRegion> {
         val key = activeHwnd?.toLong() ?: currentPaintHwndKey
         return hitRegionsByHwnd[key]?.toList().orEmpty()
     }
@@ -505,7 +522,7 @@ object Win32NativeWindowHost {
         private set
     internal var focusedWidget: DesktopNativeWidget? = null
         private set
-    private var focusedTextInput: DesktopTextInputNativeImpl<*>? = null
+    internal var focusedTextInput: DesktopTextInputNativeImpl<*>? = null
     private var activeLazyGridImpl: DesktopLazyGridNativeImpl<*>? = null
     private var hoveredTooltip: String? = null
     internal var hoverMouseX: Int = 0
@@ -585,6 +602,13 @@ object Win32NativeWindowHost {
                 vblankTreeInvalidated = true
             } else if (!isPaintingWindow && !isSyncingFromNativeEdit) {
                 markAllVideoStagesDirty()
+            }
+        }
+        DesktopNativeWidget.onCursorUpdated = {
+            activeHwnd?.let { hwnd ->
+                if (IsWindow(hwnd) != 0) {
+                    updateCursorForWindow(hwnd, forceSet = true)
+                }
             }
         }
         DesktopDialogWindowNativeImpl.onShowDialogHook = { dialog, _ ->
@@ -785,7 +809,7 @@ object Win32NativeWindowHost {
         lastPaintedNonOverlayVersion = -1L
         lastFullPaintHwndKey = 0L
         ++DesktopNativeWidget.globalNonOverlayMutationVersion
-        Win32GeneralComponentTreeRenderer.invalidateFullscreenAndLayoutCaches()
+        Win32WorkspaceWindowRenderUtil.invalidateFullscreenAndLayoutCaches()
         val hwnd = activeHwnd
         if (hwnd != null && activeWindowImpl === windowImpl && IsWindow(hwnd) != 0) {
             if (fullscreen) {
@@ -1212,7 +1236,7 @@ object Win32NativeWindowHost {
             ensureSharedFonts()
             val maxClientW = (maxWindowW - nonClientW).coerceAtLeast(180)
             val maxClientH = (maxWindowH - nonClientH).coerceAtLeast(100)
-            val intrinsicClient = Win32GeneralComponentTreeRenderer.measureDialogIntrinsicSize(
+            val intrinsicClient = Win32WorkspaceWindowRenderUtil.measureDialogIntrinsicSize(
                 dialogWidget = dialog.nativeWidget,
                 maxViewportWidth = maxClientW,
                 maxViewportHeight = maxClientH
@@ -1396,12 +1420,46 @@ object Win32NativeWindowHost {
         }
     }
 
-    fun createAndShowWin32Window(windowImpl: WindowsWindowNativeImpl) {
+    fun setWindowVisible(windowImpl: WindowsWindowNativeImpl, visible: Boolean) {
+        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
+        val existingHwnd = activeHwnd
+        if (existingHwnd == null || IsWindow(existingHwnd) == 0) {
+            if (visible && WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
+                createAndShowWin32Window(windowImpl, startHidden = false)
+            }
+            return
+        }
+        if (visible) {
+            if (windowImpl.isFullscreen() && !isWindowFullscreenActive) {
+                setWindowFullscreen(
+                    windowImpl = windowImpl,
+                    fullscreen = true,
+                    targetElementWidget = windowImpl.getFullscreenElement()?.nativeWidget as? DesktopNativeWidget
+                )
+            }
+            if (visualTestMode) {
+                ShowWindow(existingHwnd, SW_SHOWNOACTIVATE)
+            } else {
+                ShowWindow(existingHwnd, SW_SHOW)
+                BringWindowToTop(existingHwnd)
+                SetForegroundWindow(existingHwnd)
+                SetFocus(existingHwnd)
+            }
+            InvalidateRect(existingHwnd, null, 1)
+            UpdateWindow(existingHwnd)
+        } else {
+            ShowWindow(existingHwnd, SW_HIDE)
+        }
+    }
+
+    fun createAndShowWin32Window(
+        windowImpl: WindowsWindowNativeImpl,
+        startHidden: Boolean = !windowImpl.isVisible()
+    ) {
         val existingHwnd = activeHwnd
         if (existingHwnd != null && activeWindowImpl === windowImpl && IsWindow(existingHwnd) != 0) {
             SetWindowTextW(existingHwnd, windowImpl.getTitle().ifBlank { "GenericUI" })
-            InvalidateRect(existingHwnd, null, 1)
-            UpdateWindow(existingHwnd)
+            setWindowVisible(windowImpl, !startHidden)
             return
         }
         Win32WinMain.initializeFromProcessStartup()
@@ -1441,7 +1499,7 @@ object Win32NativeWindowHost {
             val height = maxOf(size.height, minHeightPx, 620)
             val title = windowImpl.getTitle().ifBlank { "GenericUI" }
 
-            val initialStyle = if (visualTestMode) {
+            val initialStyle = if (visualTestMode || startHidden) {
                 (WS_OVERLAPPEDWINDOW or WS_CLIPCHILDREN).toUInt()
             } else {
                 (WS_OVERLAPPEDWINDOW or WS_VISIBLE or WS_CLIPCHILDREN).toUInt()
@@ -1474,7 +1532,9 @@ object Win32NativeWindowHost {
                     SetMenu(hwnd, hMenuBar)
                     DrawMenuBar(hwnd)
                 }
-                if (visualTestMode) {
+                if (startHidden) {
+                    ShowWindow(hwnd, SW_HIDE)
+                } else if (visualTestMode) {
                     ShowWindow(hwnd, SW_SHOWNOACTIVATE)
                     syncMultiWindowDocks()
                     syncActiveDialogWindows()
@@ -1489,6 +1549,15 @@ object Win32NativeWindowHost {
                             (SWP_SHOWWINDOW or SWP_FRAMECHANGED or SWP_NOACTIVATE).toUInt()
                         )
                     }
+                    if (windowImpl.isFullscreen() && !isWindowFullscreenActive) {
+                        setWindowFullscreen(
+                            windowImpl = windowImpl,
+                            fullscreen = true,
+                            targetElementWidget = windowImpl.getFullscreenElement()?.nativeWidget as? DesktopNativeWidget
+                        )
+                    }
+                    InvalidateRect(hwnd, null, 1)
+                    UpdateWindow(hwnd)
                 } else {
                     ShowWindow(hwnd, Win32WinMain.nCmdShow)
                     ShowWindow(hwnd, SW_SHOWNORMAL)
@@ -1505,12 +1574,19 @@ object Win32NativeWindowHost {
                             (SWP_SHOWWINDOW or SWP_FRAMECHANGED).toUInt()
                         )
                     }
+                    if (windowImpl.isFullscreen() && !isWindowFullscreenActive) {
+                        setWindowFullscreen(
+                            windowImpl = windowImpl,
+                            fullscreen = true,
+                            targetElementWidget = windowImpl.getFullscreenElement()?.nativeWidget as? DesktopNativeWidget
+                        )
+                    }
                     BringWindowToTop(hwnd)
                     SetForegroundWindow(hwnd)
                     SetFocus(hwnd)
+                    InvalidateRect(hwnd, null, 1)
+                    UpdateWindow(hwnd)
                 }
-                InvalidateRect(hwnd, null, 1)
-                UpdateWindow(hwnd)
             }
         }
     }
@@ -1816,6 +1892,7 @@ object Win32NativeWindowHost {
                 if (hudTimedOut) {
                     isVideoStageHudAutoHidden = true
                     overlayHudTargetAlpha = 0f
+                    updateCursorForWindow(hwnd, forceSet = true)
                 }
                 var hudAlphaAnimating = false
                 val alphaDiff = overlayHudTargetAlpha - overlayHudCurrentAlpha
@@ -2300,24 +2377,8 @@ object Win32NativeWindowHost {
         )
     }
 
-    fun handleKeyDown(hwnd: HWND, vkCode: Int): Boolean {
-        if ((vkCode == VK_ESCAPE || vkCode == VK_F11) && isFullscreenActiveForMainWindow()) {
-            activeFullscreenElementWidget?.attributes?.remove("data-genericui-fullscreen-element")
-            val mainWin = com.nexustools.genericui.component.shell.Application.current?.mainWindow
-            if (mainWin != null) {
-                if (mainWin.fullscreenElement != null) {
-                    mainWin.exitElementFullscreen()
-                } else if (mainWin.isFullscreen()) {
-                    mainWin.setFullscreen(false)
-                }
-            }
-            activeWindowImpl?.let { winImpl ->
-                winImpl.setFullscreenElement(null, com.nexustools.genericui.enums.window.DisplayCutoutMode.SHORT_EDGES)
-                winImpl.setFullscreen(false, com.nexustools.genericui.enums.window.DisplayCutoutMode.SHORT_EDGES)
-                setWindowFullscreen(winImpl, false, null)
-            }
-            return true
-        }
+    fun handleKeyDown(hwnd: HWND, vkCode: Int, forceAltDown: Boolean = false): Boolean {
+        val wasFullscreenBeforeDispatch = isFullscreenActiveForMainWindow()
         val textInput = focusedTextInput
         if (textInput != null) {
             when (vkCode) {
@@ -2330,9 +2391,11 @@ object Win32NativeWindowHost {
                     return true
                 }
                 VK_RETURN -> {
-                    textInput.submitValue()
-                    invalidateAllWindows()
-                    return true
+                    if (!forceAltDown && (GetKeyState(VK_MENU).toInt() and 0x8000) == 0) {
+                        textInput.submitValue()
+                        invalidateAllWindows()
+                        return true
+                    }
                 }
                 VK_ESCAPE -> {
                     (focusedWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(false)
@@ -2356,7 +2419,7 @@ object Win32NativeWindowHost {
 
         val ctrlDown = (GetKeyState(VK_CONTROL).toInt() and 0x8000) != 0
         val shiftDown = (GetKeyState(VK_SHIFT).toInt() and 0x8000) != 0
-        val altDown = (GetKeyState(VK_MENU).toInt() and 0x8000) != 0
+        val altDown = forceAltDown || ((GetKeyState(VK_MENU).toInt() and 0x8000) != 0)
         if (textInput != null && !ctrlDown && !altDown && vkCode !in VK_F1..VK_F12) {
             return false
         }
@@ -2387,7 +2450,8 @@ object Win32NativeWindowHost {
 
         val canvasImpl = activeCanvasImpl
         val windowImpl = activeWindowImpl
-        if ((canvasImpl != null || windowImpl != null) && textInput == null) {
+        var dispatched = false
+        if ((canvasImpl != null || windowImpl != null) && (textInput == null || altDown || vkCode in VK_F1..VK_F12)) {
             val mappedKey = when (vkCode) {
                 VK_BACK -> "Backspace"
                 VK_RETURN -> "Enter"
@@ -2422,21 +2486,43 @@ object Win32NativeWindowHost {
                 if (canvasImpl != null) {
                     runCatching { canvasImpl.dispatchKeyDown(keyEv) }
                 }
-                InvalidateRect(hwnd, null, 0)
-                return true
+                dispatched = true
             }
+        }
+
+        if ((vkCode == VK_ESCAPE || vkCode == VK_F11) && wasFullscreenBeforeDispatch && isFullscreenActiveForMainWindow()) {
+            activeFullscreenElementWidget?.attributes?.remove("data-genericui-fullscreen-element")
+            val mainWin = com.nexustools.genericui.component.shell.Application.current?.mainWindow
+            if (mainWin != null) {
+                if (mainWin.fullscreenElement != null) {
+                    mainWin.exitElementFullscreen()
+                } else if (mainWin.isFullscreen()) {
+                    mainWin.setFullscreen(false)
+                }
+            }
+            activeWindowImpl?.let { winImpl ->
+                winImpl.setFullscreenElement(null, com.nexustools.genericui.enums.window.DisplayCutoutMode.SHORT_EDGES)
+                winImpl.setFullscreen(false, com.nexustools.genericui.enums.window.DisplayCutoutMode.SHORT_EDGES)
+                setWindowFullscreen(winImpl, false, null)
+            }
+            return true
+        }
+
+        if (dispatched) {
+            InvalidateRect(hwnd, null, 0)
+            return true
         }
         return false
     }
 
-    fun handleKeyUp(hwnd: HWND, vkCode: Int): Boolean {
-        if (focusedTextInput != null) return false
+    fun handleKeyUp(hwnd: HWND, vkCode: Int, forceAltDown: Boolean = false): Boolean {
+        if (focusedTextInput != null && !forceAltDown) return false
         val canvasImpl = activeCanvasImpl
         val windowImpl = activeWindowImpl
         if (canvasImpl == null && windowImpl == null) return false
         val ctrlDown = (GetKeyState(VK_CONTROL).toInt() and 0x8000) != 0
         val shiftDown = (GetKeyState(VK_SHIFT).toInt() and 0x8000) != 0
-        val altDown = (GetKeyState(VK_MENU).toInt() and 0x8000) != 0
+        val altDown = forceAltDown || ((GetKeyState(VK_MENU).toInt() and 0x8000) != 0)
         val mappedKey = when (vkCode) {
             VK_BACK -> "Backspace"
             VK_RETURN -> "Enter"
@@ -2548,6 +2634,12 @@ object Win32NativeWindowHost {
     }
 
     fun updateCursorForWindow(hwnd: HWND, forceSet: Boolean = true): Boolean {
+        if (hwnd == activeHwnd && isPointerInVideoStage && isVideoStageHudAutoHidden) {
+            lastCursorHwndKey = 0L
+            lastCursorIdKey = 0L
+            SetCursor(null)
+            return true
+        }
         val hit = hoveredHitRegion
         val targetWidget = hit?.widget ?: hoveredWidget
         val targetImpl = targetWidget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
@@ -2573,12 +2665,36 @@ object Win32NativeWindowHost {
             }
         }
 
+        var w: DesktopNativeWidget? = targetWidget
+            ?: if (hwnd == activeHwnd && isPointInVideoStage(hoverMouseX, hoverMouseY)) {
+                Win32WorkspaceWindowRenderUtil.cachedOverlayWidget ?: Win32WorkspaceWindowRenderUtil.cachedVideoWidget
+            } else null
+        var resolvedCursor: String? = null
+        while (w != null) {
+            val c = (w.attributes["cursor"] as? String)?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            if (c != null) {
+                if (resolvedCursor == null) resolvedCursor = c
+                if (c == "none") {
+                    resolvedCursor = "none"
+                    break
+                }
+            }
+            w = w.parentWidget
+        }
+        if (resolvedCursor == "none") {
+            lastCursorHwndKey = 0L
+            lastCursorIdKey = 0L
+            SetCursor(null)
+            return true
+        }
+
         val hitCursor = (targetWidget?.attributes?.get("cursor") as? String)?.lowercase()
-            ?: targetWidget?.styleProperties?.get("cursor")?.lowercase()
             ?: customCursor?.fallback?.cssValue
+            ?: resolvedCursor
         val canvasCursor = (activeCanvasImpl?.nativeWidget?.attributes?.get("cursor") as? String)?.lowercase()
         if (hitCursor == "none") {
             lastCursorHwndKey = 0L
+            lastCursorIdKey = 0L
             SetCursor(null)
             return true
         }
@@ -2596,6 +2712,7 @@ object Win32NativeWindowHost {
             hitCursor == "ns-resize" || hitCursor == "row-resize" || hitCursor == "n-resize" || hitCursor == "s-resize" -> IDC_SIZENS
             hitCursor == "nwse-resize" || hitCursor == "nw-resize" || hitCursor == "se-resize" -> IDC_SIZENWSE
             hitCursor == "nesw-resize" || hitCursor == "ne-resize" || hitCursor == "sw-resize" -> IDC_SIZENESW
+            hitCursor == "default" -> IDC_ARROW
             hit != null && (targetWidget == null || (targetWidget.enabled && targetImpl?.isEnabled() != false)) &&
                 (hit.onClick != null || hit.onDrag != null || hit.onRelease != null ||
                     hitCursor == "pointer" ||
@@ -2622,16 +2739,21 @@ object Win32NativeWindowHost {
     internal fun setWidgetFocused(newFocused: DesktopNativeWidget?) {
         val effectiveFocused = if (newFocused?.enabled == false) null else newFocused
         val prevFocused = focusedWidget
-        if (prevFocused !== effectiveFocused) {
+        val newTextInput = effectiveFocused?.attributes?.get("nativeImpl") as? DesktopTextInputNativeImpl<*>
+        if (prevFocused !== effectiveFocused || focusedTextInput !== newTextInput) {
             val prevTextInput = focusedTextInput
-            (prevFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(false)
-            (effectiveFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(true)
+            if (prevFocused !== effectiveFocused) {
+                (prevFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(false)
+                (effectiveFocused?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.setFocusedState(true)
+            }
             focusedWidget = effectiveFocused
-            focusedTextInput = effectiveFocused?.attributes?.get("nativeImpl") as? DesktopTextInputNativeImpl<*>
-            com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = (focusedTextInput != null)
+            focusedTextInput = newTextInput
+            com.nexustools.genericui.event.InputFocusManager.setEditableInputFocused(focusedTextInput != null)
             if (prevTextInput != null && prevTextInput !== focusedTextInput) {
                 runCatching { prevTextInput.submitValue() }
             }
+        } else {
+            com.nexustools.genericui.event.InputFocusManager.setEditableInputFocused(focusedTextInput != null)
         }
     }
 
@@ -2666,7 +2788,7 @@ object Win32NativeWindowHost {
     fun isCardScrollbarThumbDragging(): Boolean = isDraggingCardScrollbarThumb
 
     fun handleMouseWheel(hwnd: HWND, wheelDelta: Int) {
-        if (Win32GeneralComponentTreeRenderer.handleMouseWheel(hwnd, hoverMouseX, hoverMouseY, wheelDelta)) {
+        if (Win32WorkspaceWindowRenderUtil.handleMouseWheel(hwnd, hoverMouseX, hoverMouseY, wheelDelta)) {
             InvalidateRect(hwnd, null, 0)
             UpdateWindow(hwnd)
             return
@@ -2778,8 +2900,8 @@ object Win32NativeWindowHost {
             if (lastOverlayFadeTickMs == 0.0) {
                 overlayHudCurrentAlpha = 1f
             }
-            val stageContainer = Win32GeneralComponentTreeRenderer.cachedOverlayWidget?.parentWidget
-                ?: Win32GeneralComponentTreeRenderer.cachedVideoWidget?.parentWidget
+            val stageContainer = Win32WorkspaceWindowRenderUtil.cachedOverlayWidget?.parentWidget
+                ?: Win32WorkspaceWindowRenderUtil.cachedVideoWidget?.parentWidget
             if (stageContainer != null) {
                 val stageDownEv = PointerEvent(
                     x = (x - lastRenderedVideoStageRect[0]).toFloat(),
@@ -2894,8 +3016,8 @@ object Win32NativeWindowHost {
                 lastVideoStageMouseMoveTickMs = GetTickCount64().toLong()
                 isPointerInVideoStage = true
                 overlayHudTargetAlpha = 1f
-                val stageContainer = Win32GeneralComponentTreeRenderer.cachedOverlayWidget?.parentWidget
-                    ?: Win32GeneralComponentTreeRenderer.cachedVideoWidget?.parentWidget
+                val stageContainer = Win32WorkspaceWindowRenderUtil.cachedOverlayWidget?.parentWidget
+                    ?: Win32WorkspaceWindowRenderUtil.cachedVideoWidget?.parentWidget
                 if (stageContainer != null) {
                     val stageMoveEv = PointerEvent(
                         x = (x - lastRenderedVideoStageRect[0]).toFloat(),
@@ -3331,7 +3453,7 @@ object Win32NativeWindowHost {
         lastPaintedNonOverlayVersion = -1L
         lastFullPaintHwndKey = 0L
         lastFullPaintRootWidget = null
-        Win32GeneralComponentTreeRenderer.clearBackBufferRegionKeys()
+        Win32WorkspaceWindowRenderUtil.clearBackBufferRegionKeys()
         releaseCardGridBackBuffer()
     }
 
@@ -3553,7 +3675,7 @@ object Win32NativeWindowHost {
             val theme = if (isWindowsSystemDarkTheme()) darkSystemPalette else lightSystemPalette
             QueryPerformanceCounter(paintQpcEnd.ptr)
             val preStageUs = ((paintQpcEnd.QuadPart - paintQpcStart.QuadPart).toDouble() / ticksPerUs).toLong()
-            val fastPathRendered = Win32GeneralComponentTreeRenderer.renderCachedVideoStageFastPath(
+            val fastPathRendered = Win32WorkspaceWindowRenderUtil.renderCachedVideoStageFastPath(
                 hwnd = hwnd,
                 hdc = memDc,
                 theme = theme,
@@ -3566,7 +3688,7 @@ object Win32NativeWindowHost {
             if (fastPathRendered) {
                 QueryPerformanceCounter(paintQpcEnd.ptr)
                 val postStageUs = ((paintQpcEnd.QuadPart - paintQpcStart.QuadPart).toDouble() / ticksPerUs).toLong()
-                Win32GeneralComponentTreeRenderer.invalidateBackBufferRectKeys(vr[0], vr[1], vr[2], vr[3])
+                Win32WorkspaceWindowRenderUtil.invalidateBackBufferRectKeys(vr[0], vr[1], vr[2], vr[3])
                 if (hoverHwndKey == hwnd.toLong()) {
                     renderHoveredTooltipOverlay(memDc, fontSmall, theme, clientW, clientH)
                 }
@@ -3600,7 +3722,7 @@ object Win32NativeWindowHost {
             activeMainBackBufferPreserved = false
         }
         isVBlankVideoStageOnlyRepaint = false
-        Win32GeneralComponentTreeRenderer.resetLastPaintedVideoStageCacheKey()
+        Win32WorkspaceWindowRenderUtil.resetLastPaintedVideoStageCacheKey()
 
         isPaintingWindow = true
         beginPaintFrameNativeControls(hwnd)
@@ -3652,7 +3774,7 @@ object Win32NativeWindowHost {
         if (dialogForHwnd != null) {
             fillRectColor(memDc, 0, 0, clientW, clientH, theme.bgPanel)
             drawRectBorder(memDc, 0, 0, clientW, clientH, theme.borderSubtle)
-            Win32GeneralComponentTreeRenderer.renderModalDialogBody(
+            Win32WorkspaceWindowRenderUtil.renderModalDialogBody(
                 hwnd = hwnd,
                 hdc = memDc,
                 theme = theme,
@@ -3775,7 +3897,7 @@ object Win32NativeWindowHost {
             activeMainBackBufferPreserved = canPreserveMainBackBuffer
             if (!canPreserveMainBackBuffer) {
                 cachedCardPageFrameRootVer = -1L
-                Win32GeneralComponentTreeRenderer.clearBackBufferRegionKeys()
+                Win32WorkspaceWindowRenderUtil.clearBackBufferRegionKeys()
                 fillRectColor(memDc, 0, 0, clientW, clientH, theme.bgBase)
                 markFrameBufferDirty(0, 0, clientW, clientH)
             }
@@ -4011,8 +4133,7 @@ object Win32NativeWindowHost {
     internal fun widgetHasClass(widget: DesktopNativeWidget?, className: String): Boolean {
         if (widget == null || className.isEmpty()) return false
         if (widget.cachedAllClassTokens.isEmpty() &&
-            (widget.styleProperties["class"] != null ||
-                widget.attributes["class"] != null ||
+            (widget.attributes["class"] != null ||
                 widget.attributes["bootstrapClass"] != null ||
                 widget.attributes["enumClasses"] != null ||
                 widget.attributes["nativeImpl"] != null)
@@ -4349,7 +4470,7 @@ object Win32NativeWindowHost {
             return
         }
 
-        Win32GeneralComponentTreeRenderer.renderGeneralComponentTree(
+        Win32WorkspaceWindowRenderUtil.renderGeneralComponentTree(
             hwnd = hwnd,
             hdc = hdc,
             theme = theme,
@@ -6025,15 +6146,6 @@ object Win32NativeWindowHost {
                 }
                 contentY += boxH + 12
             }
-
-            class FormFieldRenderItem(
-                val label: String,
-                val textInput: DesktopTextInputNativeImpl<*>?,
-                val select: DesktopSelectNativeImpl<*>?,
-                val checkbox: DesktopCheckboxNativeImpl<*>?,
-                val buttons: List<DesktopButtonNativeImpl<*>>,
-                val readOnlyText: String? = null
-            )
 
             val fieldItems = mutableListOf<FormFieldRenderItem>()
             val actionButtons = mutableListOf<DesktopButtonNativeImpl<*>>()
@@ -8010,9 +8122,9 @@ object Win32NativeWindowHost {
                     val attrIndent = (colWrapper.attributes["data-tree-indent-px"] as? String)?.toIntOrNull()
                     val attrDepth = (colWrapper.attributes["data-tree-depth"] as? String)?.toIntOrNull()
                     val computedPadLeft = (colWrapper.attributes["computedStyle"] as? com.nexustools.genericui.style.css.ComputedStyle)
-                        ?.rawDeclarations?.get("padding-left")?.removeSuffix("px")?.trim()?.toIntOrNull()
-                    val stylePadLeft = colWrapper.styleProperties["padding-left"]
-                        ?.removeSuffix("px")?.trim()?.toIntOrNull()
+                        ?.let { (it.paddingLeft ?: it.padding?.left)?.resolvePx()?.roundToInt() }
+                    val stylePadLeft = (colWrapper.attributes["componentStyle"] as? com.nexustools.genericui.style.css.ComponentStyle)
+                        ?.padding?.left?.resolvePx()?.roundToInt()
                     val indentPx = when {
                         colWrapper.padding.left > 0 -> colWrapper.padding.left
                         attrIndent != null && attrIndent > 0 -> attrIndent
@@ -13205,6 +13317,45 @@ object Win32NativeWindowHost {
         isDraggingCardScrollbarThumb = false
         isDraggingLazyGridScrollbarThumb = false
     }
+
+    /**
+     * Captures the currently rendered Win32 GDI back-buffer for [activeHwnd] as an RGBA [com.nexustools.genericui.image.ImageBuffer].
+     */
+    fun captureWindowScreenshot(
+        width: Int = 1280,
+        height: Int = 800
+    ): com.nexustools.genericui.image.ImageBuffer? {
+        val hwnd = activeHwnd ?: return null
+        InvalidateRect(hwnd, null, 0)
+        runCatching { paintWindow(hwnd) }
+        val pixels = cachedMainBackBufferPixels ?: return null
+        val bw = cachedMainBackBufferWidth
+        val bh = cachedMainBackBufferHeight
+        if (bw <= 0 || bh <= 0) return null
+
+        val out = com.nexustools.genericui.image.ImageBuffer(bw, bh)
+        val dst = out.bytes
+        val totalPixels = bw * bh
+        var firstPacked = -1
+        var hasDistinctPixels = false
+        for (i in 0 until totalPixels) {
+            val sIdx = i * 4
+            val b = pixels[sIdx].toInt() and 0xFF
+            val g = pixels[sIdx + 1].toInt() and 0xFF
+            val r = pixels[sIdx + 2].toInt() and 0xFF
+            val packed = (r shl 16) or (g shl 8) or b
+            if (firstPacked == -1) {
+                firstPacked = packed
+            } else if (!hasDistinctPixels && packed != firstPacked) {
+                hasDistinctPixels = true
+            }
+            dst[sIdx] = r.toByte()
+            dst[sIdx + 1] = g.toByte()
+            dst[sIdx + 2] = b.toByte()
+            dst[sIdx + 3] = 0xFF.toByte()
+        }
+        return if (hasDistinctPixels) out else null
+    }
 }
 
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
@@ -13363,6 +13514,33 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
                 runCatching { Win32NativeWindowHost.handleKeyUp(hwnd, wParam.toInt()) }
             }
             return 0L
+        }
+        0x0104 /* WM_SYSKEYDOWN */ -> {
+            val vk = wParam.toInt()
+            if (vk != VK_TAB && vk != 0x73 /* VK_F4 */) {
+                if (hwnd != null) {
+                    runCatching { Win32NativeWindowHost.handleKeyDown(hwnd, vk, forceAltDown = true) }
+                }
+                if (vk == VK_RETURN) {
+                    return 0L
+                }
+            }
+        }
+        0x0105 /* WM_SYSKEYUP */ -> {
+            val vk = wParam.toInt()
+            if (vk != VK_TAB && vk != 0x73 /* VK_F4 */) {
+                if (hwnd != null) {
+                    runCatching { Win32NativeWindowHost.handleKeyUp(hwnd, vk, forceAltDown = true) }
+                }
+                if (vk == VK_RETURN) {
+                    return 0L
+                }
+            }
+        }
+        0x0106 /* WM_SYSCHAR */ -> {
+            if (wParam.toInt() == VK_RETURN) {
+                return 0L
+            }
         }
         WM_CHAR -> {
             if (hwnd != null) {

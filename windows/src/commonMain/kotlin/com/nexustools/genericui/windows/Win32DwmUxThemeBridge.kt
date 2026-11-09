@@ -2,6 +2,11 @@
 
 package com.nexustools.genericui.windows
 
+import com.nexustools.genericui.desktop.render.DesktopControlTintRenderUtil
+import com.nexustools.genericui.enums.bootstrap.BootstrapType
+import com.nexustools.genericui.style.color.BootstrapColorPalette
+import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.theme.ThemeConfig
 import kotlinx.cinterop.*
 import platform.windows.*
 import kotlin.math.max
@@ -64,7 +69,7 @@ object Win32DwmUxThemeBridge {
     const val CBS_PUSHED: Int = 3
     const val CBS_DISABLED: Int = 4
 
-    // UxTheme BUTTON parts & states (BP_PUSHBUTTON / PBS_*)
+    // UxTheme BUTTON parts & states (BP_PUSHBUTTON / PBS_* / CBS_* / RBS_* / GBS_*)
     const val BP_PUSHBUTTON: Int = 1
     const val BP_RADIOBUTTON: Int = 2
     const val BP_CHECKBOX: Int = 3
@@ -77,6 +82,195 @@ object Win32DwmUxThemeBridge {
     const val PBS_DISABLED: Int = 4
     const val PBS_DEFAULTED: Int = 5
     const val PBS_DEFAULTED_ANIMATING: Int = 6
+
+    const val CBS_UNCHECKEDNORMAL: Int = 1
+    const val CBS_UNCHECKEDHOT: Int = 2
+    const val CBS_UNCHECKEDPRESSED: Int = 3
+    const val CBS_UNCHECKEDDISABLED: Int = 4
+    const val CBS_CHECKEDNORMAL: Int = 5
+    const val CBS_CHECKEDHOT: Int = 6
+    const val CBS_CHECKEDPRESSED: Int = 7
+    const val CBS_CHECKEDDISABLED: Int = 8
+    const val CBS_MIXEDNORMAL: Int = 9
+    const val CBS_MIXEDHOT: Int = 10
+    const val CBS_MIXEDPRESSED: Int = 11
+    const val CBS_MIXEDDISABLED: Int = 12
+
+    const val RBS_UNCHECKEDNORMAL: Int = 1
+    const val RBS_UNCHECKEDHOT: Int = 2
+    const val RBS_UNCHECKEDPRESSED: Int = 3
+    const val RBS_UNCHECKEDDISABLED: Int = 4
+    const val RBS_CHECKEDNORMAL: Int = 5
+    const val RBS_CHECKEDHOT: Int = 6
+    const val RBS_CHECKEDPRESSED: Int = 7
+    const val RBS_CHECKEDDISABLED: Int = 8
+
+    const val GBS_NORMAL: Int = 1
+    const val GBS_DISABLED: Int = 2
+
+    // UxTheme EDIT parts & states
+    const val EP_EDITTEXT: Int = 1
+    const val EP_CARET: Int = 2
+    const val EP_BACKGROUND: Int = 3
+    const val EP_PASSWORD: Int = 4
+    const val EP_BACKGROUNDWITHBORDER: Int = 5
+    const val EP_EDITBORDER_NOSCROLL: Int = 6
+
+    const val ETS_NORMAL: Int = 1
+    const val ETS_HOT: Int = 2
+    const val ETS_SELECTED: Int = 3
+    const val ETS_DISABLED: Int = 4
+    const val ETS_FOCUSED: Int = 5
+    const val ETS_READONLY: Int = 6
+    const val ETS_ASSIST: Int = 7
+    const val ETS_CUEBANNER: Int = 8
+
+    // UxTheme COMBOBOX parts & states
+    const val CP_DROPDOWNBUTTON: Int = 1
+    const val CP_BACKGROUND: Int = 2
+    const val CP_TRANSPARENTBACKGROUND: Int = 3
+    const val CP_BORDER: Int = 4
+    const val CP_READONLY: Int = 5
+    const val CP_DROPDOWNBUTTONRIGHT: Int = 6
+    const val CP_DROPDOWNBUTTONLEFT: Int = 7
+    const val CP_CUEBANNER: Int = 8
+
+    const val CBXS_NORMAL: Int = 1
+    const val CBXS_HOT: Int = 2
+    const val CBXS_PRESSED: Int = 3
+    const val CBXS_DISABLED: Int = 4
+
+    // UxTheme PROGRESS parts & states
+    const val PP_BAR: Int = 1
+    const val PP_BARVERT: Int = 2
+    const val PP_CHUNK: Int = 3
+    const val PP_CHUNKVERT: Int = 4
+    const val PP_FILL: Int = 5
+    const val PP_FILLVERT: Int = 6
+    const val PP_PULSEOVERLAY: Int = 7
+    const val PP_MOVEOVERLAY: Int = 8
+    const val PP_PULSEOVERLAYVERT: Int = 9
+    const val PP_MOVEOVERLAYVERT: Int = 10
+    const val PP_TRANSPARENTBAR: Int = 11
+    const val PP_TRANSPARENTBARVERT: Int = 12
+
+    const val PBFS_NORMAL: Int = 1
+    const val PBFS_ERROR: Int = 2
+    const val PBFS_PAUSED: Int = 3
+    const val PBFS_PARTIAL: Int = 4
+
+    // UxTheme TRACKBAR parts & states
+    const val TKP_TRACK: Int = 1
+    const val TKP_TRACKVERT: Int = 2
+    const val TKP_THUMB: Int = 3
+    const val TKP_THUMBBOTTOM: Int = 4
+    const val TKP_THUMBTOP: Int = 5
+    const val TKP_THUMBVERT: Int = 6
+    const val TKP_THUMBLEFT: Int = 7
+    const val TKP_THUMBRIGHT: Int = 8
+    const val TKP_TICS: Int = 9
+    const val TKP_TICSVERT: Int = 10
+
+    const val TRS_NORMAL: Int = 1
+    const val TUS_NORMAL: Int = 1
+    const val TUS_HOT: Int = 2
+    const val TUS_PRESSED: Int = 3
+    const val TUS_FOCUSED: Int = 4
+    const val TUS_DISABLED: Int = 5
+
+    // UxTheme TAB parts & states
+    const val TABP_TABITEM: Int = 1
+    const val TABP_TABITEMLEFTEDGE: Int = 2
+    const val TABP_TABITEMRIGHTEDGE: Int = 3
+    const val TABP_TABITEMBOTHEDGE: Int = 4
+    const val TABP_TOPTABITEM: Int = 5
+    const val TABP_TOPTABITEMLEFTEDGE: Int = 6
+    const val TABP_TOPTABITEMRIGHTEDGE: Int = 7
+    const val TABP_TOPTABITEMBOTHEDGE: Int = 8
+    const val TABP_PANE: Int = 9
+    const val TABP_BODY: Int = 10
+
+    const val TIS_NORMAL: Int = 1
+    const val TIS_HOT: Int = 2
+    const val TIS_SELECTED: Int = 3
+    const val TIS_DISABLED: Int = 4
+    const val TIS_FOCUSED: Int = 5
+
+    // UxTheme HEADER parts & states
+    const val HP_HEADERITEM: Int = 1
+    const val HP_HEADERITEMLEFT: Int = 2
+    const val HP_HEADERITEMRIGHT: Int = 3
+    const val HP_HEADERSORTARROW: Int = 4
+
+    const val HIS_NORMAL: Int = 1
+    const val HIS_HOT: Int = 2
+    const val HIS_PRESSED: Int = 3
+    const val HIS_SORTEDNORMAL: Int = 4
+    const val HIS_SORTEDHOT: Int = 5
+    const val HIS_SORTEDPRESSED: Int = 6
+
+    // UxTheme SPIN parts & states
+    const val SPNP_UP: Int = 1
+    const val SPNP_DOWN: Int = 2
+    const val SPNP_UPHORZ: Int = 3
+    const val SPNP_DOWNHORZ: Int = 4
+
+    const val UPS_NORMAL: Int = 1
+    const val UPS_HOT: Int = 2
+    const val UPS_PRESSED: Int = 3
+    const val UPS_DISABLED: Int = 4
+
+    // UxTheme TOOLBAR parts & states
+    const val TP_BUTTON: Int = 1
+    const val TP_DROPDOWNBUTTON: Int = 2
+    const val TP_SPLITBUTTON: Int = 3
+    const val TP_SPLITBUTTONDROPDOWN: Int = 4
+    const val TP_SEPARATOR: Int = 5
+    const val TP_SEPARATORVERT: Int = 6
+
+    const val TS_NORMAL: Int = 1
+    const val TS_HOT: Int = 2
+    const val TS_PRESSED: Int = 3
+    const val TS_DISABLED: Int = 4
+    const val TS_CHECKED: Int = 5
+    const val TS_HOTCHECKED: Int = 6
+
+    // UxTheme STATUS parts & states
+    const val SP_PANE: Int = 1
+    const val SP_GRIPPERPANE: Int = 2
+    const val SP_GRIPPER: Int = 3
+
+    // UxTheme SCROLLBAR parts & states
+    const val SBP_ARROWBTN: Int = 1
+    const val SBP_THUMBBTNHORZ: Int = 2
+    const val SBP_THUMBBTNVERT: Int = 3
+    const val SBP_LOWERTRACKHORZ: Int = 4
+    const val SBP_UPPERTRACKHORZ: Int = 5
+    const val SBP_LOWERTRACKVERT: Int = 6
+    const val SBP_UPPERTRACKVERT: Int = 7
+    const val SBP_GRIPPERHORZ: Int = 8
+    const val SBP_GRIPPERVERT: Int = 9
+    const val SBP_SIZEBOX: Int = 10
+
+    const val SCRBS_NORMAL: Int = 1
+    const val SCRBS_HOT: Int = 2
+    const val SCRBS_PRESSED: Int = 3
+    const val SCRBS_DISABLED: Int = 4
+    const val SCRBS_HOVER: Int = 5
+
+    // UxTheme TREEVIEW parts & states
+    const val TVP_TREEITEM: Int = 1
+    const val TVP_GLYPH: Int = 2
+    const val TVP_BRANCH: Int = 3
+    const val TVP_HOTGLYPH: Int = 4
+
+    const val TREIS_NORMAL: Int = 1
+    const val TREIS_HOT: Int = 2
+    const val TREIS_SELECTED: Int = 3
+    const val TREIS_DISABLED: Int = 4
+    const val TREIS_SELECTEDNOTFOCUS: Int = 5
+    const val GLPS_CLOSED: Int = 1
+    const val GLPS_OPENED: Int = 2
 
     private var ntdllModule: HMODULE? = null
     private var dwmModule: HMODULE? = null
@@ -1107,4 +1301,368 @@ object Win32DwmUxThemeBridge {
             drawThemeBg(hTheme, hdc, partId, stateId, rc.ptr, null) >= 0
         }
     }
+
+    /**
+     * Builds the `uxtheme.dll` class list string for the requested [baseClass] (e.g. `"BUTTON"`,
+     * `"EDIT"`, `"COMBOBOX"`, `"PROGRESS"`, `"TRACKBAR"`, `"TAB"`, `"HEADER"`, `"SPIN"`,
+     * `"TOOLBAR"`, `"STATUS"`, `"SCROLLBAR"`, `"TREEVIEW"`) respecting [darkMode].
+     */
+    fun resolveExplorerClassList(baseClass: String, darkMode: Boolean): String =
+        if (darkMode) {
+            "DarkMode_Explorer::$baseClass;Explorer::$baseClass;$baseClass"
+        } else {
+            "Explorer::$baseClass;$baseClass"
+        }
+
+    /**
+     * Renders an empty-text native `uxtheme.dll` control part (`BUTTON`, `EDIT`, `COMBOBOX`,
+     * `PROGRESS`, `TRACKBAR`, `TAB`, `HEADER`, `SPIN`, `TOOLBAR`, `STATUS`, etc.) into a newly
+     * allocated 32-bpp straight-ARGB pixel buffer (`IntArray(width * height)`).
+     */
+    fun captureEmptyTextControlArgbBuffer(
+        hwnd: HWND?,
+        classList: String,
+        partId: Int,
+        stateId: Int,
+        width: Int,
+        height: Int
+    ): IntArray? {
+        if (width <= 0 || height <= 0) return null
+        ensureModulesLoaded()
+        val hTheme = obtainThemeHandle(hwnd, classList) ?: return null
+        val sprite = obtainOrRenderBaseControlSprite(classList, hTheme, partId, stateId, width, height) ?: return null
+        return unpackSpriteToStraightArgb(sprite)
+    }
+
+    private fun obtainOrRenderBaseControlSprite(
+        classList: String,
+        hTheme: COpaquePointer,
+        partId: Int,
+        stateId: Int,
+        w: Int,
+        h: Int
+    ): UxThemeControlSprite? {
+        val baseKey = "$classList|$partId|$stateId|$w|$h"
+        cachedUxThemeControlSprites[baseKey]?.let { return it }
+        val rendered = renderUxThemeControlSprite(hTheme, partId, stateId, w, h) ?: return null
+        if (w <= 800 && h <= 300) {
+            if (cachedUxThemeControlSprites.size >= 384) {
+                val eldest = cachedUxThemeControlSprites.keys.firstOrNull()
+                if (eldest != null) cachedUxThemeControlSprites.remove(eldest)
+            }
+            cachedUxThemeControlSprites[baseKey] = rendered
+        }
+        return rendered
+    }
+
+    private fun unpackSpriteToStraightArgb(sprite: UxThemeControlSprite): IntArray {
+        val count = sprite.width * sprite.height
+        val out = IntArray(count)
+        val premulWords = sprite.premulRgbWords
+        val invAlphaBytes = sprite.invAlphaBytes
+        for (i in 0 until count) {
+            val invA = invAlphaBytes[i].toInt() and 0xFF
+            val alpha = (255 - invA).coerceIn(0, 255)
+            if (alpha <= 0) {
+                out[i] = 0
+                continue
+            }
+            val premul = premulWords[i]
+            val rPremul = (premul ushr 16) and 0xFF
+            val gPremul = (premul ushr 8) and 0xFF
+            val bPremul = premul and 0xFF
+            val r = if (alpha == 255) rPremul else ((rPremul * 255 + alpha / 2) / alpha).coerceIn(0, 255)
+            val g = if (alpha == 255) gPremul else ((gPremul * 255 + alpha / 2) / alpha).coerceIn(0, 255)
+            val b = if (alpha == 255) bPremul else ((bPremul * 255 + alpha / 2) / alpha).coerceIn(0, 255)
+            out[i] = (alpha shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        return out
+    }
+
+    private fun packStraightArgbToSprite(
+        argbPixels: IntArray,
+        w: Int,
+        h: Int
+    ): UxThemeControlSprite {
+        val count = w * h
+        val premulWords = IntArray(count)
+        val invAlphaBytes = ByteArray(count)
+        var allOpaque = true
+        for (i in 0 until count) {
+            val argb = argbPixels[i]
+            val alpha = (argb ushr 24) and 0xFF
+            val invA = (255 - alpha).coerceIn(0, 255)
+            if (invA != 0) {
+                allOpaque = false
+            }
+            val r = (argb ushr 16) and 0xFF
+            val g = (argb ushr 8) and 0xFF
+            val b = argb and 0xFF
+            val rPremul = if (alpha == 255) r else (r * alpha + 127) / 255
+            val gPremul = if (alpha == 255) g else (g * alpha + 127) / 255
+            val bPremul = if (alpha == 255) b else (b * alpha + 127) / 255
+            premulWords[i] = (0xFF shl 24) or (rPremul shl 16) or (gPremul shl 8) or bPremul
+            invAlphaBytes[i] = invA.toByte()
+        }
+        return UxThemeControlSprite(
+            width = w,
+            height = h,
+            premulRgbWords = premulWords,
+            invAlphaBytes = invAlphaBytes,
+            isFullyOpaque = allOpaque
+        )
+    }
+
+    private fun blitControlSpriteToTarget(
+        hdc: HDC,
+        sprite: UxThemeControlSprite,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int
+    ): Boolean {
+        val w = sprite.width
+        val h = sprite.height
+        val activeDc = Win32NativeWindowHost.activeBackBufferDc
+        val bufPixels = Win32NativeWindowHost.activeBackBufferPixels
+        if (hdc == activeDc && bufPixels != null) {
+            val bufW = Win32NativeWindowHost.activeBackBufferWidth
+            val bufH = Win32NativeWindowHost.activeBackBufferHeight
+            if (bufW > 0 && bufH > 0) {
+                val clipL = if (Win32NativeWindowHost.softClipDepth > 0) Win32NativeWindowHost.softClipLeft.coerceIn(0, bufW) else 0
+                val clipT = if (Win32NativeWindowHost.softClipDepth > 0) Win32NativeWindowHost.softClipTop.coerceIn(0, bufH) else 0
+                val clipR = if (Win32NativeWindowHost.softClipDepth > 0) Win32NativeWindowHost.softClipRight.coerceIn(clipL, bufW) else bufW
+                val clipB = if (Win32NativeWindowHost.softClipDepth > 0) Win32NativeWindowHost.softClipBottom.coerceIn(clipT, bufH) else bufH
+
+                val x0 = maxOf(left, clipL)
+                val y0 = maxOf(top, clipT)
+                val x1 = minOf(right, clipR)
+                val y1 = minOf(bottom, clipB)
+                if (x1 <= x0 || y1 <= y0) return true
+
+                Win32NativeWindowHost.flushGdiIfOverlapping(x0, y0, x1, y1)
+                val dstWords = bufPixels.reinterpret<IntVar>()
+                val premulWords = sprite.premulRgbWords
+                val invAlphaBytes = sprite.invAlphaBytes
+
+                if (sprite.isFullyOpaque) {
+                    for (py in y0 until y1) {
+                        var srcIdx = (py - top) * w + (x0 - left)
+                        var dstIdx = py * bufW + x0
+                        val endDstIdx = py * bufW + x1
+                        while (dstIdx < endDstIdx) {
+                            dstWords[dstIdx] = premulWords[srcIdx]
+                            srcIdx++
+                            dstIdx++
+                        }
+                    }
+                } else {
+                    for (py in y0 until y1) {
+                        var srcIdx = (py - top) * w + (x0 - left)
+                        var dstIdx = py * bufW + x0
+                        val endDstIdx = py * bufW + x1
+                        while (dstIdx < endDstIdx) {
+                            val invA = invAlphaBytes[srcIdx].toInt() and 0xFF
+                            if (invA == 0) {
+                                dstWords[dstIdx] = premulWords[srcIdx]
+                            } else if (invA < 255) {
+                                val premul = premulWords[srcIdx]
+                                val dstWord = dstWords[dstIdx]
+                                val rPremul = (premul ushr 16) and 0xFF
+                                val gPremul = (premul ushr 8) and 0xFF
+                                val bPremul = premul and 0xFF
+                                val dstR = (dstWord ushr 16) and 0xFF
+                                val dstG = (dstWord ushr 8) and 0xFF
+                                val dstB = dstWord and 0xFF
+                                val rOut = (rPremul + ((dstR * invA + 127) ushr 8)).coerceAtMost(255)
+                                val gOut = (gPremul + ((dstG * invA + 127) ushr 8)).coerceAtMost(255)
+                                val bOut = (bPremul + ((dstB * invA + 127) ushr 8)).coerceAtMost(255)
+                                dstWords[dstIdx] = (0xFF shl 24) or (rOut shl 16) or (gOut shl 8) or bOut
+                            }
+                            srcIdx++
+                            dstIdx++
+                        }
+                    }
+                }
+                return true
+            }
+        }
+
+        // Fallback when drawing onto a standalone GDI HDC
+        return memScoped {
+            val bmi = alloc<BITMAPINFO>()
+            bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+            bmi.bmiHeader.biWidth = w
+            bmi.bmiHeader.biHeight = -h
+            bmi.bmiHeader.biPlanes = 1u
+            bmi.bmiHeader.biBitCount = 32u
+            bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+            sprite.premulRgbWords.usePinned { pinned ->
+                StretchDIBits(
+                    hdc,
+                    left,
+                    top,
+                    w,
+                    h,
+                    0,
+                    0,
+                    w,
+                    h,
+                    pinned.addressOf(0),
+                    bmi.ptr,
+                    DIB_RGB_COLORS.toUInt(),
+                    SRCCOPY
+                ) > 0
+            }
+        }
+    }
+
+    /**
+     * Renders a `uxtheme.dll` control background either unmodified (when [tint] is `null` or
+     * transparent) or tinted via [DesktopControlTintRenderUtil.tintNativeControlPixels] on an
+     * offscreen empty-text control sprite (when [tint] is non-null).
+     *
+     * Text and icons MUST be drawn after calling this method so they remain crisp and untinted.
+     */
+    fun drawTintedUxThemeControlBackground(
+        hwnd: HWND?,
+        hdc: HDC?,
+        classList: String,
+        partId: Int = BP_PUSHBUTTON,
+        stateId: Int = PBS_NORMAL,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        tint: RgbaColor?,
+        outlineMode: Boolean = false,
+        hovered: Boolean = false,
+        pressed: Boolean = false,
+        disabled: Boolean = false
+    ): Boolean {
+        if (hdc == null) return false
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0 || h <= 0) return false
+        if (tint == null || tint.a <= 0) {
+            return drawUxThemeControlBackground(
+                hwnd = hwnd,
+                hdc = hdc,
+                classList = classList,
+                partId = partId,
+                stateId = stateId,
+                left = left,
+                top = top,
+                right = right,
+                bottom = bottom
+            )
+        }
+
+        ensureModulesLoaded()
+        val hTheme = obtainThemeHandle(hwnd, classList) ?: return false
+        val tintKey = buildString(96) {
+            append(classList)
+            append('|').append(partId)
+            append('|').append(stateId)
+            append('|').append(w)
+            append('x').append(h)
+            append("|T:").append(tint.r).append(',').append(tint.g).append(',').append(tint.b).append(',').append(tint.a)
+            append('|').append(if (outlineMode) 'O' else 'F')
+            append(if (hovered) 'H' else '_')
+            append(if (pressed) 'P' else '_')
+            append(if (disabled) 'D' else '_')
+        }
+
+        var tintedSprite = cachedUxThemeControlSprites[tintKey]
+        if (tintedSprite == null) {
+            val baseSprite = obtainOrRenderBaseControlSprite(classList, hTheme, partId, stateId, w, h) ?: return false
+            val argbPixels = unpackSpriteToStraightArgb(baseSprite)
+            DesktopControlTintRenderUtil.tintNativeControlPixels(
+                pixels = argbPixels,
+                width = w,
+                height = h,
+                tint = tint,
+                outlineMode = outlineMode,
+                hovered = hovered,
+                pressed = pressed,
+                disabled = disabled
+            )
+            tintedSprite = packStraightArgbToSprite(argbPixels, w, h)
+            if (w <= 800 && h <= 300) {
+                if (cachedUxThemeControlSprites.size >= 384) {
+                    val eldest = cachedUxThemeControlSprites.keys.firstOrNull()
+                    if (eldest != null) cachedUxThemeControlSprites.remove(eldest)
+                }
+                cachedUxThemeControlSprites[tintKey] = tintedSprite
+            }
+        }
+
+        return blitControlSpriteToTarget(hdc, tintedSprite, left, top, right, bottom)
+    }
+
+    /**
+     * Renders a native `uxtheme.dll` control background for [baseClass] (`"BUTTON"`, `"EDIT"`,
+     * `"COMBOBOX"`, `"PROGRESS"`, `"TRACKBAR"`, `"TAB"`, `"HEADER"`, `"SPIN"`, `"TOOLBAR"`,
+     * `"STATUS"`) applying [bootstrapType] tinting from [themeConfig] when
+     * `bootstrapType != null && bootstrapType != BootstrapType.NONE`, or drawing the 100%
+     * unmodified native `uxtheme.dll` control when `bootstrapType == null || bootstrapType == BootstrapType.NONE`.
+     */
+    fun drawBootstrapThemedControlBackground(
+        hwnd: HWND?,
+        hdc: HDC?,
+        baseClass: String = "BUTTON",
+        partId: Int = BP_PUSHBUTTON,
+        stateId: Int = PBS_NORMAL,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        bootstrapType: BootstrapType?,
+        darkMode: Boolean = false,
+        outlineMode: Boolean = false,
+        hovered: Boolean = false,
+        pressed: Boolean = false,
+        disabled: Boolean = false,
+        themeConfig: ThemeConfig = BootstrapColorPalette.activeThemeConfig
+    ): Boolean {
+        val classList = resolveExplorerClassList(baseClass, darkMode)
+        val tint = BootstrapColorPalette.resolveTintOrNull(bootstrapType, darkMode, themeConfig)
+        return drawTintedUxThemeControlBackground(
+            hwnd = hwnd,
+            hdc = hdc,
+            classList = classList,
+            partId = partId,
+            stateId = stateId,
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+            tint = tint,
+            outlineMode = outlineMode,
+            hovered = hovered,
+            pressed = pressed,
+            disabled = disabled
+        )
+    }
+
+    /**
+     * Resolves the contrasting foreground text/icon color for a control with [bootstrapType]
+     * under [themeConfig], or returns `null` when [bootstrapType] is `null` or [BootstrapType.NONE]
+     * so the native OS control text color is used.
+     */
+    fun resolveBootstrapControlForeground(
+        bootstrapType: BootstrapType?,
+        darkMode: Boolean = false,
+        outlineMode: Boolean = false,
+        hovered: Boolean = false,
+        pressed: Boolean = false,
+        themeConfig: ThemeConfig = BootstrapColorPalette.activeThemeConfig
+    ): RgbaColor? = DesktopControlTintRenderUtil.resolveBootstrapForegroundOrNull(
+        type = bootstrapType,
+        outlineMode = outlineMode,
+        hovered = hovered,
+        pressed = pressed,
+        darkMode = darkMode,
+        themeConfig = themeConfig
+    )
 }

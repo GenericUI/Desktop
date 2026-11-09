@@ -45,6 +45,10 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.notifyTreeInvalidated(visualOnly = visualOnly)
     }
 
+    override fun acceptsAestheticSkinStyles(): Boolean = true
+
+    override fun acceptsTypographyStyles(): Boolean = true
+
     override fun applyComponentStyle(style: com.nexustools.genericui.style.css.ComponentStyle) {
         cachedResolvedVisuals = null
         super<DesktopButtonNativeImpl>.applyComponentStyle(style)

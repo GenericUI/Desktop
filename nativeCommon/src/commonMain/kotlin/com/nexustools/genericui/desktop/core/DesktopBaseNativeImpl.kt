@@ -1,6 +1,8 @@
 package com.nexustools.genericui.desktop.core
 
 import com.nexustools.genericui.core.NativeImpl
+import com.nexustools.genericui.desktop.render.DesktopControlTintRenderUtil
+import com.nexustools.genericui.desktop.render.DesktopRenderableNativeImpl
 import com.nexustools.genericui.enums.bootstrap.*
 import com.nexustools.genericui.enums.css.CssCursor
 import com.nexustools.genericui.enums.css.CssUnit
@@ -34,7 +36,7 @@ import kotlin.math.roundToInt
 open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     override val nativeWidget: W,
     override val componentClassPrefix: String = ""
-) : NativeImpl<W> {
+) : NativeImpl<W>, DesktopRenderableNativeImpl {
 
     protected var styleSnapshot: BootstrapStyleSnapshot =
         BootstrapStyleSnapshot(componentPrefix = componentClassPrefix)
@@ -188,13 +190,13 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         }
     }
 
-    fun dispatchKeyDown(event: KeyEvent) {
+    open fun dispatchKeyDown(event: KeyEvent) {
         if (nativeWidget.enabled) {
             onKeyDownListener?.invoke(event)
         }
     }
 
-    fun dispatchKeyUp(event: KeyEvent) {
+    open fun dispatchKeyUp(event: KeyEvent) {
         if (nativeWidget.enabled) {
             onKeyUpListener?.invoke(event)
         }
@@ -311,7 +313,6 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             ?: spacingTokenPx("gap")
             ?: spacingTokenPx("g")
         if (gapPx != null) {
-            nativeWidget.styleProperties["gap"] = "${gapPx}px"
             nativeWidget.attributes["gapPx"] = gapPx
         }
         val rowGapPx = lastComponentStyle?.rowGap?.resolvePx()?.roundToInt()
@@ -319,7 +320,6 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             ?: spacingTokenPx("row-gap")
             ?: spacingTokenPx("gy")
         if (rowGapPx != null) {
-            nativeWidget.styleProperties["row-gap"] = "${rowGapPx}px"
             nativeWidget.attributes["rowGapPx"] = rowGapPx
         }
         val colGapPx = lastComponentStyle?.columnGap?.resolvePx()?.roundToInt()
@@ -327,108 +327,107 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             ?: spacingTokenPx("column-gap")
             ?: spacingTokenPx("gx")
         if (colGapPx != null) {
-            nativeWidget.styleProperties["column-gap"] = "${colGapPx}px"
             nativeWidget.attributes["columnGapPx"] = colGapPx
         }
 
         // Sync display / flex properties
         when {
             styleSnapshot.display == DisplayMode.NONE || "d-none" in tokens -> {
-                nativeWidget.styleProperties["display"] = "none"
+                nativeWidget.attributes["display"] = "none"
                 nativeWidget.visible = false
             }
             styleSnapshot.display == DisplayMode.FLEX || "d-flex" in tokens -> {
-                nativeWidget.styleProperties["display"] = "flex"
+                nativeWidget.attributes["display"] = "flex"
             }
             styleSnapshot.display == DisplayMode.INLINE_FLEX || "d-inline-flex" in tokens -> {
-                nativeWidget.styleProperties["display"] = "inline-flex"
+                nativeWidget.attributes["display"] = "inline-flex"
             }
         }
         when {
             styleSnapshot.flexDirection == FlexDirection.COLUMN || "flex-column" in tokens ->
-                nativeWidget.styleProperties["flex-direction"] = "column"
+                nativeWidget.attributes["flexDirection"] = "column"
             styleSnapshot.flexDirection == FlexDirection.ROW || "flex-row" in tokens ->
-                nativeWidget.styleProperties["flex-direction"] = "row"
+                nativeWidget.attributes["flexDirection"] = "row"
             styleSnapshot.flexDirection == FlexDirection.COLUMN_REVERSE || "flex-column-reverse" in tokens ->
-                nativeWidget.styleProperties["flex-direction"] = "column-reverse"
+                nativeWidget.attributes["flexDirection"] = "column-reverse"
             styleSnapshot.flexDirection == FlexDirection.ROW_REVERSE || "flex-row-reverse" in tokens ->
-                nativeWidget.styleProperties["flex-direction"] = "row-reverse"
+                nativeWidget.attributes["flexDirection"] = "row-reverse"
         }
         when {
             styleSnapshot.flexWrap == FlexWrap.WRAP || "flex-wrap" in tokens ->
-                nativeWidget.styleProperties["flex-wrap"] = "wrap"
+                nativeWidget.attributes["flexWrap"] = "wrap"
             styleSnapshot.flexWrap == FlexWrap.NOWRAP || "flex-nowrap" in tokens ->
-                nativeWidget.styleProperties["flex-wrap"] = "nowrap"
+                nativeWidget.attributes["flexWrap"] = "nowrap"
         }
         when {
             styleSnapshot.justifyContent == JustifyContent.BETWEEN || "justify-content-between" in tokens ->
-                nativeWidget.styleProperties["justify-content"] = "space-between"
+                nativeWidget.attributes["justifyContent"] = "space-between"
             styleSnapshot.justifyContent == JustifyContent.CENTER || "justify-content-center" in tokens ->
-                nativeWidget.styleProperties["justify-content"] = "center"
+                nativeWidget.attributes["justifyContent"] = "center"
             styleSnapshot.justifyContent == JustifyContent.END || "justify-content-end" in tokens ->
-                nativeWidget.styleProperties["justify-content"] = "flex-end"
+                nativeWidget.attributes["justifyContent"] = "flex-end"
             styleSnapshot.justifyContent == JustifyContent.START || "justify-content-start" in tokens ->
-                nativeWidget.styleProperties["justify-content"] = "flex-start"
+                nativeWidget.attributes["justifyContent"] = "flex-start"
             styleSnapshot.justifyContent == JustifyContent.AROUND || "justify-content-around" in tokens ->
-                nativeWidget.styleProperties["justify-content"] = "space-around"
+                nativeWidget.attributes["justifyContent"] = "space-around"
             styleSnapshot.justifyContent == JustifyContent.EVENLY || "justify-content-evenly" in tokens ->
-                nativeWidget.styleProperties["justify-content"] = "space-evenly"
+                nativeWidget.attributes["justifyContent"] = "space-evenly"
         }
         when {
             styleSnapshot.alignItems == AlignItems.CENTER || "align-items-center" in tokens ->
-                nativeWidget.styleProperties["align-items"] = "center"
+                nativeWidget.attributes["alignItems"] = "center"
             styleSnapshot.alignItems == AlignItems.START || "align-items-start" in tokens ->
-                nativeWidget.styleProperties["align-items"] = "flex-start"
+                nativeWidget.attributes["alignItems"] = "flex-start"
             styleSnapshot.alignItems == AlignItems.END || "align-items-end" in tokens ->
-                nativeWidget.styleProperties["align-items"] = "flex-end"
+                nativeWidget.attributes["alignItems"] = "flex-end"
             styleSnapshot.alignItems == AlignItems.STRETCH || "align-items-stretch" in tokens ->
-                nativeWidget.styleProperties["align-items"] = "stretch"
+                nativeWidget.attributes["alignItems"] = "stretch"
             styleSnapshot.alignItems == AlignItems.BASELINE || "align-items-baseline" in tokens ->
-                nativeWidget.styleProperties["align-items"] = "baseline"
+                nativeWidget.attributes["alignItems"] = "baseline"
         }
         when {
             styleSnapshot.flexGrow == BootstrapFlexGrow.GROW_1 || styleSnapshot.flexFill || "flex-grow-1" in tokens || "flex-fill" in tokens ->
-                nativeWidget.styleProperties["flex-grow"] = "1"
+                nativeWidget.attributes["flexGrow"] = 1f
             styleSnapshot.flexGrow == BootstrapFlexGrow.GROW_0 || "flex-grow-0" in tokens ->
-                nativeWidget.styleProperties["flex-grow"] = "0"
+                nativeWidget.attributes["flexGrow"] = 0f
         }
         when {
             styleSnapshot.flexShrink == BootstrapFlexShrink.SHRINK_0 || "flex-shrink-0" in tokens ->
-                nativeWidget.styleProperties["flex-shrink"] = "0"
+                nativeWidget.attributes["flexShrink"] = 0f
             styleSnapshot.flexShrink == BootstrapFlexShrink.SHRINK_1 || "flex-shrink-1" in tokens ->
-                nativeWidget.styleProperties["flex-shrink"] = "1"
+                nativeWidget.attributes["flexShrink"] = 1f
         }
 
         // Sync width / height fractions
         resolveBootstrapWidthFraction()?.let { frac ->
-            if ("width" !in nativeWidget.styleProperties) {
-                nativeWidget.styleProperties["width"] = "${(frac * 100f).roundToInt()}%"
+            if ("styleWidth" !in nativeWidget.attributes) {
+                nativeWidget.attributes["widthFraction"] = frac
             }
         }
         resolveBootstrapHeightFraction()?.let { frac ->
-            if ("height" !in nativeWidget.styleProperties) {
-                nativeWidget.styleProperties["height"] = "${(frac * 100f).roundToInt()}%"
+            if ("styleHeight" !in nativeWidget.attributes) {
+                nativeWidget.attributes["heightFraction"] = frac
             }
         }
 
         // Sync position and overflow
         when {
             styleSnapshot.position == PositionMode.ABSOLUTE || "position-absolute" in tokens ->
-                nativeWidget.styleProperties["position"] = "absolute"
+                nativeWidget.attributes["position"] = "absolute"
             styleSnapshot.position == PositionMode.RELATIVE || "position-relative" in tokens ->
-                nativeWidget.styleProperties["position"] = "relative"
+                nativeWidget.attributes["position"] = "relative"
             styleSnapshot.position == PositionMode.FIXED || "position-fixed" in tokens ->
-                nativeWidget.styleProperties["position"] = "fixed"
+                nativeWidget.attributes["position"] = "fixed"
             styleSnapshot.position == PositionMode.STICKY || "position-sticky" in tokens ->
-                nativeWidget.styleProperties["position"] = "sticky"
+                nativeWidget.attributes["position"] = "sticky"
         }
         when {
             styleSnapshot.overflow == OverflowBehavior.HIDDEN || "overflow-hidden" in tokens ->
-                nativeWidget.styleProperties["overflow"] = "hidden"
+                nativeWidget.attributes["overflow"] = "hidden"
             styleSnapshot.overflow == OverflowBehavior.AUTO || "overflow-auto" in tokens ->
-                nativeWidget.styleProperties["overflow"] = "auto"
+                nativeWidget.attributes["overflow"] = "auto"
             styleSnapshot.overflow == OverflowBehavior.SCROLL || "overflow-scroll" in tokens ->
-                nativeWidget.styleProperties["overflow"] = "scroll"
+                nativeWidget.attributes["overflow"] = "scroll"
         }
 
         // Sync aspect ratio
@@ -441,12 +440,9 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         }
         if (ratio != null && ratio > 0f) {
             nativeWidget.attributes["aspectRatio"] = ratio.toString()
-            nativeWidget.styleProperties["aspect-ratio"] = ratio.toString()
         }
 
         // Ensure backdrop-filter is never active on Desktop
-        nativeWidget.styleProperties.remove("backdrop-filter")
-        nativeWidget.styleProperties.remove("-webkit-backdrop-filter")
         nativeWidget.attributes.remove("backdropFilter")
     }
 
@@ -500,7 +496,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         val updated = LinkedHashSet(styleSnapshot.customClasses)
         if (!updated.addAll(tokens)) return
         styleSnapshot = styleSnapshot.copy(customClasses = updated)
-        if (tokens.all { it == "row-hovered" || it == "hovered" }) {
+        if (tokens.all { it == "row-hovered" || it == "hovered" || it == "hud-cursor-hidden" }) {
             cachedClassTokens = null
             nativeWidget.attributes["bootstrapClass"] = styleSnapshot.customClasses.joinToString(" ")
             nativeWidget.attributes["styleSnapshot"] = styleSnapshot
@@ -516,7 +512,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         val updated = LinkedHashSet(styleSnapshot.customClasses)
         if (!updated.removeAll(tokens.toSet())) return
         styleSnapshot = styleSnapshot.copy(customClasses = updated)
-        if (tokens.all { it == "row-hovered" || it == "hovered" }) {
+        if (tokens.all { it == "row-hovered" || it == "hovered" || it == "hud-cursor-hidden" }) {
             cachedClassTokens = null
             nativeWidget.attributes["bootstrapClass"] = styleSnapshot.customClasses.joinToString(" ")
             nativeWidget.attributes["styleSnapshot"] = styleSnapshot
@@ -597,23 +593,20 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes["visibilityHidden"] = true
         }
 
-        style.width?.let { nativeWidget.styleProperties["width"] = it.toCssString() }
-        style.height?.let { nativeWidget.styleProperties["height"] = it.toCssString() }
-        style.minWidth?.let { nativeWidget.styleProperties["min-width"] = it.toCssString() }
-        style.minHeight?.let { nativeWidget.styleProperties["min-height"] = it.toCssString() }
-        style.maxWidth?.let { nativeWidget.styleProperties["max-width"] = it.toCssString() }
-        style.maxHeight?.let { nativeWidget.styleProperties["max-height"] = it.toCssString() }
-        style.flexGrow?.let { nativeWidget.styleProperties["flex-grow"] = it.toString() }
-        style.flexShrink?.let { nativeWidget.styleProperties["flex-shrink"] = it.toString() }
-        style.flexBasis?.let { nativeWidget.styleProperties["flex-basis"] = it.toCssString() }
-        style.top?.let { nativeWidget.styleProperties["top"] = it.toCssString() }
-        style.right?.let { nativeWidget.styleProperties["right"] = it.toCssString() }
-        style.bottom?.let { nativeWidget.styleProperties["bottom"] = it.toCssString() }
-        style.left?.let { nativeWidget.styleProperties["left"] = it.toCssString() }
-        style.aspectRatio?.let {
-            nativeWidget.attributes["aspectRatio"] = it
-            nativeWidget.styleProperties["aspect-ratio"] = it.toString()
-        }
+        style.width?.let { nativeWidget.attributes["styleWidth"] = it }
+        style.height?.let { nativeWidget.attributes["styleHeight"] = it }
+        style.minWidth?.let { nativeWidget.attributes["styleMinWidth"] = it }
+        style.minHeight?.let { nativeWidget.attributes["styleMinHeight"] = it }
+        style.maxWidth?.let { nativeWidget.attributes["styleMaxWidth"] = it }
+        style.maxHeight?.let { nativeWidget.attributes["styleMaxHeight"] = it }
+        style.flexGrow?.let { nativeWidget.attributes["flexGrow"] = it }
+        style.flexShrink?.let { nativeWidget.attributes["flexShrink"] = it }
+        style.flexBasis?.let { nativeWidget.attributes["flexBasis"] = it }
+        style.top?.let { nativeWidget.attributes["styleTop"] = it }
+        style.right?.let { nativeWidget.attributes["styleRight"] = it }
+        style.bottom?.let { nativeWidget.attributes["styleBottom"] = it }
+        style.left?.let { nativeWidget.attributes["styleLeft"] = it }
+        style.aspectRatio?.let { nativeWidget.attributes["aspectRatio"] = it }
         if (batchAttachDepth > 0) {
             batchStyleDirty = true
         } else {
@@ -650,9 +643,11 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
                 nativeWidget.attributes["cursor"] = cursor.cssValue
             }
             else -> {
-                nativeWidget.attributes["cursor"] = cursor.toCssString()
+                val css = cursor.toCssString()
+                nativeWidget.attributes["cursor"] = css
             }
         }
+        DesktopNativeWidget.onCursorUpdated?.invoke()
     }
 
     fun getCustomCursor(): CssCursorValue? =
@@ -1022,30 +1017,67 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         style.zIndex?.let { nativeWidget.attributes["zIndex"] = it }
         style.left?.let { nativeWidget.attributes["left"] = it }
         style.top?.let { nativeWidget.attributes["top"] = it }
+        val prevCursorAttr = nativeWidget.attributes["cursor"]
         style.customCursor?.let { setCustomCursor(it) }
-            ?: style.cursor?.let { nativeWidget.attributes["cursor"] = it }
-        val rawPadLeft = style.rawDeclarations["padding-left"]?.removeSuffix("px")?.trim()?.toIntOrNull()
-        val rawPadTop = style.rawDeclarations["padding-top"]?.removeSuffix("px")?.trim()?.toIntOrNull()
-        val rawPadRight = style.rawDeclarations["padding-right"]?.removeSuffix("px")?.trim()?.toIntOrNull()
-        val rawPadBottom = style.rawDeclarations["padding-bottom"]?.removeSuffix("px")?.trim()?.toIntOrNull()
-        if (rawPadLeft != null || rawPadTop != null || rawPadRight != null || rawPadBottom != null) {
-            nativeWidget.padding = EdgeInsets(
-                top = rawPadTop ?: nativeWidget.padding.top,
-                right = rawPadRight ?: nativeWidget.padding.right,
-                bottom = rawPadBottom ?: nativeWidget.padding.bottom,
-                left = rawPadLeft ?: nativeWidget.padding.left
-            )
-        }
-        for ((k, v) in style.rawDeclarations) {
-            if (k.equals("backdrop-filter", ignoreCase = true) || k.equals("-webkit-backdrop-filter", ignoreCase = true)) {
-                continue
+            ?: style.cursor?.let {
+                nativeWidget.attributes["cursor"] = it
             }
-            if (nativeWidget.styleProperties[k] != v) {
-                nativeWidget.styleProperties[k] = v
-            }
+        if (nativeWidget.attributes["cursor"] != prevCursorAttr) {
+            DesktopNativeWidget.onCursorUpdated?.invoke()
         }
         nativeWidget.attributes.remove("backdropFilter")
         nativeWidget.attributes["computedStyle"] = style
+    }
+
+    override fun acceptsAestheticSkinStyles(): Boolean {
+        if (isHostedInCustomStyleEngine()) return true
+        val role = nativeWidget.attributes["componentRole"] as? String ?: ""
+        return role == "styled-button" ||
+            role == "styled-container" ||
+            nativeWidget.attributes.containsKey("styledButtonVisuals") ||
+            nativeWidget.attributes.containsKey("styledContainerVisuals")
+    }
+
+    override fun acceptsTypographyStyles(): Boolean {
+        if (acceptsAestheticSkinStyles()) return true
+        val cls = nativeWidget.nativeClassName.lowercase()
+        val role = (nativeWidget.attributes["componentRole"] as? String ?: "").lowercase()
+        return cls in TYPOGRAPHY_WIDGET_CLASSES || role in TYPOGRAPHY_WIDGET_ROLES
+    }
+
+    override fun isHostedInCustomStyleEngine(): Boolean {
+        var cur: DesktopNativeWidget? = nativeWidget
+        while (cur != null) {
+            if (cur.attributes["customStyleEngine"] == true ||
+                cur.nativeClassName.equals("WebView", ignoreCase = true) ||
+                cur.attributes["componentRole"] == "webview"
+            ) {
+                return true
+            }
+            cur = cur.parentWidget
+        }
+        return false
+    }
+
+    override fun resolveNativeControlTint(darkTheme: Boolean): RgbaColor? {
+        val semanticType = styleSnapshot.type?.takeIf { it != BootstrapType.NONE }
+            ?: styleSnapshot.backgroundType?.takeIf { it != BootstrapType.NONE }
+            ?: return null
+        return DesktopControlTintRenderUtil.resolveBootstrapTintOrNull(semanticType, darkTheme)
+    }
+
+    override fun resolveNativeControlForeground(darkTheme: Boolean): RgbaColor? {
+        styleSnapshot.textColorType?.takeIf { it != BootstrapType.NONE }?.let {
+            return BootstrapColorPalette.resolveColor(it, darkTheme)
+        }
+        val semanticType = styleSnapshot.type?.takeIf { it != BootstrapType.NONE } ?: return null
+        return DesktopControlTintRenderUtil.resolveBootstrapForegroundOrNull(
+            type = semanticType,
+            outlineMode = styleSnapshot.outline,
+            hovered = hoveredState,
+            pressed = activePressedState,
+            darkMode = darkTheme
+        )
     }
 
     override fun setBackgroundGradient(gradient: Gradient?) {
@@ -1208,5 +1240,25 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     companion object {
         private val WHITESPACE_REGEX = Regex("\\s+")
+        private val TYPOGRAPHY_WIDGET_CLASSES = setOf(
+            "label",
+            "text",
+            "heading",
+            "badge",
+            "blockquote",
+            "codeblock",
+            "code",
+            "markdown",
+            "markdownview"
+        )
+        private val TYPOGRAPHY_WIDGET_ROLES = setOf(
+            "label",
+            "text",
+            "heading",
+            "badge",
+            "blockquote",
+            "code-block",
+            "markdown-view"
+        )
     }
 }

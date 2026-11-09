@@ -31,20 +31,23 @@ When `styles { globalStyleSheet = "styles/main.scss" }` is configured in `build.
 
 ---
 
-## Native Swing Control Rendering (`BootstrapType.NONE` Default), Semantic `BootstrapType` Tinting, & Custom Cursors
+## Native Swing Control Rendering (`BootstrapType.NONE`), Semantic `BootstrapType` Tinting (`BootstrapType != NONE`), & System Style Restraints
 
-1. **`BootstrapType.NONE` Default & Zero Bootstrap CSS Styling**:
+1. **`BootstrapType.NONE` Default — 100% Unmodified Swing Look-and-Feel Controls**:
    - JVM Swing applications **never** use Bootstrap CSS styling.
-   - When `component.getBootstrap().type == BootstrapType.NONE` (the default) and no inline `ComponentStyle` background/border is set, `SwingBaseNativeImpl` renders the **standard Swing Look-and-Feel `JComponent`** (`JButton`, `JTextField`, `JCheckBox`, `JComboBox`, `JSlider`) for the active `LIGHT` / `DARK` theme.
-2. **Semantic `BootstrapType` Tinting**:
-   - When a semantic `BootstrapType` (`DANGER`, `PRIMARY`, `SUCCESS`, `WARNING`, `INFO`, `SECONDARY`, `LIGHT`, `DARK`, `LINK`) is set on `component.getBootstrap().type`, `SwingBaseNativeImpl` emulates `BootstrapType` by **tinting the `JComponent`** (`background`, `foreground`, and border via `BootstrapColorPalette.resolveColor(type, darkTheme)`), supporting `outline = true/false`.
-   - `component.getStyle().setAccentColor(color)` (`accent-color`) sets the active fill color on checkboxes, radio buttons, sliders, and progress bars. Unsupported CSS properties and CSS transitions are **silently ignored**.
-3. **Strict User CSS Class Isolation**:
+   - When `component.getBootstrap().type == BootstrapType.NONE` (the default), `SwingBaseNativeImpl` renders the **100% unmodified standard Swing Look-and-Feel `JComponent`** (`JButton`, `JTextField`, `JCheckBox`, `JComboBox`, `JSlider`) for the active `LIGHT` / `DARK` theme.
+2. **`BootstrapType != BootstrapType.NONE` — Native Control Tinting + Contrasting Text**:
+   - When a semantic `BootstrapType` (`PRIMARY`, `SECONDARY`, `SUCCESS`, `DANGER`, `WARNING`, `INFO`, `LIGHT`, `DARK`) is set on `component.getBootstrap().type`, `SwingBaseNativeImpl` tints the native `JComponent` using the active `ThemeConfig` / `BootstrapColorPalette.resolveColor(type, darkTheme)` while preserving native Look-and-Feel bevels/borders and rendering contrasting foreground text (`outline = true/false`).
+3. **System Backend Typography vs. Aesthetic Style Restraints**:
+   - **Text / Typography Elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`)**: Honor typography and text-color properties (`color` / `textColor`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `lineHeight`, `letterSpacing`, `textAlign`, `textDecoration`, `textTransform`, `textOverflow`, `whiteSpace`, `wordBreak`).
+   - **Buttons, Inputs, Controls, & Standard Containers**: Aesthetic skinning and typography overrides on `ComponentStyle` (`backgroundColor`, `background`, `color`, `accentColor`, `borderColor`, `borderWidth`, `borderStyle`, `borderRadius`, `boxShadow`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`) are **silently ignored**. Standard components can **ONLY** be tinted via `BootstrapType`.
+   - **`StyledContainer` & `StyledButton` (and `:extensions:alien`)**: Honor full `ComponentStyle` aesthetic and typography properties.
+4. **Strict User CSS Class Isolation**:
    - In `SwingBaseNativeImpl`, `addClass`, `removeClass`, `hasClass`, `getClasses()`, and `getClass()` return **only** user-added custom classes (`styleSnapshot.customClasses`). `ComponentBootstrap` (`getBootstrap()`) enum utilities are executed directly by the Swing layout and painting peers.
-4. **Custom Cursor Translation (`CssCustomCursor` $\rightarrow$ `java.awt.Cursor`)**:
+5. **Custom Cursor Translation (`CssCustomCursor` $\rightarrow$ `java.awt.Cursor`)**:
    - Converts any PNG `ResourceID`, SVG `ResourceID`/markup, or `ImageBuffer` `CssCustomCursor` into a `BufferedImage` and constructs `Toolkit.getDefaultToolkit().createCustomCursor(bufferedImage, Point(hotspotX, hotspotY), cursorName)` applied via `jComponent.cursor`.
-5. **`IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`)**:
-   - Defaults to `ThemeMode.AUTO`, detecting the host OS dark/light theme (`AppsUseLightTheme` on Windows, `AppleInterfaceStyle` on macOS, XDG/GTK dark preference on Linux) and updating all open `JFrame` hierarchies when `setTheme(...)` or the OS theme changes.
+6. **`IApplication` Theming (`ThemeMode.AUTO`, `DARK`, `LIGHT`, & `ThemeConfig`)**:
+   - Defaults to `ThemeMode.AUTO`, detecting the host OS dark/light theme (`AppsUseLightTheme` on Windows, `AppleInterfaceStyle` on macOS, XDG/GTK dark preference on Linux) and updating all open `JFrame` hierarchies when `setThemeMode(...)`, `setThemeConfig(...)`, or the OS theme changes.
 
 ---
 

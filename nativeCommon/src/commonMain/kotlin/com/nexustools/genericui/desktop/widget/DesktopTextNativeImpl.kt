@@ -16,6 +16,8 @@ open class DesktopTextNativeImpl<out W : DesktopNativeWidget>(
     protected var textContent: String = ""
     protected var maxLinesLimit: Int? = null
 
+    override fun acceptsTypographyStyles(): Boolean = true
+
     override fun setText(text: String) {
         if (textContent != text) {
             textContent = text

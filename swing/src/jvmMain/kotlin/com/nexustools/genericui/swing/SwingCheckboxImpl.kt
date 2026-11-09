@@ -16,7 +16,7 @@ class SwingCheckboxImpl(
     if (radioStyle) JRadioButton() else JCheckBox(),
     if (switchStyle) "form-check form-switch" else "form-check"
 ), CheckboxNativeImpl<JComponent> {
-    override val nativeWidget: JToggleButton = super.nativeWidget as JToggleButton
+    override val nativeWidget: JToggleButton get() = super.nativeWidget as JToggleButton
 
     private var onCheckedChangedListener: ((Boolean) -> Unit)? = null
 

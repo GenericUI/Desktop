@@ -3,6 +3,8 @@ package com.nexustools.genericui.swing
 import com.nexustools.genericui.enums.document.PrintPageOrientation
 import com.nexustools.genericui.enums.document.PrintPageSize
 import com.nexustools.genericui.nativeimpl.document.BookContainerNativeImpl
+import com.nexustools.genericui.style.css.PrecompiledStyleSheet
+import com.nexustools.genericui.style.css.StyleSheetRegistry
 import java.awt.Color
 import java.awt.Dimension
 import java.awt.GraphicsEnvironment
@@ -35,6 +37,11 @@ class SwingBookContainerImpl : SwingBaseContainerNativeImpl(
     private var currentMarginMm: Float = 12f
     private var currentTitle: String = "Document"
     private var printCount: Int = 0
+    private val bookStyleSheets = mutableListOf<PrecompiledStyleSheet>()
+
+    init {
+        syncStyleSheetProperties()
+    }
 
     override fun setPageSize(
         pageSize: PrintPageSize,
@@ -57,6 +64,44 @@ class SwingBookContainerImpl : SwingBaseContainerNativeImpl(
     override fun setDocumentTitle(title: String) {
         currentTitle = title
         nativeWidget.putClientProperty("genericui.documentTitle", title)
+    }
+
+    override fun addStyleSheet(styleSheet: PrecompiledStyleSheet) {
+        val normSource = StyleSheetRegistry.normalizePath(styleSheet.sourcePath)
+        val existingIdx = bookStyleSheets.indexOfFirst {
+            it === styleSheet ||
+                (normSource.isNotEmpty() && StyleSheetRegistry.normalizePath(it.sourcePath) == normSource)
+        }
+        if (existingIdx >= 0) {
+            bookStyleSheets[existingIdx] = styleSheet
+        } else {
+            bookStyleSheets.add(styleSheet)
+        }
+        syncStyleSheetProperties()
+    }
+
+    override fun removeStyleSheet(styleSheet: PrecompiledStyleSheet) {
+        val normSource = StyleSheetRegistry.normalizePath(styleSheet.sourcePath)
+        val removed = bookStyleSheets.remove(styleSheet) ||
+            bookStyleSheets.removeAll {
+                normSource.isNotEmpty() && StyleSheetRegistry.normalizePath(it.sourcePath) == normSource
+            }
+        if (removed) {
+            syncStyleSheetProperties()
+        }
+    }
+
+    override fun clearStyleSheets() {
+        bookStyleSheets.clear()
+        syncStyleSheetProperties()
+    }
+
+    fun getBookStyleSheets(): List<PrecompiledStyleSheet> = bookStyleSheets.toList()
+
+    private fun syncStyleSheetProperties() {
+        val joined = bookStyleSheets.joinToString("\n") { it.sourcePath }
+        nativeWidget.putClientProperty("genericui.bookStyleSheets", joined)
+        nativeWidget.putClientProperty("data-book-stylesheets", joined)
     }
 
     override fun printBook(

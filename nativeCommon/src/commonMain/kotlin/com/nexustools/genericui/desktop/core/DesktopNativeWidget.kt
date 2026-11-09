@@ -93,7 +93,6 @@ open class DesktopNativeWidget(
             }
         }
 
-    val styleProperties: MutableMap<String, String> = linkedMapOf()
     var cachedAllClassTokens: Set<String> = emptySet()
     var subtreeMutationVersion: Long = 1L
     internal var cachedOverlaySubtreeFlag: Int = -1
@@ -185,12 +184,6 @@ open class DesktopNativeWidget(
                 if (tok.isNotEmpty()) out.add(tok)
             }
         }
-        val styleCls = styleProperties["class"]
-        if (!styleCls.isNullOrEmpty()) {
-            for (tok in styleCls.split(WHITESPACE_REGEX)) {
-                if (tok.isNotEmpty()) out.add(tok)
-            }
-        }
         cachedAllClassTokens = if (out.isEmpty()) emptySet() else out
     }
 
@@ -216,7 +209,6 @@ open class DesktopNativeWidget(
             }
             if (cur.cachedAllClassTokens.isEmpty() && (
                     cur.attributes.containsKey("class") ||
-                        cur.styleProperties.containsKey("class") ||
                         cur.attributes.containsKey("bootstrapClass") ||
                         cur.attributes.containsKey("enumClasses") ||
                         cur.attributes.containsKey("nativeImpl")
@@ -396,6 +388,7 @@ open class DesktopNativeWidget(
         var globalTreeMutationVersion: Long = 1L
         var globalNonOverlayMutationVersion: Long = 1L
         var onNativeTreeInvalidated: (() -> Unit)? = null
+        var onCursorUpdated: (() -> Unit)? = null
         var overlayInvalidationListener: ((DesktopNativeWidget) -> Unit)? = null
         val activeVBlankWidgets: MutableSet<DesktopNativeWidget> = linkedSetOf()
         internal var activePopupHitTestWidget: DesktopNativeWidget? = null
