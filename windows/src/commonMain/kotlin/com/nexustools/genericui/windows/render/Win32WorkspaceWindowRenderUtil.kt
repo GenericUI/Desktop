@@ -3592,8 +3592,13 @@ object Win32WorkspaceWindowRenderUtil {
         Win32NativeWindowHost.drawLineColor(hdc, left, bottom - 1, right, bottom - 1, theme.borderSubtle)
 
         val navbarNative = navImpl as? DesktopNavbarNativeImpl<*>
-        val brandStr = navbarNative?.getBrandTitle()?.takeIf { it.isNotBlank() }
-            ?: (navbarWidget.attributes["brandTitle"] as? String)?.takeIf { it.isNotBlank() }
+        val showBrand = navbarNative?.isBrandVisible() ?: ((navbarWidget.attributes["showBrand"] as? Boolean) ?: false)
+        val brandStr = if (showBrand) {
+            navbarNative?.getBrandTitle()?.takeIf { it.isNotBlank() }
+                ?: (navbarWidget.attributes["brandTitle"] as? String)?.takeIf { it.isNotBlank() }
+        } else {
+            null
+        }
 
         // Flatten row children inside Navbar (typically Navbar -> barRow: HStack -> [Heading, Badge, Spacer, Buttons...])
         val rowContainer = visibleChildrenOf(navbarWidget, titleBarWidgets).firstOrNull {
@@ -3650,27 +3655,26 @@ object Win32WorkspaceWindowRenderUtil {
             }
         }
 
-        // Draw brand title & left badges
-        if (leftItems.isEmpty() && !brandStr.isNullOrBlank()) {
+        // Draw brand title (only when showBrand is enabled) followed by leading items (e.g. status badges)
+        if (!brandStr.isNullOrBlank()) {
             SelectObject(hdc, fontTitle ?: fontBold)
             val w = measureSingleLineTextWidth(brandStr, 9) + 12
             Win32NativeWindowHost.drawTextInRect(hdc, brandStr, leftX, top + 4, leftX + w, bottom - 4, theme.textPrimary)
             leftX += w + 8
-        } else {
-            for (item in leftItems) {
-                val impl = item.attributes["nativeImpl"]
-                if (impl is DesktopTextNativeImpl<*>) {
-                    val txt = impl.getText().trim()
-                    if (txt.isEmpty()) continue
-                    if (Win32NativeWindowHost.widgetHasClass(item, "badge")) {
-                        val bw = drawBadgePill(hdc, theme, fontSmall, item, txt, leftX, (top + bottom - 20) / 2)
-                        leftX += bw + 8
-                    } else {
-                        SelectObject(hdc, fontTitle ?: fontBold)
-                        val tw = measureSingleLineTextWidth(txt, 9) + 12
-                        Win32NativeWindowHost.drawTextInRect(hdc, txt, leftX, top + 4, leftX + tw, bottom - 4, theme.textPrimary)
-                        leftX += tw + 10
-                    }
+        }
+        for (item in leftItems) {
+            val impl = item.attributes["nativeImpl"]
+            if (impl is DesktopTextNativeImpl<*>) {
+                val txt = impl.getText().trim()
+                if (txt.isEmpty()) continue
+                if (Win32NativeWindowHost.widgetHasClass(item, "badge")) {
+                    val bw = drawBadgePill(hdc, theme, fontSmall, item, txt, leftX, (top + bottom - 20) / 2)
+                    leftX += bw + 8
+                } else {
+                    SelectObject(hdc, fontTitle ?: fontBold)
+                    val tw = measureSingleLineTextWidth(txt, 9) + 12
+                    Win32NativeWindowHost.drawTextInRect(hdc, txt, leftX, top + 4, leftX + tw, bottom - 4, theme.textPrimary)
+                    leftX += tw + 10
                 }
             }
         }

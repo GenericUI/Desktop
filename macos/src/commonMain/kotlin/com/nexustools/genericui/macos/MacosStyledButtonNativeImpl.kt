@@ -38,15 +38,15 @@ class MacosStyledButtonNativeImpl(
 
         val resolved = resolveCurrentVisuals()
         nativeWidget.attributes["styledButtonVisuals"] = resolved
-        resolved.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
-        resolved.backgroundGradient?.let { nativeWidget.attributes["backgroundGradient"] = it }
-        resolved.textColor?.let { nativeWidget.attributes["textColor"] = it }
-        resolved.borderColor?.let { nativeWidget.attributes["borderColor"] = it }
-        resolved.borderWidthPx?.let { nativeWidget.attributes["borderWidthPx"] = it }
-        resolved.borderStyle?.let { nativeWidget.attributes["borderStyle"] = it }
-        resolved.borderRadiusPx?.let { nativeWidget.attributes["borderRadiusPx"] = it }
-        resolved.focusRingColor?.let { nativeWidget.attributes["focusRingColor"] = it }
-        resolved.focusRingWidthPx?.let { nativeWidget.attributes["focusRingWidthPx"] = it }
+        if (resolved.backgroundColor != null) nativeWidget.attributes["backgroundColor"] = resolved.backgroundColor else nativeWidget.attributes.remove("backgroundColor")
+        if (resolved.backgroundGradient != null) nativeWidget.attributes["backgroundGradient"] = resolved.backgroundGradient else nativeWidget.attributes.remove("backgroundGradient")
+        if (resolved.textColor != null) nativeWidget.attributes["textColor"] = resolved.textColor else nativeWidget.attributes.remove("textColor")
+        if (resolved.borderColor != null) nativeWidget.attributes["borderColor"] = resolved.borderColor else nativeWidget.attributes.remove("borderColor")
+        if (resolved.borderWidthPx != null) nativeWidget.attributes["borderWidthPx"] = resolved.borderWidthPx else nativeWidget.attributes.remove("borderWidthPx")
+        if (resolved.borderStyle != null) nativeWidget.attributes["borderStyle"] = resolved.borderStyle else nativeWidget.attributes.remove("borderStyle")
+        if (resolved.borderRadiusPx != null) nativeWidget.attributes["borderRadiusPx"] = resolved.borderRadiusPx else nativeWidget.attributes.remove("borderRadiusPx")
+        if (resolved.focusRingColor != null) nativeWidget.attributes["focusRingColor"] = resolved.focusRingColor else nativeWidget.attributes.remove("focusRingColor")
+        if (resolved.focusRingWidthPx != null) nativeWidget.attributes["focusRingWidthPx"] = resolved.focusRingWidthPx else nativeWidget.attributes.remove("focusRingWidthPx")
         resolved.opacity?.let {
             val op = it.coerceIn(0f, 1f)
             nativeWidget.opacity = op

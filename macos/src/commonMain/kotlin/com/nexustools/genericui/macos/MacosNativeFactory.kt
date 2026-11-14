@@ -251,7 +251,7 @@ class MacosNativeFactory : NativeFactory {
         MacosUiThreadDispatcherNativeImpl()
 
     override fun createUiTimerScheduler(): UiTimerNativeImpl =
-        DesktopUiTimerNativeImpl("macOS NSTimer / GCD")
+        MacosUiTimerNativeImpl()
 
     override fun createPermissionManager(): PermissionManagerNativeImpl =
         DesktopPermissionManagerNativeImpl("macOS TCC /AVCaptureDevice")

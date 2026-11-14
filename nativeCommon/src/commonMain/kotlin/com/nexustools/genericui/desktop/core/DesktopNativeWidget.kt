@@ -26,15 +26,58 @@ open class DesktopNativeWidget(
         set(value) {
             field = value
             if (value) {
-                activeVBlankWidgets.remove(this)
+                removeActiveVBlankWidget(this)
             }
         }
 
+    private val attrSpinLock = kotlin.concurrent.AtomicInt(0)
+
+    private inline fun <T> withAttrLock(block: () -> T): T {
+        while (!attrSpinLock.compareAndSet(0, 1)) {
+            // brief spin across Logic/Coroutine vs UI thread
+        }
+        return try {
+            block()
+        } finally {
+            attrSpinLock.value = 0
+        }
+    }
+
     private val backingAttributes: LinkedHashMap<String, Any?> = linkedMapOf("antialiasing" to true)
 
-    val attributes: MutableMap<String, Any?> = object : MutableMap<String, Any?> by backingAttributes {
+    val attributes: MutableMap<String, Any?> = object : MutableMap<String, Any?> {
+        override val size: Int
+            get() = withAttrLock { backingAttributes.size }
+
+        override fun isEmpty(): Boolean =
+            withAttrLock { backingAttributes.isEmpty() }
+
+        override fun containsKey(key: String): Boolean =
+            withAttrLock { backingAttributes.containsKey(key) }
+
+        override fun containsValue(value: Any?): Boolean =
+            withAttrLock { backingAttributes.containsValue(value) }
+
+        override fun get(key: String): Any? =
+            withAttrLock { backingAttributes[key] }
+
+        override val keys: MutableSet<String>
+            get() = withAttrLock { LinkedHashSet(backingAttributes.keys) }
+
+        override val values: MutableCollection<Any?>
+            get() = withAttrLock { ArrayList(backingAttributes.values) }
+
+        override val entries: MutableSet<MutableMap.MutableEntry<String, Any?>>
+            get() = withAttrLock { LinkedHashMap(backingAttributes).entries }
+
+        override fun putAll(from: Map<out String, Any?>) {
+            for ((k, v) in from) {
+                put(k, v)
+            }
+        }
+
         override fun put(key: String, value: Any?): Any? {
-            val prev = backingAttributes.put(key, value)
+            val prev = withAttrLock { backingAttributes.put(key, value) }
             if (key == "vblankDispatch") {
                 syncVBlankRegistration(value)
             }
@@ -55,7 +98,7 @@ open class DesktopNativeWidget(
         }
 
         override fun remove(key: String): Any? {
-            val prev = backingAttributes.remove(key)
+            val prev = withAttrLock { backingAttributes.remove(key) }
             if (key == "vblankDispatch") {
                 syncVBlankRegistration(null)
             }
@@ -76,7 +119,7 @@ open class DesktopNativeWidget(
         }
 
         override fun clear() {
-            backingAttributes.clear()
+            withAttrLock { backingAttributes.clear() }
             syncVBlankRegistration(null)
             resetOverlaySubtreeFlagRecursive()
         }
@@ -84,7 +127,7 @@ open class DesktopNativeWidget(
 
     @Suppress("UNCHECKED_CAST")
     var vblankDispatch: ((Double?) -> Unit)?
-        get() = backingAttributes["vblankDispatch"] as? ((Double?) -> Unit)
+        get() = withAttrLock { backingAttributes["vblankDispatch"] } as? ((Double?) -> Unit)
         set(value) {
             if (value != null) {
                 attributes["vblankDispatch"] = value
@@ -96,6 +139,7 @@ open class DesktopNativeWidget(
     var cachedAllClassTokens: Set<String> = emptySet()
     var subtreeMutationVersion: Long = 1L
     internal var cachedOverlaySubtreeFlag: Int = -1
+    private var cachedOverlayClassifierGen: Int = -1
     var interactiveSurfaceSpec: DesktopInteractiveSurfaceSpec? = null
         set(value) {
             field = value
@@ -135,11 +179,14 @@ open class DesktopNativeWidget(
         }
     var parentWidget: DesktopNativeWidget? = null
         private set
+
+    @kotlin.concurrent.Volatile
     var children: List<DesktopNativeWidget> = emptyList()
         private set
 
     private fun resetOverlaySubtreeFlagRecursive() {
         cachedOverlaySubtreeFlag = -1
+        cachedOverlayClassifierGen = -1
         for (child in children) {
             child.resetOverlaySubtreeFlagRecursive()
         }
@@ -147,9 +194,9 @@ open class DesktopNativeWidget(
 
     private fun syncVBlankRegistration(value: Any?) {
         if (value != null && !disposed) {
-            activeVBlankWidgets.add(this)
+            addActiveVBlankWidget(this)
         } else {
-            activeVBlankWidgets.remove(this)
+            removeActiveVBlankWidget(this)
         }
     }
 
@@ -188,8 +235,9 @@ open class DesktopNativeWidget(
     }
 
     fun isInsideIsolatedStageSubtree(): Boolean {
+        val currentGen = classifierGeneration
         val cached = cachedOverlaySubtreeFlag
-        if (cached != -1) return cached == 1
+        if (cached != -1 && cachedOverlayClassifierGen == currentGen) return cached == 1
         var cur: DesktopNativeWidget? = this
         var topRoot: DesktopNativeWidget = this
         var found = false
@@ -252,11 +300,20 @@ open class DesktopNativeWidget(
         }
         if (found) {
             cachedOverlaySubtreeFlag = 1
+            cachedOverlayClassifierGen = currentGen
         } else if (topRoot.nativeClassName.contains("window", ignoreCase = true)) {
             cachedOverlaySubtreeFlag = 0
+            cachedOverlayClassifierGen = currentGen
         }
         return found
     }
+
+    private fun canFastAssignNonOverlayChild(child: DesktopNativeWidget): Boolean =
+        this.attributes["isLazyList"] == true &&
+            !child.isIsolatedStageSubtreeRoot &&
+            child.interactiveSurfaceSpec == null &&
+            child.stageOverlaySpec == null &&
+            child.children.isEmpty()
 
     fun addChildWidget(child: DesktopNativeWidget, index: Int = -1) {
         val oldParent = child.parentWidget
@@ -282,8 +339,9 @@ open class DesktopNativeWidget(
             next.add(index, child)
         }
         child.parentWidget = this
-        if (this.attributes["isLazyList"] == true || this.cachedOverlaySubtreeFlag == 0) {
+        if (canFastAssignNonOverlayChild(child)) {
             child.cachedOverlaySubtreeFlag = 0
+            child.cachedOverlayClassifierGen = classifierGeneration
         } else {
             child.resetOverlaySubtreeFlagRecursive()
         }
@@ -302,8 +360,9 @@ open class DesktopNativeWidget(
         }
         if (child.parentWidget === this) {
             child.parentWidget = null
-            if (this.attributes["isLazyList"] == true || this.cachedOverlaySubtreeFlag == 0) {
+            if (canFastAssignNonOverlayChild(child)) {
                 child.cachedOverlaySubtreeFlag = 0
+                child.cachedOverlayClassifierGen = classifierGeneration
             } else {
                 child.resetOverlaySubtreeFlagRecursive()
             }
@@ -313,12 +372,12 @@ open class DesktopNativeWidget(
     }
 
     fun clearChildWidgets() {
-        val parentNotOverlay = (this.attributes["isLazyList"] == true || this.cachedOverlaySubtreeFlag == 0)
         for (item in children) {
             if (item.parentWidget === this) {
                 item.parentWidget = null
-                if (parentNotOverlay) {
+                if (canFastAssignNonOverlayChild(item)) {
                     item.cachedOverlaySubtreeFlag = 0
+                    item.cachedOverlayClassifierGen = classifierGeneration
                 } else {
                     item.resetOverlaySubtreeFlagRecursive()
                 }
@@ -385,19 +444,40 @@ open class DesktopNativeWidget(
         private val WHITESPACE_REGEX = Regex("\\s+")
         private var pointerCounter: Long = 0x1000_0000L
         private val stageSubtreeClassifiers: MutableList<DesktopStageSubtreeClassifier> = mutableListOf()
+        private var classifierGeneration: Int = 0
         var globalTreeMutationVersion: Long = 1L
         var globalNonOverlayMutationVersion: Long = 1L
         var onNativeTreeInvalidated: (() -> Unit)? = null
         var onCursorUpdated: (() -> Unit)? = null
         var overlayInvalidationListener: ((DesktopNativeWidget) -> Unit)? = null
         val activeVBlankWidgets: MutableSet<DesktopNativeWidget> = linkedSetOf()
+        private val vblankSpinLock = kotlin.concurrent.AtomicInt(0)
+        private val pointerIdSpinLock = kotlin.concurrent.AtomicInt(0)
         internal var activePopupHitTestWidget: DesktopNativeWidget? = null
         internal var activePopupHitTestX: Int = 0
         internal var activePopupHitTestY: Int = 0
 
+        private inline fun <T> withVBlankLock(block: () -> T): T {
+            while (!vblankSpinLock.compareAndSet(0, 1)) {}
+            return try {
+                block()
+            } finally {
+                vblankSpinLock.value = 0
+            }
+        }
+
+        internal fun addActiveVBlankWidget(widget: DesktopNativeWidget) {
+            withVBlankLock { activeVBlankWidgets.add(widget) }
+        }
+
+        internal fun removeActiveVBlankWidget(widget: DesktopNativeWidget) {
+            withVBlankLock { activeVBlankWidgets.remove(widget) }
+        }
+
         fun registerStageSubtreeClassifier(classifier: DesktopStageSubtreeClassifier) {
             if (!stageSubtreeClassifiers.contains(classifier)) {
                 stageSubtreeClassifiers.add(classifier)
+                classifierGeneration++
             }
         }
 
@@ -453,14 +533,19 @@ open class DesktopNativeWidget(
             }
         }
 
-        fun activeVBlankWidgetsSnapshot(): List<DesktopNativeWidget> {
-            if (activeVBlankWidgets.isEmpty()) return emptyList()
-            return activeVBlankWidgets.toList()
-        }
+        fun activeVBlankWidgetsSnapshot(): List<DesktopNativeWidget> =
+            withVBlankLock {
+                if (activeVBlankWidgets.isEmpty()) emptyList() else activeVBlankWidgets.toList()
+            }
 
         fun nextPointerId(): Long {
-            pointerCounter += 0x10L
-            return pointerCounter
+            while (!pointerIdSpinLock.compareAndSet(0, 1)) {}
+            return try {
+                pointerCounter += 0x10L
+                pointerCounter
+            } finally {
+                pointerIdSpinLock.value = 0
+            }
         }
     }
 }

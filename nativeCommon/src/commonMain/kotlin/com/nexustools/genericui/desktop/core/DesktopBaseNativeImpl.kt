@@ -496,7 +496,14 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         val updated = LinkedHashSet(styleSnapshot.customClasses)
         if (!updated.addAll(tokens)) return
         styleSnapshot = styleSnapshot.copy(customClasses = updated)
-        if (tokens.all { it == "row-hovered" || it == "hovered" || it == "hud-cursor-hidden" }) {
+        if (tokens.all {
+                it == "row-hovered" ||
+                    it == "hovered" ||
+                    it == "hud-cursor-hidden" ||
+                    it == "hud-visible" ||
+                    it == "hud-hidden"
+            }
+        ) {
             cachedClassTokens = null
             nativeWidget.attributes["bootstrapClass"] = styleSnapshot.customClasses.joinToString(" ")
             nativeWidget.attributes["styleSnapshot"] = styleSnapshot
@@ -512,7 +519,14 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         val updated = LinkedHashSet(styleSnapshot.customClasses)
         if (!updated.removeAll(tokens.toSet())) return
         styleSnapshot = styleSnapshot.copy(customClasses = updated)
-        if (tokens.all { it == "row-hovered" || it == "hovered" || it == "hud-cursor-hidden" }) {
+        if (tokens.all {
+                it == "row-hovered" ||
+                    it == "hovered" ||
+                    it == "hud-cursor-hidden" ||
+                    it == "hud-visible" ||
+                    it == "hud-hidden"
+            }
+        ) {
             cachedClassTokens = null
             nativeWidget.attributes["bootstrapClass"] = styleSnapshot.customClasses.joinToString(" ")
             nativeWidget.attributes["styleSnapshot"] = styleSnapshot

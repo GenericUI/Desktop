@@ -1,12 +1,22 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.component.dialog.FileTypeFilter
+import com.nexustools.genericui.desktop.dialog.DesktopFileBrowserHelper
 import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
 import com.nexustools.genericui.io.FileOpenMode
 import com.nexustools.genericui.io.FileSystemAvailability
 import com.nexustools.genericui.nativeimpl.io.DefaultFileSystemNativeImpl
 import com.nexustools.genericui.nativeimpl.io.FileReadableNativeImpl
 import com.nexustools.genericui.nativeimpl.io.FileWritableNativeImpl
+import com.nexustools.genericui.threading.GenericUiThreading
+import kotlinx.coroutines.suspendCancellableCoroutine
+import platform.AppKit.NSModalResponseOK
+import platform.AppKit.NSOpenPanel
+import platform.AppKit.NSSavePanel
+import platform.Foundation.NSURL
+import kotlin.coroutines.resume
 
 /**
  * macOS (`:desktop:macos`) implementation of [com.nexustools.genericui.nativeimpl.io.FileSystemNativeImpl]
@@ -46,33 +56,132 @@ class MacosFileSystemNativeImpl : DefaultFileSystemNativeImpl() {
         )
     }
 
+    @Suppress("DEPRECATION")
     override suspend fun openReadableFromFileDialog(
         title: String,
         initialDirectory: String?,
         filters: List<FileTypeFilter>
     ): Pair<String, FileReadableNativeImpl>? {
-        val first = files.entries.firstOrNull() ?: return null
-        return first.key to MacosFileReadableNativeImpl(
-            initialBytes = first.value.copyOf(),
-            filePath = first.key
-        )
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled || files.isNotEmpty()) {
+            val first = files.entries.firstOrNull()
+            if (first != null) {
+                return first.key to MacosFileReadableNativeImpl(
+                    initialBytes = first.value.copyOf(),
+                    filePath = first.key
+                )
+            }
+            if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return null
+        }
+        val selectedPath = suspendCancellableCoroutine<String?> { cont ->
+            GenericUiThreading.runOnUi {
+                val panel = NSOpenPanel.openPanel()
+                panel.title = title
+                panel.canChooseFiles = true
+                panel.canChooseDirectories = false
+                panel.allowsMultipleSelection = false
+                initialDirectory?.takeIf { it.isNotBlank() }?.let { dir ->
+                    panel.directoryURL = NSURL.fileURLWithPath(dir)
+                }
+                val utTypes = MacosFileBrowserDialogNativeImpl.resolveUtTypes(
+                    DesktopFileBrowserHelper.extractMacosAllowedExtensions(filters)
+                )
+                if (utTypes.isNotEmpty()) {
+                    panel.allowedContentTypes = utTypes
+                }
+                val ok = panel.runModal() == NSModalResponseOK
+                val path = if (ok) panel.URL?.path else null
+                if (cont.isActive) cont.resume(path)
+            }
+        } ?: return null
+        val readable = createReadStream(selectedPath) ?: return null
+        return selectedPath to readable
     }
 
+    @Suppress("DEPRECATION")
     override suspend fun openReadablesFromFileDialog(
         title: String,
         initialDirectory: String?,
         filters: List<FileTypeFilter>
-    ): List<Pair<String, FileReadableNativeImpl>> =
-        openReadableFromFileDialog(title, initialDirectory, filters)?.let { listOf(it) } ?: emptyList()
+    ): List<Pair<String, FileReadableNativeImpl>> {
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled || files.isNotEmpty()) {
+            val first = files.entries.firstOrNull()
+            if (first != null) {
+                return listOf(
+                    first.key to MacosFileReadableNativeImpl(
+                        initialBytes = first.value.copyOf(),
+                        filePath = first.key
+                    )
+                )
+            }
+            if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return emptyList()
+        }
+        val selectedPaths = suspendCancellableCoroutine<List<String>> { cont ->
+            GenericUiThreading.runOnUi {
+                val panel = NSOpenPanel.openPanel()
+                panel.title = title
+                panel.canChooseFiles = true
+                panel.canChooseDirectories = false
+                panel.allowsMultipleSelection = true
+                initialDirectory?.takeIf { it.isNotBlank() }?.let { dir ->
+                    panel.directoryURL = NSURL.fileURLWithPath(dir)
+                }
+                val utTypes = MacosFileBrowserDialogNativeImpl.resolveUtTypes(
+                    DesktopFileBrowserHelper.extractMacosAllowedExtensions(filters)
+                )
+                if (utTypes.isNotEmpty()) {
+                    panel.allowedContentTypes = utTypes
+                }
+                val ok = panel.runModal() == NSModalResponseOK
+                val paths = if (ok) {
+                    panel.URLs.mapNotNull { (it as? NSURL)?.path }
+                } else {
+                    emptyList()
+                }
+                if (cont.isActive) cont.resume(paths)
+            }
+        }
+        val out = ArrayList<Pair<String, FileReadableNativeImpl>>(selectedPaths.size)
+        for (p in selectedPaths) {
+            val stream = createReadStream(p) ?: continue
+            out.add(p to stream)
+        }
+        return out
+    }
 
+    @Suppress("DEPRECATION")
     override suspend fun openWritableFromFileDialog(
         title: String,
         initialDirectory: String?,
         suggestedFileName: String,
         filters: List<FileTypeFilter>
     ): Pair<String, FileWritableNativeImpl>? {
-        val target = resolve(initialDirectory ?: "/", suggestedFileName.ifEmpty { "untitled.bin" })
-        return target to createWriteStream(target, FileOpenMode.WRITE_TRUNCATE)
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
+            val target = resolve(initialDirectory ?: "/", suggestedFileName.ifEmpty { "untitled.bin" })
+            return target to createWriteStream(target, FileOpenMode.WRITE_TRUNCATE)
+        }
+        val targetPath = suspendCancellableCoroutine<String?> { cont ->
+            GenericUiThreading.runOnUi {
+                val panel = NSSavePanel.savePanel()
+                panel.title = title
+                panel.canCreateDirectories = true
+                initialDirectory?.takeIf { it.isNotBlank() }?.let { dir ->
+                    panel.directoryURL = NSURL.fileURLWithPath(dir)
+                }
+                if (suggestedFileName.isNotBlank()) {
+                    panel.nameFieldStringValue = suggestedFileName
+                }
+                val utTypes = MacosFileBrowserDialogNativeImpl.resolveUtTypes(
+                    DesktopFileBrowserHelper.extractMacosAllowedExtensions(filters)
+                )
+                if (utTypes.isNotEmpty()) {
+                    panel.allowedContentTypes = utTypes
+                }
+                val ok = panel.runModal() == NSModalResponseOK
+                val path = if (ok) panel.URL?.path else null
+                if (cont.isActive) cont.resume(path)
+            }
+        } ?: return null
+        return targetPath to createWriteStream(targetPath, FileOpenMode.WRITE_TRUNCATE)
     }
 
     override suspend fun readFile(path: String): ByteArray? {
@@ -118,6 +227,12 @@ class MacosFileSystemNativeImpl : DefaultFileSystemNativeImpl() {
 
     private fun isOsDiskPath(path: String): Boolean {
         val trimmed = path.trim()
-        return trimmed.startsWith("/Users/") || trimmed.startsWith("/var/") || trimmed.startsWith("/tmp/") || trimmed.startsWith("/private/")
+        return trimmed.startsWith("/Users/") ||
+            trimmed.startsWith("/var/") ||
+            trimmed.startsWith("/tmp/") ||
+            trimmed.startsWith("/private/") ||
+            trimmed.startsWith("/Volumes/") ||
+            trimmed.startsWith("/Applications/") ||
+            trimmed.startsWith("/opt/")
     }
 }

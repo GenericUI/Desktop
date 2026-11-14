@@ -32,12 +32,18 @@ object MacosLauncher {
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
     ): IApplication {
+        val prevInteractive = MacosApplicationNativeImpl.interactiveMacosGuiEnabled
+        MacosApplicationNativeImpl.interactiveMacosGuiEnabled = true
         MacosApplicationNativeImpl.installMacosThemeDetector()
-        return GenericUiLaunchSequence.launch(
-            factory = MacosNativeFactory(),
-            args = args,
-            descriptor = descriptor,
-            isSystemTarget = true
-        )
+        return try {
+            GenericUiLaunchSequence.launch(
+                factory = MacosNativeFactory(),
+                args = args,
+                descriptor = descriptor,
+                isSystemTarget = true
+            )
+        } finally {
+            MacosApplicationNativeImpl.interactiveMacosGuiEnabled = prevInteractive
+        }
     }
 }

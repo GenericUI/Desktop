@@ -266,7 +266,8 @@ object Win32NavigationRenderUtil {
         Win32NativeWindowHost.fillRectColor(ctx.hdc, left, bottom - 1, right, bottom, ctx.borderSubtleColorRef)
 
         var curX = left + 10
-        val brand = navbarImpl?.getBrandTitle()?.trim().orEmpty()
+        val showBrand = navbarImpl?.isBrandVisible() ?: ((widget.attributes["showBrand"] as? Boolean) ?: false)
+        val brand = if (showBrand) navbarImpl?.getBrandTitle()?.trim().orEmpty() else ""
         if (brand.isNotEmpty()) {
             ctx.selectFont(ctx.fontBold ?: ctx.fontNormal)
             val brandW = (brand.length * 8 + 16).coerceIn(48, 200)

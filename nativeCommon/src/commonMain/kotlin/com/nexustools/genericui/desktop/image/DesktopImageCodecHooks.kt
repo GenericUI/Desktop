@@ -1,8 +1,11 @@
+@file:OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+
 package com.nexustools.genericui.desktop.image
 
 import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.image.cache.ImageCacheManager
+import kotlin.concurrent.atomics.AtomicInt
 
 /**
  * Shared desktop codec registration wiring [DesktopLibJpegImageCodecImpl] into
@@ -10,6 +13,8 @@ import com.nexustools.genericui.image.cache.ImageCacheManager
  * fetchers on [ImageCacheManager] for `:windows`, `:macos`, `:gtk`, and `:qt`.
  */
 object DesktopImageCodecHooks {
+
+    private val tempDownloadSeq = AtomicInt(0)
 
     var activeDesktopBackend: String = "Desktop"
         private set
@@ -30,7 +35,8 @@ object DesktopImageCodecHooks {
                     url.startsWith("https://", ignoreCase = true)
                 ) {
                     ImageCacheManager.cacheDirectory.ensureExists()
-                    val tempPath = ImageCacheManager.cacheDirectory.resolvePath(".tmp_download.bin")
+                    val seq = tempDownloadSeq.fetchAndAdd(1) and 0x7FFF_FFFF
+                    val tempPath = ImageCacheManager.cacheDirectory.resolvePath(".tmp_download_$seq.bin")
                     DesktopConfigDirectoryHelper.fetchHttpUrlBytes(url, tempPath)
                 } else {
                     DesktopConfigDirectoryHelper.readResourceOrLocalFile(url)

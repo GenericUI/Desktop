@@ -28,6 +28,12 @@ open class MacosDropdownNativeImpl(
     override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
         MacosControlRenderUtil.renderDropdown(this, renderContext, bounds)
 
+    fun getDropdownItems(): List<Pair<String, String>> = itemsList
+
+    fun notifyUserItemSelected(itemId: String) {
+        onItemSelectedListener?.invoke(itemId)
+    }
+
     override fun setLabel(label: String) {
         super.setLabel(label)
         syncAppearance()

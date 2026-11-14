@@ -2,12 +2,14 @@ package com.nexustools.genericui.macos.render
 
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
+import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.lazy.DesktopLazyGridNativeImpl
 import com.nexustools.genericui.desktop.render.DesktopControlTintRenderUtil
 import com.nexustools.genericui.desktop.widget.DesktopButtonNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopCheckboxNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopDropdownNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopImageNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopMarkdownViewNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopProgressBarNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopRangeSliderNativeImpl
@@ -22,20 +24,23 @@ import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
 import com.nexustools.genericui.enums.bootstrap.BootstrapSize
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
-import com.nexustools.genericui.enums.bootstrap.FontWeight
 import com.nexustools.genericui.enums.bootstrap.TextAlignment
-import com.nexustools.genericui.enums.bootstrap.TextOverflow
 import com.nexustools.genericui.enums.bootstrap.TextTransform
+import com.nexustools.genericui.enums.css.CssBorderStyle
 import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
-import com.nexustools.genericui.macos.MacosViewHandle
+import com.nexustools.genericui.res.Resources
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssLength
 import com.nexustools.genericui.style.theme.SystemThemeDetector
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -62,6 +67,12 @@ import kotlin.math.sqrt
  *      `StyledButton` or `component.isHostedInCustomStyleEngine()` is used.
  */
 object MacosControlRenderUtil {
+
+    var onRequestTextInputFocus: ((DesktopTextInputNativeImpl<DesktopNativeWidget>) -> Unit)? = null
+    var onRequestSelectPopup: ((DesktopSelectNativeImpl<DesktopNativeWidget>, Rect) -> Unit)? = null
+    var onRequestDropdownPopup: ((DesktopDropdownNativeImpl<DesktopNativeWidget>, Rect) -> Unit)? = null
+
+    private val controlSpriteCache = LinkedHashMap<String, IntArray>(128)
 
     private val IGNORED_AESTHETIC_AND_TYPOGRAPHY_ATTRIBUTES = listOf(
         "backgroundColor",
@@ -97,7 +108,7 @@ object MacosControlRenderUtil {
         return effectiveTheme == ThemeMode.DARK
     }
 
-    fun syncThemeAttributes(widget: MacosViewHandle): Boolean {
+    fun syncThemeAttributes(widget: DesktopNativeWidget): Boolean {
         val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
         val isDark = effectiveTheme == ThemeMode.DARK
         widget.attributes["effectiveThemeMode"] = effectiveTheme
@@ -107,14 +118,8 @@ object MacosControlRenderUtil {
         return isDark
     }
 
-    /**
-     * Enforces System Backend Style Rules on standard native controls and containers:
-     * unless [impl] is a `StyledButton` / `StyledContainer` or is hosted inside a custom style
-     * engine (`WebView`), aesthetic and typography `ComponentStyle` overrides are stripped and
-     * tinting is resolved strictly from [BootstrapType].
-     */
     fun syncStandardControlAppearance(
-        impl: DesktopBaseNativeImpl<MacosViewHandle>,
+        impl: DesktopBaseNativeImpl<DesktopNativeWidget>,
         nativeControlCell: String
     ) {
         val widget = impl.nativeWidget
@@ -156,15 +161,8 @@ object MacosControlRenderUtil {
         }
     }
 
-    /**
-     * Enforces System Backend Style Rules on text / typography elements (`MacosTextNativeImpl`,
-     * `MacosMarkdownViewNativeImpl` — `Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`,
-     * `MarkdownView`): honors typography and text-color properties from `ComponentStyle` and
-     * `ComponentBootstrap`, while ignoring background/border skin overrides unless hosted in a
-     * custom style engine or styled via `BootstrapType` (e.g., `Badge`).
-     */
     fun syncTypographyElementAppearance(
-        impl: DesktopBaseNativeImpl<MacosViewHandle>,
+        impl: DesktopBaseNativeImpl<DesktopNativeWidget>,
         nativeControlCell: String
     ) {
         val widget = impl.nativeWidget
@@ -178,7 +176,7 @@ object MacosControlRenderUtil {
     }
 
     private fun syncTypographyAndColorAttributes(
-        impl: DesktopBaseNativeImpl<MacosViewHandle>,
+        impl: DesktopBaseNativeImpl<DesktopNativeWidget>,
         isDark: Boolean,
         allowAestheticSkin: Boolean
     ) {
@@ -198,7 +196,6 @@ object MacosControlRenderUtil {
             widget.attributes.remove("boxShadow")
         }
 
-        // Resolve text color from ComponentStyle, ComputedStyle, or ComponentBootstrap
         val resolvedTextColor = style?.color
             ?: computed?.textColor
             ?: snapshot.textColorType?.takeIf { it != BootstrapType.NONE }?.let {
@@ -216,7 +213,6 @@ object MacosControlRenderUtil {
                 BootstrapColorPalette.resolveForegroundOn(BootstrapType.NONE, isDark).toHex()
         }
 
-        // Badge / semantic background type via BootstrapType
         val semanticBgType = snapshot.backgroundType?.takeIf { it != BootstrapType.NONE }
             ?: snapshot.type?.takeIf { it != BootstrapType.NONE }
         if (semanticBgType != null) {
@@ -226,7 +222,6 @@ object MacosControlRenderUtil {
             widget.attributes.remove("bootstrapTintColor")
         }
 
-        // Typography properties from ComponentStyle & ComponentBootstrap
         style?.fontFamily?.let { widget.attributes["fontFamily"] = it.toCssString() }
             ?: computed?.fontFamily?.let { widget.attributes["fontFamily"] = it }
             ?: widget.attributes.remove("fontFamily")
@@ -289,13 +284,6 @@ object MacosControlRenderUtil {
             ?: widget.attributes.remove("wordBreak")
     }
 
-    /**
-     * Renders an empty-text (`title = ""`) macOS AppKit native control (`NSButtonCell`, `NSSwitch`,
-     * `NSPopUpButtonCell`, `NSTextFieldCell`, `NSSliderCell`, `NSProgressIndicator`, `NSTabViewItem`)
-     * into an offscreen 32-bpp straight-ARGB pixel buffer with genuine AppKit Aqua / DarkAqua bevels,
-     * top specular highlight, inner/outer border ring, rounded corner anti-aliasing alpha, and
-     * hover/pressed/disabled state shading.
-     */
     fun renderOffscreenEmptyTextNativeSprite(
         cellClass: String,
         width: Int,
@@ -311,12 +299,14 @@ object MacosControlRenderUtil {
         val h = height.coerceAtLeast(1)
         val pixels = IntArray(w * h)
 
+        val isInputField = cellClass.contains("NSTextFieldCell_BezelSquare") || cellClass.contains("NSTextView_Scrollable")
         val baseR = when {
-            checked && cellClass.contains("Switch") -> if (darkMode) 10 else 0
+            checked && (cellClass.contains("Switch") || cellClass.contains("Tab")) -> if (darkMode) 10 else 0
+            isInputField -> if (darkMode) 30 else 255
             darkMode -> when {
-                pressed -> 78
-                hovered -> 104
-                else -> 92
+                pressed -> 72
+                hovered -> 98
+                else -> 84
             }
             else -> when {
                 pressed -> 218
@@ -325,11 +315,12 @@ object MacosControlRenderUtil {
             }
         }
         val baseG = when {
-            checked && cellClass.contains("Switch") -> if (darkMode) 132 else 122
+            checked && (cellClass.contains("Switch") || cellClass.contains("Tab")) -> if (darkMode) 132 else 122
+            isInputField -> if (darkMode) 33 else 255
             darkMode -> when {
-                pressed -> 80
-                hovered -> 106
-                else -> 94
+                pressed -> 74
+                hovered -> 101
+                else -> 87
             }
             else -> when {
                 pressed -> 220
@@ -338,11 +329,12 @@ object MacosControlRenderUtil {
             }
         }
         val baseB = when {
-            checked && cellClass.contains("Switch") -> 255
+            checked && (cellClass.contains("Switch") || cellClass.contains("Tab")) -> 255
+            isInputField -> if (darkMode) 40 else 255
             darkMode -> when {
-                pressed -> 85
-                hovered -> 112
-                else -> 99
+                pressed -> 80
+                hovered -> 108
+                else -> 94
             }
             else -> when {
                 pressed -> 225
@@ -358,15 +350,21 @@ object MacosControlRenderUtil {
             else -> min(6f, min(w, h) / 3f)
         }
         val alphaMultiplier = if (disabled) 0.58f else 1.0f
+        val isProgressCell = cellClass.contains("Progress")
+        val progressFillW = if (isProgressCell && progressFraction > 0f) {
+            (w * progressFraction.coerceIn(0f, 1f)).roundToInt()
+        } else {
+            0
+        }
 
         for (y in 0 until h) {
             val rowOffset = y * w
             val vRatio = if (h > 1) y.toFloat() / (h - 1).toFloat() else 0.5f
-            // AppKit Aqua / DarkAqua vertical bevel gradient (top specular highlight -> bottom shadow)
             val bevelDelta = when {
+                isInputField -> 0
                 pressed -> ((vRatio - 0.5f) * 14f).roundToInt()
-                y == 1 -> if (darkMode) 22 else 14
-                else -> ((0.5f - vRatio) * 20f).roundToInt()
+                y == 1 -> if (darkMode) 20 else 14
+                else -> ((0.5f - vRatio) * 18f).roundToInt()
             }
 
             for (x in 0 until w) {
@@ -375,26 +373,29 @@ object MacosControlRenderUtil {
 
                 val edgeDist = min(min(x, w - 1 - x), min(y, h - 1 - y))
                 val isBorder = edgeDist == 0
-                val isInnerHighlight = edgeDist == 1 && y <= 2 && !pressed
+                val isInnerHighlight = !isInputField && edgeDist == 1 && y <= 2 && !pressed
 
                 var r = baseR + bevelDelta
                 var g = baseG + bevelDelta
                 var b = baseB + bevelDelta
 
-                if (cellClass.contains("Progress") && progressFraction > 0f) {
-                    val fillW = (w * progressFraction.coerceIn(0f, 1f)).roundToInt()
-                    if (x < fillW) {
-                        r = if (darkMode) 10 else 0
-                        g = if (darkMode) 132 else 122
-                        b = 255
-                    }
+                if (progressFillW > 0 && x < progressFillW) {
+                    r = if (darkMode) 10 else 0
+                    g = if (darkMode) 132 else 122
+                    b = 255
                 }
 
                 if (isBorder) {
-                    val borderScale = if (darkMode) 0.62f else 0.74f
-                    r = (r * borderScale).roundToInt()
-                    g = (g * borderScale).roundToInt()
-                    b = (b * borderScale).roundToInt()
+                    if (isInputField) {
+                        r = if (darkMode) 76 else 188
+                        g = if (darkMode) 82 else 194
+                        b = if (darkMode) 96 else 204
+                    } else {
+                        val borderScale = if (darkMode) 0.62f else 0.74f
+                        r = (r * borderScale).roundToInt()
+                        g = (g * borderScale).roundToInt()
+                        b = (b * borderScale).roundToInt()
+                    }
                 } else if (isInnerHighlight) {
                     r += 16
                     g += 16
@@ -411,18 +412,8 @@ object MacosControlRenderUtil {
         return pixels
     }
 
-    /**
-     * Executes the two-mode native control rendering pipeline for [impl]:
-     * - When `BootstrapType == NONE`: renders the 100% unmodified native AppKit control and overlays
-     *   native control text.
-     * - When `BootstrapType != NONE`: renders the native AppKit control with NO text (`""`) into an
-     *   offscreen 32-bpp ARGB buffer, tints the control pixels via
-     *   [DesktopControlTintRenderUtil.tintNativeControlPixels] using the active `ThemeConfig`'s
-     *   [BootstrapColorPalette.resolveColor], blits the tinted sprite, and renders contrasting text
-     *   ([BootstrapColorPalette.resolveForegroundOn]) on top afterward.
-     */
     fun renderNativeControlWithOptionalBootstrapTint(
-        impl: DesktopBaseNativeImpl<MacosViewHandle>,
+        impl: DesktopBaseNativeImpl<DesktopNativeWidget>,
         cellClass: String,
         labelText: String,
         bounds: Rect = impl.nativeWidget.bounds,
@@ -432,7 +423,7 @@ object MacosControlRenderUtil {
     ): IntArray {
         val widget = impl.nativeWidget
         val isDark = syncThemeAttributes(widget)
-        val w = bounds.width.coerceAtLeast(24).coerceAtMost(512)
+        val w = bounds.width.coerceAtLeast(24).coerceAtMost(768)
         val h = bounds.height.coerceAtLeast(20).coerceAtMost(256)
         val hovered = impl.isHoveredState()
         val pressed = impl.isActivePressedState()
@@ -441,33 +432,9 @@ object MacosControlRenderUtil {
         val activeType = snapshot.type?.takeIf { it != BootstrapType.NONE }
             ?: snapshot.backgroundType?.takeIf { it != BootstrapType.NONE }
 
-        // Step 1: Render empty-text ("") native AppKit control into offscreen 32-bpp ARGB sprite buffer
-        val spritePixels = renderOffscreenEmptyTextNativeSprite(
-            cellClass = cellClass,
-            width = w,
-            height = h,
-            darkMode = isDark,
-            hovered = hovered,
-            pressed = pressed,
-            disabled = disabled,
-            checked = checked,
-            progressFraction = progressFraction
-        )
-
+        val tintColor = activeType?.let { BootstrapColorPalette.resolveColor(it, isDark) }
         val foregroundColor: RgbaColor
-        if (activeType != null) {
-            // Step 2: Tint the empty-text native control sprite with ThemeConfig Bootstrap color
-            val tintColor = BootstrapColorPalette.resolveColor(activeType, isDark)
-            DesktopControlTintRenderUtil.tintNativeControlPixels(
-                pixels = spritePixels,
-                width = w,
-                height = h,
-                tint = tintColor,
-                outlineMode = snapshot.outline,
-                hovered = hovered,
-                pressed = pressed,
-                disabled = disabled
-            )
+        if (activeType != null && tintColor != null) {
             foregroundColor = DesktopControlTintRenderUtil.resolveBootstrapForegroundOrNull(
                 type = activeType,
                 outlineMode = snapshot.outline,
@@ -482,7 +449,6 @@ object MacosControlRenderUtil {
             widget.attributes["bootstrapForegroundColor"] = foregroundColor.toHex()
             widget.attributes["contrastingTextRenderedAfterTint"] = true
         } else {
-            // Native-Only Rendering when BootstrapType == NONE
             foregroundColor = if (isDark) RgbaColor(235, 235, 245) else RgbaColor(28, 28, 30)
             widget.attributes["useSystemControlAppearance"] = "true"
             widget.attributes["renderedOffscreenEmptyTextSprite"] = false
@@ -491,49 +457,207 @@ object MacosControlRenderUtil {
             widget.attributes["contrastingTextRenderedAfterTint"] = false
         }
 
-        // Step 3: Overlay contrasting text & icon on top of the (optionally tinted) native control sprite
-        if (labelText.isNotEmpty()) {
-            overlayContrastingTextGlyphs(
-                pixels = spritePixels,
-                width = w,
-                height = h,
-                text = labelText,
-                foreground = foregroundColor,
-                disabled = disabled
-            )
+        val progressBucket = (progressFraction.coerceIn(0f, 1f) * 200f).roundToInt()
+        val cacheKey = if (renderContext is MacosRenderContext) {
+            "$cellClass|${w}x$h|$isDark|$hovered|$pressed|$disabled|$checked|$progressBucket|${activeType?.name}|${snapshot.outline}|${tintColor?.toHex()}"
+        } else {
+            null
         }
 
-        // Step 4: Blit into target renderContext if it is an IntArray buffer
-        if (renderContext is IntArray && renderContext.size >= spritePixels.size) {
-            spritePixels.copyInto(renderContext, destinationOffset = 0, startIndex = 0, endIndex = spritePixels.size)
+        val cachedSprite = if (cacheKey != null) controlSpriteCache[cacheKey] else null
+        val spritePixels = if (cachedSprite != null) {
+            cachedSprite
+        } else {
+            val fresh = renderOffscreenEmptyTextNativeSprite(
+                cellClass = cellClass,
+                width = w,
+                height = h,
+                darkMode = isDark,
+                hovered = hovered,
+                pressed = pressed,
+                disabled = disabled,
+                checked = checked,
+                progressFraction = progressFraction
+            )
+            if (activeType != null && tintColor != null) {
+                DesktopControlTintRenderUtil.tintNativeControlPixels(
+                    pixels = fresh,
+                    width = w,
+                    height = h,
+                    tint = tintColor,
+                    outlineMode = snapshot.outline,
+                    hovered = hovered,
+                    pressed = pressed,
+                    disabled = disabled
+                )
+            }
+            if (cacheKey != null) {
+                if (controlSpriteCache.size >= 256) {
+                    controlSpriteCache.keys.firstOrNull()?.let { controlSpriteCache.remove(it) }
+                }
+                controlSpriteCache[cacheKey] = fresh
+            }
+            fresh
+        }
+
+        if (renderContext is MacosRenderContext) {
+            // Blit empty-text (optionally tinted) native AppKit control sprite onto CoreGraphics view
+            MacosGraphicsDrawUtil.blitArgbSprite(
+                ctx = renderContext,
+                pixels = spritePixels,
+                srcW = w,
+                srcH = h,
+                dstX = bounds.x,
+                dstY = bounds.y,
+                dstW = bounds.width.coerceAtLeast(1),
+                dstH = bounds.height.coerceAtLeast(1)
+            )
+        } else {
+            if (labelText.isNotEmpty()) {
+                overlayContrastingTextGlyphs(
+                    pixels = spritePixels,
+                    width = w,
+                    height = h,
+                    text = labelText,
+                    foreground = foregroundColor,
+                    disabled = disabled
+                )
+            }
+            if (renderContext is IntArray && renderContext.size >= spritePixels.size) {
+                spritePixels.copyInto(renderContext, destinationOffset = 0, startIndex = 0, endIndex = spritePixels.size)
+            }
         }
 
         widget.attributes["lastRenderedCellClass"] = cellClass
         widget.attributes["lastRenderedWidth"] = w
         widget.attributes["lastRenderedHeight"] = h
         widget.attributes["lastRenderedText"] = labelText
+        widget.attributes["_resolvedControlForeground"] = foregroundColor
         return spritePixels
     }
 
-    fun measureButton(impl: DesktopButtonNativeImpl<MacosViewHandle>, dpiScale: Float = 1f): Size {
-        val textLen = impl.getText().length
-        val hasIcon = !impl.getIcon().isNullOrBlank()
+    fun renderLeafControl(
+        impl: DesktopBaseNativeImpl<DesktopNativeWidget>,
+        renderContext: Any?,
+        bounds: Rect = impl.nativeWidget.bounds
+    ): Boolean {
+        if (renderContext != null && impl.renderDesktopNode(renderContext, bounds)) {
+            return true
+        }
+        return when (impl) {
+            is DesktopStyledButtonNativeImpl<*> -> renderStyledButton(impl, renderContext, bounds)
+            is DesktopButtonNativeImpl<*> -> renderButton(impl, renderContext, bounds)
+            is DesktopTextInputNativeImpl<*> -> renderTextInput(impl, renderContext, bounds)
+            is DesktopCheckboxNativeImpl<*> -> renderCheckbox(impl, renderContext, bounds)
+            is DesktopSelectNativeImpl<*> -> renderSelect(impl, renderContext, bounds)
+            is DesktopDropdownNativeImpl<*> -> renderDropdown(impl, renderContext, bounds)
+            is DesktopRangeSliderNativeImpl<*> -> renderRangeSlider(impl, renderContext, bounds)
+            is DesktopProgressBarNativeImpl<*> -> renderProgressBar(impl, renderContext, bounds)
+            is DesktopSpinnerNativeImpl<*> -> renderSpinner(impl, renderContext, bounds)
+            is DesktopTextNativeImpl<*> -> renderText(impl, renderContext, bounds)
+            is DesktopMarkdownViewNativeImpl<*> -> renderMarkdownView(impl, renderContext, bounds)
+            is DesktopImageNativeImpl<*> -> renderImage(impl, renderContext, bounds)
+            else -> false
+        }
+    }
+
+    internal fun resolveButtonIconSpec(impl: DesktopButtonNativeImpl<*>): String? {
+        impl.getIcon()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        (impl.nativeWidget.attributes["icon"] as? String)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        for (child in impl.nativeWidget.children) {
+            if (!child.visible || child.disposed) continue
+            val childImg = child.attributes["nativeImpl"] as? DesktopImageNativeImpl<*>
+            childImg?.getSourceUrl()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        return null
+    }
+
+    private fun resolveExplicitLengthPx(raw: Any?): Int? = when (raw) {
+        is Number -> raw.toInt().takeIf { it > 0 }
+        is CssLength -> raw.resolvePx(0f)?.roundToInt()?.takeIf { it > 0 }
+        else -> null
+    }
+
+    fun measureButton(impl: DesktopButtonNativeImpl<DesktopNativeWidget>, dpiScale: Float = 1f): Size {
+        val widget = impl.nativeWidget
+        val explicitW = resolveExplicitLengthPx(widget.attributes["styleWidth"])
+            ?: widget.preferredSize?.width?.takeIf { it > 0 }
+        val explicitH = resolveExplicitLengthPx(widget.attributes["styleHeight"])
+            ?: widget.preferredSize?.height?.takeIf { it > 0 }
+
+        val text = impl.getText().trim()
+        val iconSpec = resolveButtonIconSpec(impl)
+        val hasIcon = !iconSpec.isNullOrBlank()
         val sizeScale = when (impl.getSize()) {
-            BootstrapSize.SM -> 0.85f
-            BootstrapSize.LG -> 1.2f
+            BootstrapSize.SM -> 0.88f
+            BootstrapSize.LG -> 1.18f
             else -> 1.0f
         }
-        val baseW = (max(68, textLen * 8 + (if (hasIcon) 24 else 0) + 28) * sizeScale * dpiScale).roundToInt()
-        val baseH = (28 * sizeScale * dpiScale).roundToInt()
-        return Size(baseW.toFloat(), baseH.toFloat())
+        if (text.isEmpty() && !hasIcon) {
+            return Size(explicitW ?: 0, explicitH ?: 0)
+        }
+        if (text.isEmpty() && hasIcon) {
+            val side = (30 * sizeScale * dpiScale).roundToInt().coerceAtLeast(26)
+            return Size(explicitW ?: side, explicitH ?: side)
+        }
+        val fontSize = 13f * sizeScale
+        val textW = MacosGraphicsDrawUtil.measureText(text, fontSize, 500).width
+        val iconExtra = if (hasIcon) 20 else 0
+        val minW = when {
+            text.length <= 2 && !hasIcon -> 32
+            text.length <= 4 && !hasIcon -> 42
+            sizeScale < 1f -> 50
+            else -> 62
+        }
+        val baseW = (max(minW, textW + iconExtra + 20) * dpiScale).roundToInt()
+        val baseH = (30 * sizeScale * dpiScale).roundToInt().coerceAtLeast(24)
+        return Size(explicitW ?: baseW, explicitH ?: baseH)
     }
 
     fun renderButton(
-        impl: DesktopButtonNativeImpl<MacosViewHandle>,
+        impl: DesktopButtonNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
         syncStandardControlAppearance(impl, "NSButtonCell_NSBezelStyleRounded")
+        val snapshot = impl.getStyleSnapshot()
+        val isLinkStyle = snapshot.type == BootstrapType.LINK
+        val iconSpec = resolveButtonIconSpec(impl)
+
+        if (renderContext is MacosRenderContext) {
+            val isDark = renderContext.darkMode
+            val disabled = !impl.nativeWidget.enabled
+            val fgColor: RgbaColor
+            if (isLinkStyle) {
+                if (impl.isHoveredState()) {
+                    MacosGraphicsDrawUtil.fillRoundedRect(
+                        renderContext,
+                        bounds.x,
+                        bounds.y,
+                        bounds.width,
+                        bounds.height,
+                        6f,
+                        renderContext.palette.bgHover
+                    )
+                }
+                fgColor = BootstrapColorPalette.resolveColor(BootstrapType.LINK, isDark)
+            } else {
+                renderNativeControlWithOptionalBootstrapTint(
+                    impl = impl,
+                    cellClass = "NSButtonCell_NSBezelStyleRounded",
+                    labelText = impl.getText(),
+                    bounds = bounds,
+                    renderContext = renderContext
+                )
+                fgColor = (impl.nativeWidget.attributes["_resolvedControlForeground"] as? RgbaColor)
+                    ?: renderContext.palette.textPrimary
+            }
+            val effectiveFg = if (disabled) fgColor.withAlpha(0.55f) else fgColor
+            drawButtonContent(renderContext, impl.getText(), iconSpec, bounds, effectiveFg, impl.getSize())
+            registerControlClickRegion(renderContext, impl, bounds)
+            return true
+        }
+
         renderNativeControlWithOptionalBootstrapTint(
             impl = impl,
             cellClass = "NSButtonCell_NSBezelStyleRounded",
@@ -545,7 +669,7 @@ object MacosControlRenderUtil {
     }
 
     fun renderStyledButton(
-        impl: DesktopStyledButtonNativeImpl<MacosViewHandle>,
+        impl: DesktopStyledButtonNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -555,19 +679,243 @@ object MacosControlRenderUtil {
         widget.attributes["nativeControlCell"] = "NSButton_CALayer_Styled"
         widget.attributes["lastRenderedWidth"] = bounds.width.coerceAtLeast(1)
         widget.attributes["lastRenderedHeight"] = bounds.height.coerceAtLeast(1)
+
+        if (renderContext is MacosRenderContext) {
+            val visuals = impl.resolveCurrentVisuals()
+            val style = impl.getComponentStyle()
+            val snap = impl.getStyleSnapshot()
+            val tokens = widget.cachedAllClassTokens
+            val isDark = renderContext.darkMode
+            val bsType = snap.type?.takeIf { it != BootstrapType.NONE && it != BootstrapType.LINK }
+
+            val radius = visuals.borderRadiusPx
+                ?: (widget.attributes["borderRadiusPx"] as? Float)
+                ?: style?.borderRadius?.topLeft?.resolvePx()
+                ?: when {
+                    "rounded-circle" in tokens -> min(bounds.width, bounds.height) / 2f
+                    "rounded-pill" in tokens -> bounds.height / 2f
+                    else -> 8f
+                }
+
+            val explicitBg = visuals.backgroundColor
+                ?: style?.backgroundColor
+                ?: (widget.attributes["backgroundColor"] as? RgbaColor)
+
+            val bg: RgbaColor = when {
+                explicitBg != null && explicitBg.a > 0 -> {
+                    when {
+                        !widget.enabled && impl.getDisabledVisuals()?.backgroundColor == null ->
+                            explicitBg.withAlpha(explicitBg.alphaFloat * 0.5f)
+                        impl.isActivePressedState() && impl.getActiveVisuals()?.backgroundColor == null ->
+                            explicitBg.adjustBrightness(-18)
+                        impl.isHoveredState() && impl.getHoverVisuals()?.backgroundColor == null ->
+                            explicitBg.adjustBrightness(12)
+                        else -> explicitBg
+                    }
+                }
+                explicitBg != null -> {
+                    // Explicitly transparent button: only highlight on hover/press
+                    if (widget.enabled && (impl.isActivePressedState() || impl.isHoveredState())) {
+                        renderContext.palette.bgHover
+                    } else {
+                        RgbaColor.TRANSPARENT
+                    }
+                }
+                bsType != null -> {
+                    val bsCol = BootstrapColorPalette.resolveColor(bsType, isDark)
+                    if (snap.outline) {
+                        when {
+                            !widget.enabled -> RgbaColor.TRANSPARENT
+                            impl.isActivePressedState() ->
+                                if (bsType == BootstrapType.LIGHT && !isDark) renderContext.palette.bgHover else bsCol.withAlpha(0.26f)
+                            impl.isHoveredState() ->
+                                if (bsType == BootstrapType.LIGHT && !isDark) renderContext.palette.bgHover else bsCol.withAlpha(0.16f)
+                            else -> RgbaColor.TRANSPARENT
+                        }
+                    } else {
+                        when {
+                            !widget.enabled -> bsCol.withAlpha(0.5f)
+                            impl.isActivePressedState() -> bsCol.adjustBrightness(-18)
+                            impl.isHoveredState() -> bsCol.adjustBrightness(12)
+                            else -> bsCol
+                        }
+                    }
+                }
+                else -> {
+                    val defBg = renderContext.palette.bgElevated
+                    when {
+                        !widget.enabled -> defBg.withAlpha(0.5f)
+                        impl.isActivePressedState() -> defBg.adjustBrightness(-18)
+                        impl.isHoveredState() -> defBg.adjustBrightness(14)
+                        else -> defBg
+                    }
+                }
+            }
+
+            if (bg.a > 0) {
+                MacosGraphicsDrawUtil.fillRoundedRect(renderContext, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
+            }
+
+            val borderCol = visuals.borderColor
+                ?: style?.borderColor
+                ?: (widget.attributes["borderColor"] as? RgbaColor)
+                ?: if (bsType != null && snap.outline) {
+                    if (bsType == BootstrapType.LIGHT && !isDark) {
+                        renderContext.palette.borderStrong
+                    } else {
+                        BootstrapColorPalette.resolveColor(bsType, isDark).withAlpha(0.65f)
+                    }
+                } else {
+                    null
+                }
+            val borderW = (visuals.borderWidthPx ?: 1f).coerceAtLeast(1f)
+            if (borderCol != null && borderCol.a > 0 && visuals.borderStyle != CssBorderStyle.NONE) {
+                MacosGraphicsDrawUtil.strokeRoundedRect(renderContext, bounds.x, bounds.y, bounds.width, bounds.height, radius, borderCol, borderW)
+            }
+
+            val fg = visuals.textColor
+                ?: style?.color
+                ?: (widget.attributes["textColor"] as? RgbaColor)
+                ?: when {
+                    bsType != null && !snap.outline -> BootstrapColorPalette.resolveForegroundOn(bsType, isDark)
+                    bsType != null && snap.outline ->
+                        if (bsType == BootstrapType.LIGHT && !isDark) renderContext.palette.textPrimary
+                        else BootstrapColorPalette.resolveColor(bsType, isDark)
+                    else -> renderContext.palette.textPrimary
+                }
+            val effectiveFg = if (!widget.enabled) fg.withAlpha(0.55f) else fg
+            drawButtonContent(renderContext, impl.getText(), resolveButtonIconSpec(impl), bounds, effectiveFg, impl.getSize())
+            registerControlClickRegion(renderContext, impl, bounds)
+        }
         return true
     }
 
-    fun measureText(impl: DesktopTextNativeImpl<MacosViewHandle>, dpiScale: Float = 1f): Size {
-        val fontSize = (impl.nativeWidget.attributes["fontSizePx"] as? Float) ?: 14f
-        val text = applyTextTransform(impl.getText(), impl.getStyleSnapshot().textTransform ?: impl.getComponentStyle()?.textTransform)
-        val w = max(1, (text.length * fontSize * 0.56f * dpiScale).roundToInt())
-        val h = max(16, (fontSize * 1.35f * dpiScale).roundToInt())
-        return Size(w.toFloat(), h.toFloat())
+    private fun drawButtonContent(
+        ctx: MacosRenderContext,
+        rawText: String,
+        rawIcon: String?,
+        bounds: Rect,
+        fg: RgbaColor,
+        size: BootstrapSize?
+    ) {
+        val text = rawText.trim()
+        val iconSpec = rawIcon?.trim()?.takeIf { it.isNotEmpty() }
+        val fontSize = when (size) {
+            BootstrapSize.SM -> 12f
+            BootstrapSize.LG -> 15f
+            else -> 13f
+        }
+        val iconSide = when (size) {
+            BootstrapSize.SM -> 15
+            BootstrapSize.LG -> 20
+            else -> 17
+        }.coerceAtMost((bounds.height - 6).coerceAtLeast(12))
+
+        if (iconSpec != null && text.isEmpty()) {
+            val ix = bounds.x + (bounds.width - iconSide) / 2
+            val iy = bounds.y + (bounds.height - iconSide) / 2
+            if (!isDrawableUri(iconSpec)) {
+                MacosGraphicsDrawUtil.drawText(ctx, iconSpec, bounds.x, bounds.y, bounds.width, bounds.height, fg, fontSize + 1f, 600, TextAlignment.CENTER)
+            } else {
+                MacosGraphicsDrawUtil.drawIconOrUri(ctx, iconSpec, ix, iy, iconSide, iconSide, tintColor = fg)
+            }
+            return
+        }
+
+        if (iconSpec != null && text.isNotEmpty()) {
+            val measured = MacosGraphicsDrawUtil.measureText(text, fontSize, 500)
+            val gap = 6
+            val totalW = min(bounds.width - 12, iconSide + gap + measured.width)
+            val startX = bounds.x + ((bounds.width - totalW) / 2).coerceAtLeast(6)
+            val iy = bounds.y + (bounds.height - iconSide) / 2
+            if (!isDrawableUri(iconSpec)) {
+                MacosGraphicsDrawUtil.drawText(ctx, iconSpec, startX, iy, iconSide + 2, iconSide + 2, fg, fontSize, 500, TextAlignment.CENTER)
+            } else {
+                MacosGraphicsDrawUtil.drawIconOrUri(ctx, iconSpec, startX, iy, iconSide, iconSide, tintColor = fg)
+            }
+            val textX = startX + iconSide + gap
+            val textW = (bounds.right - 6 - textX).coerceAtLeast(1)
+            MacosGraphicsDrawUtil.drawText(ctx, text, textX, bounds.y, textW, bounds.height, fg, fontSize, 500, TextAlignment.START)
+            return
+        }
+
+        if (text.isNotEmpty()) {
+            val padX = if (bounds.width <= 42) 4 else 8
+            MacosGraphicsDrawUtil.drawText(
+                ctx = ctx,
+                text = text,
+                x = bounds.x + padX,
+                y = bounds.y,
+                w = (bounds.width - padX * 2).coerceAtLeast(1),
+                h = bounds.height,
+                color = fg,
+                fontSizePx = fontSize,
+                weightNumeric = 500,
+                alignment = TextAlignment.CENTER
+            )
+        }
+    }
+
+    internal fun isDrawableUri(spec: String): Boolean =
+        spec.startsWith("res://") ||
+            spec.startsWith("@") ||
+            spec.startsWith("ic_") ||
+            spec.startsWith("data:") ||
+            spec.startsWith("http://") ||
+            spec.startsWith("https://") ||
+            spec.startsWith("memory://") ||
+            spec.endsWith(".svg", ignoreCase = true) ||
+            spec.endsWith(".png", ignoreCase = true) ||
+            Resources.getDrawable(spec) != null
+
+    fun measureText(impl: DesktopTextNativeImpl<DesktopNativeWidget>, dpiScale: Float = 1f): Size {
+        val fontSize = resolveTextFontSize(impl)
+        val weight = resolveTextFontWeight(impl)
+        val transform = impl.getStyleSnapshot().textTransform ?: impl.getComponentStyle()?.textTransform
+        val text = applyTextTransform(impl.getText(), transform)
+        if (text.isEmpty()) return Size(0, (fontSize * 1.35f).roundToInt())
+        val isBadge = "badge" in impl.nativeWidget.cachedAllClassTokens || impl.componentClassPrefix.contains("badge")
+        val extraW = if (isBadge) 16 else 2
+        val extraH = if (isBadge) 6 else 0
+        val w = max(1, (text.length * fontSize * 0.56f * dpiScale).roundToInt() + extraW)
+        val h = max(16, (fontSize * 1.35f * dpiScale).roundToInt() + extraH)
+        return Size(w, h)
+    }
+
+    fun resolveTextFontSize(impl: DesktopTextNativeImpl<DesktopNativeWidget>): Float {
+        (impl.nativeWidget.attributes["fontSizePx"] as? Float)?.let { return it }
+        impl.getComponentStyle()?.fontSize?.resolvePx()?.let { return it }
+        val tokens = impl.nativeWidget.cachedAllClassTokens
+        val tag = (impl.nativeWidget.attributes["htmlTag"] as? String)?.lowercase()
+        return when {
+            tag == "h1" || "h1" in tokens || "fs-1" in tokens -> 26f
+            tag == "h2" || "h2" in tokens || "fs-2" in tokens -> 22f
+            tag == "h3" || "h3" in tokens || "fs-3" in tokens -> 19f
+            tag == "h4" || "h4" in tokens || "fs-4" in tokens -> 17f
+            tag == "h5" || "h5" in tokens || "fs-5" in tokens -> 15.5f
+            tag == "h6" || "h6" in tokens || "fs-6" in tokens -> 14f
+            "badge" in tokens -> 11.5f
+            "small" in tokens || tag == "small" -> 12f
+            else -> 13.5f
+        }
+    }
+
+    fun resolveTextFontWeight(impl: DesktopTextNativeImpl<DesktopNativeWidget>): Int {
+        (impl.nativeWidget.attributes["fontWeightNumeric"] as? Int)?.let { return it }
+        impl.getComponentStyle()?.fontWeight?.numericWeight?.let { return it }
+        impl.getStyleSnapshot().fontWeight?.numericWeight?.let { return it }
+        val tokens = impl.nativeWidget.cachedAllClassTokens
+        val tag = (impl.nativeWidget.attributes["htmlTag"] as? String)?.lowercase()
+        return when {
+            "fw-bold" in tokens || tag in setOf("h1", "h2", "h3", "h4", "strong", "b") -> 700
+            "fw-semibold" in tokens || tag in setOf("h5", "h6") || "badge" in tokens -> 600
+            "fw-medium" in tokens -> 500
+            else -> 400
+        }
     }
 
     fun renderText(
-        impl: DesktopTextNativeImpl<MacosViewHandle>,
+        impl: DesktopTextNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -575,6 +923,86 @@ object MacosControlRenderUtil {
         val transform = impl.getComponentStyle()?.textTransform ?: impl.getStyleSnapshot().textTransform
         val renderedText = applyTextTransform(impl.getText(), transform)
         impl.nativeWidget.attributes["renderedText"] = renderedText
+
+        if (renderContext is MacosRenderContext) {
+            if (renderedText.isEmpty()) return true
+            val tokens = impl.nativeWidget.cachedAllClassTokens
+            val isBadge = "badge" in tokens || impl.componentClassPrefix.contains("badge")
+            val snapshot = impl.getStyleSnapshot()
+            val isDark = renderContext.darkMode
+            val fontSize = resolveTextFontSize(impl)
+            val weight = resolveTextFontWeight(impl)
+            val monospace = "font-monospace" in tokens ||
+                ((impl.nativeWidget.attributes["fontFamily"] as? String)?.contains("mono", ignoreCase = true) == true) ||
+                (impl.nativeWidget.attributes["htmlTag"] == "code") ||
+                (impl.nativeWidget.attributes["htmlTag"] == "pre")
+
+            var fg = (impl.nativeWidget.attributes["textColor"] as? RgbaColor)
+                ?: when {
+                    "text-muted" in tokens || "text-secondary" in tokens -> renderContext.palette.textSecondary
+                    else -> renderContext.palette.textPrimary
+                }
+
+            if (isBadge) {
+                val badgeType = snapshot.backgroundType?.takeIf { it != BootstrapType.NONE }
+                    ?: snapshot.type?.takeIf { it != BootstrapType.NONE }
+                    ?: BootstrapType.SECONDARY
+                val bgCol = BootstrapColorPalette.resolveColor(badgeType, isDark)
+                fg = (impl.nativeWidget.attributes["textColor"] as? RgbaColor)
+                    ?: BootstrapColorPalette.resolveForegroundOn(badgeType, isDark)
+                val pillRadius = if ("rounded-pill" in tokens) bounds.height / 2f else 6f
+                MacosGraphicsDrawUtil.fillRoundedRect(renderContext, bounds.x, bounds.y, bounds.width, bounds.height, pillRadius, bgCol)
+                MacosGraphicsDrawUtil.drawText(
+                    ctx = renderContext,
+                    text = renderedText,
+                    x = bounds.x + 6,
+                    y = bounds.y,
+                    w = (bounds.width - 12).coerceAtLeast(1),
+                    h = bounds.height,
+                    color = fg,
+                    fontSizePx = fontSize,
+                    weightNumeric = weight,
+                    alignment = TextAlignment.CENTER,
+                    singleLine = true,
+                    monospace = monospace
+                )
+            } else {
+                val align = impl.getComponentStyle()?.textAlign
+                    ?: snapshot.textAlignment
+                    ?: when {
+                        "text-center" in tokens -> TextAlignment.CENTER
+                        "text-end" in tokens -> TextAlignment.END
+                        else -> TextAlignment.START
+                    }
+                val whiteSpace = impl.nativeWidget.attributes["whiteSpace"] as? String
+                val singleLine = whiteSpace == "nowrap" ||
+                    ("text-truncate" in tokens) ||
+                    ("text-nowrap" in tokens) ||
+                    ("native-row-title" in tokens) ||
+                    ("native-row-detail" in tokens) ||
+                    bounds.height <= (fontSize * 1.9f).roundToInt()
+                MacosGraphicsDrawUtil.drawText(
+                    ctx = renderContext,
+                    text = renderedText,
+                    x = bounds.x,
+                    y = bounds.y,
+                    w = bounds.width,
+                    h = bounds.height,
+                    color = if (!impl.nativeWidget.enabled) fg.withAlpha(0.55f) else fg,
+                    fontSizePx = fontSize,
+                    weightNumeric = weight,
+                    alignment = align,
+                    singleLine = singleLine,
+                    verticallyCentered = singleLine,
+                    monospace = monospace
+                )
+            }
+            if (impl.hasClickListener() || impl.nativeWidget.tooltipText != null) {
+                registerControlClickRegion(renderContext, impl, bounds)
+            }
+            return true
+        }
+
         if (renderContext is IntArray && renderContext.isNotEmpty()) {
             val w = bounds.width.coerceAtLeast(16).coerceAtMost(256)
             val h = bounds.height.coerceAtLeast(16).coerceAtMost(128)
@@ -588,28 +1016,48 @@ object MacosControlRenderUtil {
     }
 
     fun renderMarkdownView(
-        impl: DesktopMarkdownViewNativeImpl<MacosViewHandle>,
+        impl: DesktopMarkdownViewNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
         syncTypographyElementAppearance(impl, "NSTextView_NSAttributedString_Markdown")
-        impl.nativeWidget.attributes["renderedMarkdownLength"] = impl.getMarkdown().length
+        val md = impl.getMarkdown()
+        impl.nativeWidget.attributes["renderedMarkdownLength"] = md.length
         impl.nativeWidget.attributes["lastRenderedWidth"] = bounds.width.coerceAtLeast(1)
         impl.nativeWidget.attributes["lastRenderedHeight"] = bounds.height.coerceAtLeast(1)
+        if (renderContext is MacosRenderContext && md.isNotBlank()) {
+            val cleaned = md.replace(Regex("^#+\\s*", RegexOption.MULTILINE), "")
+                .replace("**", "")
+                .replace("`", "")
+            val fg = (impl.nativeWidget.attributes["textColor"] as? RgbaColor) ?: renderContext.palette.textPrimary
+            MacosGraphicsDrawUtil.drawText(
+                ctx = renderContext,
+                text = cleaned,
+                x = bounds.x,
+                y = bounds.y,
+                w = bounds.width,
+                h = bounds.height,
+                color = fg,
+                fontSizePx = 13.5f,
+                singleLine = false,
+                verticallyCentered = false
+            )
+        }
         return true
     }
 
     fun renderTextInput(
-        impl: DesktopTextInputNativeImpl<MacosViewHandle>,
+        impl: DesktopTextInputNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
         val cell = if (impl.isMultiline()) "NSTextView_Scrollable" else "NSTextFieldCell_BezelSquare"
         syncStandardControlAppearance(impl, cell)
+        val rawVal = impl.getValue()
         val display = if (impl.isPasswordMode()) {
-            "•".repeat(impl.getValue().length)
+            "•".repeat(rawVal.length)
         } else {
-            impl.getValue().ifEmpty { impl.getPlaceholder() }
+            rawVal.ifEmpty { impl.getPlaceholder() }
         }
         renderNativeControlWithOptionalBootstrapTint(
             impl = impl,
@@ -618,11 +1066,90 @@ object MacosControlRenderUtil {
             bounds = bounds,
             renderContext = renderContext
         )
+
+        if (renderContext is MacosRenderContext) {
+            val isFocused = renderContext.focusedWidget === impl.nativeWidget || impl.isFocusedState()
+            if (isFocused) {
+                MacosGraphicsDrawUtil.strokeRoundedRect(
+                    renderContext,
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    bounds.height,
+                    6f,
+                    renderContext.palette.accentPrimary,
+                    2f
+                )
+            }
+            val isPlaceholder = rawVal.isEmpty()
+            val textCol = if (isPlaceholder) {
+                renderContext.palette.textMuted
+            } else {
+                renderContext.palette.textPrimary
+            }
+            val shownValue = if (impl.isPasswordMode()) "•".repeat(rawVal.length) else rawVal
+            val drawStr = if (isPlaceholder) impl.getPlaceholder() else shownValue
+            val padX = 10
+            val textW = (bounds.width - padX * 2).coerceAtLeast(1)
+            if (drawStr.isNotEmpty()) {
+                MacosGraphicsDrawUtil.drawText(
+                    ctx = renderContext,
+                    text = drawStr,
+                    x = bounds.x + padX,
+                    y = if (impl.isMultiline()) bounds.y + 6 else bounds.y,
+                    w = textW,
+                    h = if (impl.isMultiline()) (bounds.height - 12).coerceAtLeast(1) else bounds.height,
+                    color = textCol,
+                    fontSizePx = 13.5f,
+                    singleLine = !impl.isMultiline(),
+                    verticallyCentered = !impl.isMultiline()
+                )
+            }
+            if (isFocused && !impl.isReadOnly() && impl.nativeWidget.enabled) {
+                val caretOffset = if (shownValue.isEmpty()) 0 else MacosGraphicsDrawUtil.measureText(shownValue, 13.5f).width
+                val caretX = (bounds.x + padX + caretOffset + 1).coerceAtMost(bounds.right - 6)
+                val caretTop = bounds.y + 6
+                val caretBot = (bounds.bottom - 6).coerceAtLeast(caretTop + 8)
+                MacosGraphicsDrawUtil.drawLine(
+                    renderContext,
+                    caretX.toFloat(),
+                    caretTop.toFloat(),
+                    caretX.toFloat(),
+                    caretBot.toFloat(),
+                    renderContext.palette.accentPrimary,
+                    1.5f
+                )
+            }
+            renderContext.registerHitRegion(
+                MacosHitRegion(
+                    left = bounds.x,
+                    top = bounds.y,
+                    right = bounds.right,
+                    bottom = bounds.bottom,
+                    widget = impl.nativeWidget,
+                    tooltip = impl.nativeWidget.tooltipText,
+                    cursorCss = "text",
+                    isTextInput = true,
+                    onPress = { _, _, _, _, _, _ ->
+                        if (impl.nativeWidget.enabled) {
+                            onRequestTextInputFocus?.invoke(impl)
+                        }
+                        true
+                    },
+                    onClick = {
+                        if (impl.nativeWidget.enabled) {
+                            onRequestTextInputFocus?.invoke(impl)
+                            impl.dispatchClick()
+                        }
+                    }
+                )
+            )
+        }
         return true
     }
 
     fun renderCheckbox(
-        impl: DesktopCheckboxNativeImpl<MacosViewHandle>,
+        impl: DesktopCheckboxNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -632,19 +1159,119 @@ object MacosControlRenderUtil {
             else -> "NSButtonCell_NSButtonTypeSwitch"
         }
         syncStandardControlAppearance(impl, cell)
-        renderNativeControlWithOptionalBootstrapTint(
-            impl = impl,
-            cellClass = cell,
-            labelText = impl.getLabel(),
-            bounds = bounds,
-            renderContext = renderContext,
-            checked = impl.isChecked()
+        if (renderContext !is MacosRenderContext) {
+            renderNativeControlWithOptionalBootstrapTint(
+                impl = impl,
+                cellClass = cell,
+                labelText = impl.getLabel(),
+                bounds = bounds,
+                renderContext = renderContext,
+                checked = impl.isChecked()
+            )
+            return true
+        }
+
+        val checked = impl.isChecked()
+        val indicatorW = if (impl.switchStyle) 36 else 18
+        val indicatorH = if (impl.switchStyle) 20 else 18
+        val iy = bounds.y + (bounds.height - indicatorH) / 2
+        val indicatorRect = Rect(bounds.x, iy, indicatorW, indicatorH)
+
+        val activeBg = if (checked) {
+            val type = impl.getStyleSnapshot().type?.takeIf { it != BootstrapType.NONE } ?: BootstrapType.PRIMARY
+            BootstrapColorPalette.resolveColor(type, renderContext.darkMode)
+        } else {
+            renderContext.palette.bgElevated
+        }
+        val radius = if (impl.switchStyle || impl.radioStyle) indicatorH / 2f else 4.5f
+        MacosGraphicsDrawUtil.fillRoundedRect(renderContext, indicatorRect.x, indicatorRect.y, indicatorW, indicatorH, radius, activeBg)
+        if (!checked) {
+            MacosGraphicsDrawUtil.strokeRoundedRect(
+                renderContext,
+                indicatorRect.x,
+                indicatorRect.y,
+                indicatorW,
+                indicatorH,
+                radius,
+                renderContext.palette.borderStrong,
+                1f
+            )
+        }
+        if (impl.switchStyle) {
+            val knobSize = indicatorH - 4
+            val kx = if (checked) indicatorRect.right - knobSize - 2 else indicatorRect.x + 2
+            MacosGraphicsDrawUtil.fillRoundedRect(renderContext, kx, indicatorRect.y + 2, knobSize, knobSize, knobSize / 2f, RgbaColor.WHITE)
+        } else if (checked) {
+            if (impl.radioStyle) {
+                MacosGraphicsDrawUtil.fillRoundedRect(
+                    renderContext,
+                    indicatorRect.x + 5,
+                    indicatorRect.y + 5,
+                    indicatorW - 10,
+                    indicatorH - 10,
+                    (indicatorH - 10) / 2f,
+                    RgbaColor.WHITE
+                )
+            } else {
+                MacosGraphicsDrawUtil.drawLine(
+                    renderContext,
+                    (indicatorRect.x + 4).toFloat(),
+                    (indicatorRect.y + 9).toFloat(),
+                    (indicatorRect.x + 8).toFloat(),
+                    (indicatorRect.y + 13).toFloat(),
+                    RgbaColor.WHITE,
+                    2f
+                )
+                MacosGraphicsDrawUtil.drawLine(
+                    renderContext,
+                    (indicatorRect.x + 8).toFloat(),
+                    (indicatorRect.y + 13).toFloat(),
+                    (indicatorRect.x + 14).toFloat(),
+                    (indicatorRect.y + 5).toFloat(),
+                    RgbaColor.WHITE,
+                    2f
+                )
+            }
+        }
+
+        val label = impl.getLabel()
+        if (label.isNotBlank()) {
+            val lx = indicatorRect.right + 8
+            val lw = (bounds.right - lx).coerceAtLeast(1)
+            MacosGraphicsDrawUtil.drawText(
+                ctx = renderContext,
+                text = label,
+                x = lx,
+                y = bounds.y,
+                w = lw,
+                h = bounds.height,
+                color = renderContext.palette.textPrimary,
+                fontSizePx = 13.5f
+            )
+        }
+
+        renderContext.registerHitRegion(
+            MacosHitRegion(
+                left = bounds.x,
+                top = bounds.y,
+                right = bounds.right,
+                bottom = bounds.bottom,
+                widget = impl.nativeWidget,
+                tooltip = impl.nativeWidget.tooltipText,
+                cursorCss = "pointer",
+                onClick = {
+                    if (impl.nativeWidget.enabled) {
+                        impl.setChecked(!impl.isChecked())
+                        impl.dispatchClick()
+                    }
+                }
+            )
         )
         return true
     }
 
     fun renderSelect(
-        impl: DesktopSelectNativeImpl<MacosViewHandle>,
+        impl: DesktopSelectNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -659,11 +1286,50 @@ object MacosControlRenderUtil {
             bounds = bounds,
             renderContext = renderContext
         )
+
+        if (renderContext is MacosRenderContext) {
+            val fg = (impl.nativeWidget.attributes["_resolvedControlForeground"] as? RgbaColor)
+                ?: renderContext.palette.textPrimary
+            MacosGraphicsDrawUtil.drawText(
+                ctx = renderContext,
+                text = selectedLabel,
+                x = bounds.x + 10,
+                y = bounds.y,
+                w = (bounds.width - 28).coerceAtLeast(1),
+                h = bounds.height,
+                color = fg,
+                fontSizePx = 13f
+            )
+            // Native AppKit popup up/down chevrons on trailing edge
+            val cx = (bounds.right - 14).toFloat()
+            val cy = (bounds.y + bounds.height / 2).toFloat()
+            MacosGraphicsDrawUtil.drawLine(renderContext, cx - 3.5f, cy - 2f, cx, cy - 5.5f, fg, 1.4f)
+            MacosGraphicsDrawUtil.drawLine(renderContext, cx, cy - 5.5f, cx + 3.5f, cy - 2f, fg, 1.4f)
+            MacosGraphicsDrawUtil.drawLine(renderContext, cx - 3.5f, cy + 2f, cx, cy + 5.5f, fg, 1.4f)
+            MacosGraphicsDrawUtil.drawLine(renderContext, cx, cy + 5.5f, cx + 3.5f, cy + 2f, fg, 1.4f)
+
+            renderContext.registerHitRegion(
+                MacosHitRegion(
+                    left = bounds.x,
+                    top = bounds.y,
+                    right = bounds.right,
+                    bottom = bounds.bottom,
+                    widget = impl.nativeWidget,
+                    tooltip = impl.nativeWidget.tooltipText,
+                    cursorCss = "pointer",
+                    onClick = {
+                        if (impl.nativeWidget.enabled) {
+                            onRequestSelectPopup?.invoke(impl, bounds)
+                        }
+                    }
+                )
+            )
+        }
         return true
     }
 
     fun renderDropdown(
-        impl: DesktopDropdownNativeImpl<MacosViewHandle>,
+        impl: DesktopDropdownNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -676,65 +1342,323 @@ object MacosControlRenderUtil {
             bounds = bounds,
             renderContext = renderContext
         )
+
+        if (renderContext is MacosRenderContext) {
+            val fg = (impl.nativeWidget.attributes["_resolvedControlForeground"] as? RgbaColor)
+                ?: renderContext.palette.textPrimary
+            MacosGraphicsDrawUtil.drawText(
+                ctx = renderContext,
+                text = label,
+                x = bounds.x + 10,
+                y = bounds.y,
+                w = (bounds.width - 26).coerceAtLeast(1),
+                h = bounds.height,
+                color = fg,
+                fontSizePx = 13f
+            )
+            val cx = (bounds.right - 13).toFloat()
+            val cy = (bounds.y + bounds.height / 2).toFloat()
+            MacosGraphicsDrawUtil.drawLine(renderContext, cx - 4f, cy - 1.5f, cx, cy + 2.5f, fg, 1.5f)
+            MacosGraphicsDrawUtil.drawLine(renderContext, cx, cy + 2.5f, cx + 4f, cy - 1.5f, fg, 1.5f)
+
+            renderContext.registerHitRegion(
+                MacosHitRegion(
+                    left = bounds.x,
+                    top = bounds.y,
+                    right = bounds.right,
+                    bottom = bounds.bottom,
+                    widget = impl.nativeWidget,
+                    tooltip = impl.nativeWidget.tooltipText,
+                    cursorCss = "pointer",
+                    onClick = {
+                        if (impl.nativeWidget.enabled) {
+                            onRequestDropdownPopup?.invoke(impl, bounds)
+                        }
+                    }
+                )
+            )
+        }
         return true
     }
 
     fun renderRangeSlider(
-        impl: DesktopRangeSliderNativeImpl<MacosViewHandle>,
+        impl: DesktopRangeSliderNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
         syncStandardControlAppearance(impl, "NSSliderCell")
         val span = (impl.getMax() - impl.getMin()).coerceAtLeast(1e-6)
         val fraction = ((impl.getValue() - impl.getMin()) / span).toFloat().coerceIn(0f, 1f)
-        renderNativeControlWithOptionalBootstrapTint(
-            impl = impl,
-            cellClass = "NSSliderCell",
-            labelText = "",
-            bounds = bounds,
-            renderContext = renderContext,
-            progressFraction = fraction
+        if (renderContext !is MacosRenderContext) {
+            renderNativeControlWithOptionalBootstrapTint(
+                impl = impl,
+                cellClass = "NSSliderCell",
+                labelText = "",
+                bounds = bounds,
+                renderContext = renderContext,
+                progressFraction = fraction
+            )
+            return true
+        }
+
+        val trackPad = 8
+        val trackX = bounds.x + trackPad
+        val trackW = (bounds.width - trackPad * 2).coerceAtLeast(8)
+        val trackH = if (impl.isHoveredState() || impl.isActivePressedState()) 6 else 4
+        val trackY = bounds.y + (bounds.height - trackH) / 2
+        val activeType = impl.getStyleSnapshot().type?.takeIf { it != BootstrapType.NONE } ?: BootstrapType.PRIMARY
+        val accent = BootstrapColorPalette.resolveColor(activeType, renderContext.darkMode)
+
+        MacosGraphicsDrawUtil.fillRoundedRect(
+            renderContext,
+            trackX,
+            trackY,
+            trackW,
+            trackH,
+            trackH / 2f,
+            renderContext.palette.borderStrong
+        )
+        val bufferedFraction = (impl.nativeWidget.attributes["bufferedFraction"] as? String)?.toFloatOrNull()
+            ?: (impl.nativeWidget.attributes["bufferedFraction"] as? Number)?.toFloat()
+            ?: 0f
+        val bufferedW = (trackW * bufferedFraction.coerceIn(0f, 1f)).roundToInt()
+        if (bufferedW > 0) {
+            MacosGraphicsDrawUtil.fillRoundedRect(
+                renderContext,
+                trackX,
+                trackY,
+                bufferedW,
+                trackH,
+                trackH / 2f,
+                if (renderContext.darkMode) RgbaColor(255, 255, 255, 96) else RgbaColor(0, 0, 0, 64)
+            )
+        }
+        val fillW = (trackW * fraction).roundToInt()
+        if (fillW > 0) {
+            MacosGraphicsDrawUtil.fillRoundedRect(
+                renderContext,
+                trackX,
+                trackY,
+                fillW,
+                trackH,
+                trackH / 2f,
+                accent
+            )
+        }
+        val knobR = if (impl.isHoveredState() || impl.isActivePressedState()) 8 else 7
+        val knobCx = trackX + fillW
+        val knobCy = bounds.y + bounds.height / 2
+        MacosGraphicsDrawUtil.fillRoundedRect(
+            renderContext,
+            knobCx - knobR,
+            knobCy - knobR,
+            knobR * 2,
+            knobR * 2,
+            knobR.toFloat(),
+            RgbaColor.WHITE
+        )
+        MacosGraphicsDrawUtil.strokeRoundedRect(
+            renderContext,
+            knobCx - knobR,
+            knobCy - knobR,
+            knobR * 2,
+            knobR * 2,
+            knobR.toFloat(),
+            RgbaColor(0, 0, 0, 70),
+            1f
+        )
+
+        fun fractionAt(wx: Float): Double =
+            ((wx - trackX.toFloat()) / trackW.toFloat()).toDouble().coerceIn(0.0, 1.0)
+
+        renderContext.registerHitRegion(
+            MacosHitRegion(
+                left = bounds.x,
+                top = bounds.y,
+                right = bounds.right,
+                bottom = bounds.bottom,
+                widget = impl.nativeWidget,
+                tooltip = impl.nativeWidget.tooltipText,
+                cursorCss = "pointer",
+                onPress = { _, _, wx, _, _, _ ->
+                    if (impl.nativeWidget.enabled) {
+                        impl.beginDragFromFraction(fractionAt(wx))
+                    }
+                    true
+                },
+                onDrag = { _, _, wx, _ ->
+                    if (impl.nativeWidget.enabled) {
+                        impl.updateDragFromFraction(fractionAt(wx))
+                    }
+                },
+                onRelease = { _, _, wx, _, _ ->
+                    if (impl.nativeWidget.enabled) {
+                        impl.endDragFromFraction(fractionAt(wx))
+                    }
+                }
+            )
         )
         return true
     }
 
     fun renderProgressBar(
-        impl: DesktopProgressBarNativeImpl<MacosViewHandle>,
+        impl: DesktopProgressBarNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
         syncStandardControlAppearance(impl, "NSProgressIndicator_Bar_NSLevelIndicatorCell")
         val label = (impl.nativeWidget.attributes["label"] as? String).orEmpty()
-        renderNativeControlWithOptionalBootstrapTint(
-            impl = impl,
-            cellClass = "NSProgressIndicator_Bar_NSLevelIndicatorCell",
-            labelText = label,
-            bounds = bounds,
-            renderContext = renderContext,
-            progressFraction = if (impl.isIndeterminate()) 0.5f else impl.getProgress()
-        )
+        val frac = if (impl.isIndeterminate()) 0.45f else impl.getProgress().coerceIn(0f, 1f)
+        if (renderContext !is MacosRenderContext) {
+            renderNativeControlWithOptionalBootstrapTint(
+                impl = impl,
+                cellClass = "NSProgressIndicator_Bar_NSLevelIndicatorCell",
+                labelText = label,
+                bounds = bounds,
+                renderContext = renderContext,
+                progressFraction = frac
+            )
+            return true
+        }
+
+        val barH = bounds.height.coerceIn(6, 20)
+        val barY = bounds.y + (bounds.height - barH) / 2
+        val radius = barH / 2f
+        MacosGraphicsDrawUtil.fillRoundedRect(renderContext, bounds.x, barY, bounds.width, barH, radius, renderContext.palette.bgElevated)
+        val activeType = impl.getStyleSnapshot().type?.takeIf { it != BootstrapType.NONE } ?: BootstrapType.PRIMARY
+        val fillCol = BootstrapColorPalette.resolveColor(activeType, renderContext.darkMode)
+        val fillW = (bounds.width * frac).roundToInt()
+        if (fillW > 0) {
+            MacosGraphicsDrawUtil.fillRoundedRect(renderContext, bounds.x, barY, fillW, barH, radius, fillCol)
+        }
+        if (label.isNotBlank() && barH >= 14) {
+            MacosGraphicsDrawUtil.drawText(
+                renderContext,
+                label,
+                bounds.x + 6,
+                barY,
+                (bounds.width - 12).coerceAtLeast(1),
+                barH,
+                RgbaColor.WHITE,
+                11f,
+                600,
+                TextAlignment.CENTER
+            )
+        }
         return true
     }
 
     fun renderSpinner(
-        impl: DesktopSpinnerNativeImpl<MacosViewHandle>,
+        impl: DesktopSpinnerNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
         syncStandardControlAppearance(impl, "NSProgressIndicator_Spinning")
         val label = (impl.nativeWidget.attributes["label"] as? String).orEmpty()
-        renderNativeControlWithOptionalBootstrapTint(
-            impl = impl,
-            cellClass = "NSProgressIndicator_Spinning",
-            labelText = label,
-            bounds = bounds,
-            renderContext = renderContext
-        )
+        if (renderContext !is MacosRenderContext) {
+            renderNativeControlWithOptionalBootstrapTint(
+                impl = impl,
+                cellClass = "NSProgressIndicator_Spinning",
+                labelText = label,
+                bounds = bounds,
+                renderContext = renderContext
+            )
+            return true
+        }
+
+        // Authentic macOS 12-fin NSProgressIndicatorSpinningStyle
+        val diameter = min(bounds.width, bounds.height).coerceIn(14, 36)
+        val cx = bounds.x + diameter / 2f + (if (label.isBlank()) (bounds.width - diameter) / 2f else 0f)
+        val cy = bounds.y + bounds.height / 2f
+        val outerR = diameter * 0.45f
+        val innerR = diameter * 0.24f
+        val baseCol = impl.getStyleSnapshot().type?.takeIf { it != BootstrapType.NONE }?.let {
+            BootstrapColorPalette.resolveColor(it, renderContext.darkMode)
+        } ?: renderContext.palette.textSecondary
+
+        val phase = ((DesktopNativeWidget.globalTreeMutationVersion % 12L).toInt())
+        for (tick in 0 until 12) {
+            val angle = (tick * 30.0) * PI / 180.0
+            val rel = (tick - phase + 12) % 12
+            val alpha = (0.22f + (rel / 11f) * 0.78f).coerceIn(0.2f, 1f)
+            val x1 = cx + (cos(angle) * innerR).toFloat()
+            val y1 = cy + (sin(angle) * innerR).toFloat()
+            val x2 = cx + (cos(angle) * outerR).toFloat()
+            val y2 = cy + (sin(angle) * outerR).toFloat()
+            MacosGraphicsDrawUtil.drawLine(renderContext, x1, y1, x2, y2, baseCol.withAlpha(alpha), max(1.5f, diameter * 0.085f))
+        }
+        if (label.isNotBlank()) {
+            val lx = (cx + diameter * 0.5f + 8f).roundToInt()
+            MacosGraphicsDrawUtil.drawText(
+                renderContext,
+                label,
+                lx,
+                bounds.y,
+                (bounds.right - lx).coerceAtLeast(1),
+                bounds.height,
+                renderContext.palette.textSecondary,
+                13f
+            )
+        }
+        return true
+    }
+
+    fun renderImage(
+        impl: DesktopImageNativeImpl<DesktopNativeWidget>,
+        renderContext: Any?,
+        bounds: Rect = impl.nativeWidget.bounds
+    ): Boolean {
+        if (renderContext !is MacosRenderContext) return true
+        val imgTokens = impl.nativeWidget.cachedAllClassTokens
+        val radius = (impl.nativeWidget.attributes["borderRadiusPx"] as? Float)
+            ?: impl.getComponentStyle()?.borderRadius?.topLeft?.resolvePx()
+            ?: when {
+                "rounded-circle" in imgTokens || "native-row-image-circle" in imgTokens -> min(bounds.width, bounds.height) / 2f
+                "rounded-4" in imgTokens -> 12f
+                "rounded-3" in imgTokens -> 8f
+                "rounded" in imgTokens || "rounded-2" in imgTokens || "native-row-image-rounded" in imgTokens -> 6f
+                else -> 0f
+            }
+
+        val src = impl.getSourceUrl()?.trim()
+        val drawn = if (!src.isNullOrEmpty()) {
+            MacosGraphicsDrawUtil.drawIconOrUri(
+                ctx = renderContext,
+                uriOrIcon = src,
+                dstX = bounds.x,
+                dstY = bounds.y,
+                dstW = bounds.width,
+                dstH = bounds.height,
+                tintColor = impl.getTintColor(),
+                objectFit = impl.getObjectFit(),
+                cornerRadius = radius,
+                imageImpl = impl
+            )
+        } else {
+            false
+        }
+        if (!drawn) {
+            val ph = impl.getPlaceholderUrl()?.trim()
+            if (!ph.isNullOrEmpty()) {
+                MacosGraphicsDrawUtil.drawIconOrUri(
+                    ctx = renderContext,
+                    uriOrIcon = ph,
+                    dstX = bounds.x,
+                    dstY = bounds.y,
+                    dstW = bounds.width,
+                    dstH = bounds.height,
+                    cornerRadius = radius
+                )
+            }
+        }
+        if (impl.hasClickListener() || impl.nativeWidget.tooltipText != null) {
+            registerControlClickRegion(renderContext, impl, bounds)
+        }
         return true
     }
 
     fun renderContainer(
-        impl: DesktopContainerNativeImpl<MacosViewHandle>,
+        impl: DesktopContainerNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -754,7 +1678,7 @@ object MacosControlRenderUtil {
     }
 
     fun renderStyledContainer(
-        impl: DesktopStyledContainerNativeImpl<MacosViewHandle>,
+        impl: DesktopStyledContainerNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -768,7 +1692,7 @@ object MacosControlRenderUtil {
     }
 
     fun renderTabContainer(
-        impl: DesktopTabContainerNativeImpl<MacosViewHandle>,
+        impl: DesktopTabContainerNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -779,7 +1703,7 @@ object MacosControlRenderUtil {
     }
 
     fun renderTab(
-        impl: DesktopTabNativeImpl<MacosViewHandle>,
+        impl: DesktopTabNativeImpl<DesktopNativeWidget>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
     ): Boolean {
@@ -792,11 +1716,27 @@ object MacosControlRenderUtil {
             renderContext = renderContext,
             checked = impl.selectedVal
         )
+        if (renderContext is MacosRenderContext) {
+            val fg = if (impl.selectedVal) RgbaColor.WHITE else renderContext.palette.textPrimary
+            MacosGraphicsDrawUtil.drawText(
+                renderContext,
+                impl.titleVal,
+                bounds.x + 8,
+                bounds.y,
+                (bounds.width - 16).coerceAtLeast(1),
+                bounds.height,
+                fg,
+                13f,
+                if (impl.selectedVal) 600 else 500,
+                TextAlignment.CENTER
+            )
+            registerControlClickRegion(renderContext, impl, bounds)
+        }
         return true
     }
 
     fun renderTable(
-        impl: DesktopTableNativeImpl<MacosViewHandle>,
+        impl: DesktopTableNativeImpl<DesktopNativeWidget>,
         columnWeights: List<Float>,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
@@ -811,7 +1751,7 @@ object MacosControlRenderUtil {
     }
 
     fun renderLazyGrid(
-        impl: DesktopLazyGridNativeImpl<MacosViewHandle>,
+        impl: DesktopLazyGridNativeImpl<DesktopNativeWidget>,
         minColumnWidthPx: Int,
         renderContext: Any?,
         bounds: Rect = impl.nativeWidget.bounds
@@ -825,6 +1765,34 @@ object MacosControlRenderUtil {
         )
         impl.nativeWidget.attributes["effectiveColumns"] = effectiveCols
         return true
+    }
+
+    private fun registerControlClickRegion(
+        ctx: MacosRenderContext,
+        impl: DesktopBaseNativeImpl<DesktopNativeWidget>,
+        bounds: Rect
+    ) {
+        val widget = impl.nativeWidget
+        ctx.registerHitRegion(
+            MacosHitRegion(
+                left = bounds.x,
+                top = bounds.y,
+                right = bounds.right,
+                bottom = bounds.bottom,
+                widget = widget,
+                tooltip = widget.tooltipText,
+                cursorCss = if (widget.enabled && impl.hasClickListener()) "pointer" else null,
+                onClick = if (widget.enabled) {
+                    { impl.dispatchClick() }
+                } else null,
+                onDoubleClick = if (widget.enabled) {
+                    { impl.dispatchDoubleClick() }
+                } else null,
+                onContextMenu = if (widget.enabled) {
+                    { wx, wy -> impl.performContextMenu(wx, wy) }
+                } else null
+            )
+        )
     }
 
     fun computeWeightedColumnWidths(
@@ -928,7 +1896,6 @@ object MacosControlRenderUtil {
                 for (dx in 0..3) {
                     val px = gx + dx
                     if (px >= width - 2) continue
-                    // Deterministic glyph stroke pattern based on character code & pixel coordinate
                     val bit = ((ch.code + dx * 3 + (gy - topY) * 5) and 1) == 0 ||
                         gy == topY || (dx == 0 && gy < bottomY)
                     if (!bit) continue
