@@ -47,7 +47,6 @@ import platform.posix.getaddrinfo
 import platform.posix.gethostname
 import platform.posix.getsockname
 import platform.posix.in_addr
-import platform.posix.inet_addr
 import platform.posix.ip_mreq
 import platform.posix.memcpy
 import platform.posix.memset
@@ -94,7 +93,7 @@ actual open class LinuxPosixUdpSocketNativeImpl actual constructor() : DefaultUd
                 val bindIp = if (localHost.isBlank() || localHost == "0.0.0.0") {
                     INADDR_ANY
                 } else {
-                    val parsed = inet_addr(localHost)
+                    val parsed = parseIpv4Addr(localHost)
                     if (parsed == INADDR_NONE) INADDR_ANY else parsed
                 }
                 addr.sin_addr.s_addr = bindIp
@@ -129,12 +128,12 @@ actual open class LinuxPosixUdpSocketNativeImpl actual constructor() : DefaultUd
 
         runSocketIo {
             memScoped {
-                val groupIp = inet_addr(multicastAddress.trim())
+                val groupIp = parseIpv4Addr(multicastAddress.trim())
                 if (groupIp == INADDR_NONE) return@memScoped
                 val interfaces = LinkedHashSet<UInt>()
                 interfaces.add(INADDR_ANY)
                 interfaces.addAll(discoverLocalIpv4Addresses())
-                val lo = inet_addr("127.0.0.1")
+                val lo = parseIpv4Addr("127.0.0.1")
                 if (lo != INADDR_NONE) interfaces.add(lo)
 
                 for (ifaceIp in interfaces) {
@@ -154,7 +153,7 @@ actual open class LinuxPosixUdpSocketNativeImpl actual constructor() : DefaultUd
         if (fd >= 0 && !isDisposed) {
             runSocketIo {
                 memScoped {
-                    val groupIp = inet_addr(multicastAddress.trim())
+                    val groupIp = parseIpv4Addr(multicastAddress.trim())
                     if (groupIp != INADDR_NONE) {
                         val interfaces = LinkedHashSet<UInt>()
                         interfaces.add(INADDR_ANY)
@@ -324,6 +323,19 @@ actual open class LinuxPosixUdpSocketNativeImpl actual constructor() : DefaultUd
             }
         }
         list.toList()
+    }
+
+    private fun parseIpv4Addr(ip: String): UInt {
+        val parts = ip.trim().split('.')
+        if (parts.size != 4) return INADDR_NONE
+        val b0 = parts[0].toIntOrNull()?.takeIf { it in 0..255 } ?: return INADDR_NONE
+        val b1 = parts[1].toIntOrNull()?.takeIf { it in 0..255 } ?: return INADDR_NONE
+        val b2 = parts[2].toIntOrNull()?.takeIf { it in 0..255 } ?: return INADDR_NONE
+        val b3 = parts[3].toIntOrNull()?.takeIf { it in 0..255 } ?: return INADDR_NONE
+        return b0.toUInt() or
+            (b1.toUInt() shl 8) or
+            (b2.toUInt() shl 16) or
+            (b3.toUInt() shl 24)
     }
 
     private fun networkToHostU16(netPort: UShort): Int =
