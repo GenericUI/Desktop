@@ -5,7 +5,7 @@ plugins {
 kotlin {
     mingwX64 {
         binaries.all {
-            linkerOpts("-lole32", "-lcomdlg32", "-lgdi32", "-luser32")
+            linkerOpts("-lole32", "-lcomdlg32", "-lgdi32", "-luser32", "-lws2_32", "-lsecur32", "-lcrypt32")
         }
     }
 

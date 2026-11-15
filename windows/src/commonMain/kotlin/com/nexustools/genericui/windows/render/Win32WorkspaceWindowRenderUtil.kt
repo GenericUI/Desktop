@@ -843,11 +843,51 @@ object Win32WorkspaceWindowRenderUtil {
     private val activeScrollRegions = mutableListOf<IntArray>()
     private var currentClipTop: Int = 0
     private var currentClipBottom: Int = 10000
+    private var currentRootWidget: DesktopNativeWidget? = null
+    private var lastRenderedVideoWidgetPtr: Long = 0L
     internal var cachedVideoWidget: DesktopNativeWidget? = null
     internal var cachedOverlayWidget: DesktopNativeWidget? = null
     private var cachedOtherStageChildren: List<DesktopNativeWidget> = emptyList()
     private var cachedTitleBarWidgets: Set<DesktopNativeWidget> = emptySet()
     private var cachedVideoFullViewportMode: Boolean = false
+
+    private fun isWidgetAttachedAndVisible(widget: DesktopNativeWidget?, root: DesktopNativeWidget?): Boolean {
+        if (widget == null || root == null) return false
+        var cur: DesktopNativeWidget? = widget
+        var depth = 0
+        while (cur != null && depth < 64) {
+            if (!cur.visible || cur.disposed) return false
+            if (cur === root) return true
+            cur = cur.parentWidget
+            depth++
+        }
+        return false
+    }
+
+    private fun hasFullColumnStageClass(w: DesktopNativeWidget?): Boolean {
+        if (w == null) return false
+        return Win32NativeWindowHost.widgetHasClass(w, "milkdrop-stage-container") ||
+            Win32NativeWindowHost.widgetHasClass(w, "ec-milkdrop-stage-container") ||
+            Win32NativeWindowHost.widgetHasClass(w, "full-column-stage") ||
+            Win32NativeWindowHost.widgetHasClass(w, "music-primary-pane")
+    }
+
+    private fun isFullColumnHeightStage(vararg widgets: DesktopNativeWidget?): Boolean {
+        for (w in widgets) {
+            if (w == null) continue
+            var cur: DesktopNativeWidget? = w
+            var depth = 0
+            while (cur != null && depth < 10) {
+                if (hasFullColumnStageClass(cur)) return true
+                cur = cur.parentWidget
+                depth++
+            }
+            for (c in safeChildrenSnapshot(w)) {
+                if (hasFullColumnStageClass(c)) return true
+            }
+        }
+        return false
+    }
 
     internal fun resolveVideoStageHeight(
         availW: Int,
@@ -898,7 +938,12 @@ object Win32WorkspaceWindowRenderUtil {
     ): Boolean {
         val vWidget = cachedVideoWidget ?: return false
         val oWidget = cachedOverlayWidget ?: return false
-        if (vWidget.disposed || !vWidget.visible || oWidget.disposed || !oWidget.visible) return false
+        val root = currentRootWidget ?: Win32NativeWindowHost.activeWindowImpl?.nativeWidget
+        if (!isWidgetAttachedAndVisible(vWidget, root) || !isWidgetAttachedAndVisible(oWidget, root)) {
+            cachedVideoWidget = null
+            cachedOverlayWidget = null
+            return false
+        }
         if (cachedVideoFullViewportMode != isFullViewportVideoStage(vWidget, oWidget)) return false
         val vr = Win32NativeWindowHost.lastRenderedVideoStageRect
         if (vr[2] <= vr[0] || vr[3] <= vr[1]) return false
@@ -939,6 +984,7 @@ object Win32WorkspaceWindowRenderUtil {
     private val inFlightImageUrls = mutableSetOf<String>()
     private val inFlightCompositeKeys = mutableSetOf<String>()
     private val failedImageUrls = mutableSetOf<String>()
+    private val imageWaitingWidgets = mutableMapOf<String, MutableList<DesktopNativeWidget>>()
     private val sharedWicImageCodec = WindowsWicImageCodecNativeImpl()
     private val sharedHttpClient = WindowsHttpClientNativeImpl()
     private val imageFetchScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -1012,6 +1058,7 @@ object Win32WorkspaceWindowRenderUtil {
         bodyTop: Int
     ) {
         activeScrollRegions.clear()
+        currentRootWidget = rootWidget
         isFirstPaintOfLazyList = false
         hadFirstLazyPaintInFrame = false
         isResizeFrame = (lastRenderedClientW != 0 && (clientW != lastRenderedClientW || clientH != lastRenderedClientH))
@@ -1702,14 +1749,23 @@ object Win32WorkspaceWindowRenderUtil {
             return
         }
 
-        // If node itself is an interactive stage with overlaid HUD, render it directly
+        // If node itself (or its single full-column child) is an interactive stage with overlaid HUD, render it directly
         val directStageAndOverlay = findStageAndOverlay(node, titleBarWidgets)
+            ?: if (remainingChildren.size == 1 && isFullColumnHeightStage(node, remainingChildren.first())) {
+                val unwrappedSingle = unwrapShellContainers(remainingChildren.first(), titleBarWidgets)
+                findStageAndOverlay(unwrappedSingle, titleBarWidgets)
+                    ?: findStageAndOverlay(remainingChildren.first(), titleBarWidgets)
+            } else {
+                null
+            }
         if (directStageAndOverlay != null) {
             val (stageWidget, overlayWidget) = directStageAndOverlay
-            val otherChildren = visibleChildrenOf(node, titleBarWidgets).filter {
+            val stageHost = stageWidget.parentWidget ?: node
+            val otherChildren = visibleChildrenOf(stageHost, titleBarWidgets).filter {
                 it !== stageWidget && it !== overlayWidget
             }
-            val fullViewport = isFullViewportVideoStage(node, stageWidget, overlayWidget)
+            val fullViewport = isFullViewportVideoStage(node, stageHost, stageWidget, overlayWidget)
+            val fullColStage = isFullColumnHeightStage(node, stageHost, stageWidget, overlayWidget)
             renderVideoStageWithOverlay(
                 hwnd = hwnd,
                 hdc = hdc,
@@ -1726,7 +1782,7 @@ object Win32WorkspaceWindowRenderUtil {
                 left = if (fullViewport) 0 else left + 12,
                 top = if (fullViewport) curTop else curTop + 10,
                 right = if (fullViewport) right else right - 12,
-                bottomLimit = curBottom,
+                bottomLimit = if (fullColStage && !fullViewport) (curBottom - 10).coerceAtLeast(curTop + 190) else curBottom,
                 fullViewportMode = fullViewport
             )
             return
@@ -1826,11 +1882,33 @@ object Win32WorkspaceWindowRenderUtil {
             )
             val afterTabTop = min(curBottom, curTop + tabH)
             val siblingBodyList = remainingChildren.drop(1)
-            val bodyList = if (siblingBodyList.isNotEmpty()) {
+            val activeTabContent = resolveActiveTabContentWidgets(firstChild, titleBarWidgets)
+            val trailingFooters = if (activeTabContent.isNotEmpty()) {
                 siblingBodyList
             } else {
-                resolveActiveTabContentWidgets(firstChild, titleBarWidgets)
+                siblingBodyList.filter {
+                    Win32NativeWindowHost.widgetHasClass(it, "music-player-bar") ||
+                        Win32NativeWindowHost.widgetHasClass(it, "border-top")
+                }
             }
+            val bodyList = if (activeTabContent.isNotEmpty()) {
+                activeTabContent
+            } else {
+                siblingBodyList.filter { it !in trailingFooters }
+            }
+            val availFooterW = (right - left - 24).coerceAtLeast(120)
+            val footerHeights = trailingFooters.map { footer ->
+                val isPlayerBar = Win32NativeWindowHost.widgetHasClass(footer, "music-player-bar") ||
+                    Win32NativeWindowHost.widgetHasClass(footer, "border-top")
+                val est = estimateFlowNodeHeight(footer, titleBarWidgets, availFooterW)
+                if (isPlayerBar) {
+                    est.coerceIn(68, 120)
+                } else {
+                    est.coerceIn(36, 120)
+                }
+            }
+            val totalFooterH = footerHeights.sum()
+            val tabContentBottom = (curBottom - totalFooterH).coerceAtLeast(afterTabTop)
             if (bodyList.isNotEmpty()) {
                 renderTabContentList(
                     hwnd = hwnd,
@@ -1848,8 +1926,37 @@ object Win32WorkspaceWindowRenderUtil {
                     left = left,
                     top = afterTabTop,
                     right = right,
-                    bottom = curBottom
+                    bottom = tabContentBottom
                 )
+            } else if (tabContentBottom > afterTabTop) {
+                Win32NativeWindowHost.fillRectColor(hdc, left, afterTabTop, right, tabContentBottom, theme.bgBase)
+            }
+            var footerY = tabContentBottom
+            trailingFooters.forEachIndexed { idx, footer ->
+                val fH = footerHeights[idx]
+                val fBottom = min(curBottom, footerY + fH)
+                if (fBottom > footerY) {
+                    Win32NativeWindowHost.fillRectColor(hdc, left, footerY, right, fBottom, theme.bgPanel)
+                    Win32NativeWindowHost.drawLineColor(hdc, left, footerY, right, footerY, theme.borderSubtle)
+                    renderFlowNode(
+                        hwnd = hwnd,
+                        hdc = hdc,
+                        theme = theme,
+                        fontSmall = fontSmall,
+                        fontSmallBold = fontSmallBold,
+                        fontNormal = fontNormal,
+                        fontBold = fontBold,
+                        fontTitle = fontTitle,
+                        fontMetricBig = fontMetricBig,
+                        node = footer,
+                        titleBarWidgets = titleBarWidgets,
+                        left = left + 12,
+                        top = footerY + 6,
+                        right = right - 12,
+                        bottomLimit = fBottom - 4
+                    )
+                }
+                footerY = fBottom
             }
             return
         }
@@ -2317,6 +2424,11 @@ object Win32WorkspaceWindowRenderUtil {
         if (widget.attributes["nativeImpl"] is DesktopLazyListNativeImpl<*> || widget.attributes["isLazyList"] == true) {
             return true
         }
+        if (widget.attributes["nativeImpl"] is DesktopTabContainerNativeImpl<*>) {
+            for (activeChild in resolveActiveTabContentWidgets(widget, titleBarWidgets)) {
+                if (containsLazyListInSubtree(activeChild, titleBarWidgets, depth + 1)) return true
+            }
+        }
         for (child in visibleChildrenOf(widget, titleBarWidgets)) {
             if (containsLazyListInSubtree(child, titleBarWidgets, depth + 1)) return true
         }
@@ -2331,6 +2443,11 @@ object Win32WorkspaceWindowRenderUtil {
         if (widget == null || !widget.visible || widget.disposed || depth > 16) return null
         if (widget.attributes["nativeImpl"] is DesktopLazyListNativeImpl<*> || widget.attributes["isLazyList"] == true) {
             return widget
+        }
+        if (widget.attributes["nativeImpl"] is DesktopTabContainerNativeImpl<*>) {
+            for (activeChild in resolveActiveTabContentWidgets(widget, titleBarWidgets)) {
+                findFirstLazyListWidget(activeChild, titleBarWidgets, depth + 1)?.let { return it }
+            }
         }
         for (child in visibleChildrenOf(widget, titleBarWidgets)) {
             findFirstLazyListWidget(child, titleBarWidgets, depth + 1)?.let { return it }
@@ -2357,6 +2474,15 @@ object Win32WorkspaceWindowRenderUtil {
             return h
         }
         var acc = 0L
+        if (impl is DesktopTabContainerNativeImpl<*>) {
+            acc = acc * 31L + (impl.getSelectedTabIndex() + 1).toLong()
+            for (activeChild in resolveActiveTabContentWidgets(widget, titleBarWidgets)) {
+                val ch = computeLazySubtreeMutationHash(activeChild, titleBarWidgets, depth + 1)
+                if (ch != 0L) {
+                    acc = acc * 31L + ch
+                }
+            }
+        }
         for (child in visibleChildrenOf(widget, titleBarWidgets)) {
             val ch = computeLazySubtreeMutationHash(child, titleBarWidgets, depth + 1)
             if (ch != 0L) {
@@ -3258,7 +3384,12 @@ object Win32WorkspaceWindowRenderUtil {
                         dc.fullRowCacheKey.hoveredRightBtnPtr == 0L &&
                         dc.fullRowCacheKey.pressedRightBtnPtr == 0L
                     ) {
-                        cachedFullRowByWidgetPtr[fullRowPtrKey(dc.widgetPtr, dc.fullRowCacheKey.isRowHovered)] = dc.fullRowCacheKey to capturedRow
+                        val effectiveFullKey = if (dc.postHasActiveBgra != dc.fullRowCacheKey.hasActiveBgra) {
+                            dc.fullRowCacheKey.copy(hasActiveBgra = dc.postHasActiveBgra)
+                        } else {
+                            dc.fullRowCacheKey
+                        }
+                        cachedFullRowByWidgetPtr[fullRowPtrKey(dc.widgetPtr, effectiveFullKey.isRowHovered)] = effectiveFullKey to capturedRow
                     }
                 }
             }
@@ -4886,7 +5017,12 @@ object Win32WorkspaceWindowRenderUtil {
             val cardPadX = if (isZeroFrameCard) 0 else if (isPlayerOrFullWidthCard) 14 else 24
             val cardPadY = if (isZeroFrameCard) 0 else if (isPlayerOrFullWidthCard) 14 else 20
             val estimatedH = estimateVerticalStackHeight(node, children, titleBarWidgets, cardW - cardPadX * 2) + cardPadY * 2 + 8
-            val cardBottom = cardTop + max(56, estimatedH)
+            val isFullColumnStageCard = isFullColumnHeightStage(node) || children.any { isFullColumnHeightStage(it) }
+            val cardBottom = if (isFullColumnStageCard) {
+                max(cardTop + max(56, estimatedH), (min(bottomLimit, currentClipBottom) - 4))
+            } else {
+                cardTop + max(56, estimatedH)
+            }
             val canCacheCard = !isPlayerOrFullWidthCard &&
                 !containsLazyListInSubtree(node, titleBarWidgets) &&
                 children.none { it.attributes.containsKey("captureBgra") || it.attributes.containsKey("captureRgba") } &&
@@ -5172,12 +5308,23 @@ object Win32WorkspaceWindowRenderUtil {
         isFastPathStagePaint: Boolean = false
     ): Int {
         val availW = (right - left).coerceAtLeast(160)
-        val stageH = if (fullViewportMode) {
+        val fullHeightStage = fullViewportMode ||
+            isFullColumnHeightStage(videoWidget, overlayWidget, videoWidget.parentWidget, overlayWidget.parentWidget)
+        val stageH = if (fullViewportMode || isFastPathStagePaint) {
             (bottomLimit - top).coerceAtLeast(180)
+        } else if (fullHeightStage) {
+            (min(bottomLimit, currentClipBottom) - top - 4).coerceAtLeast(180)
         } else {
             resolveVideoStageHeight(availW, videoWidget, overlayWidget)
         }
         val stageBottom = top + stageH
+        if (lastRenderedVideoWidgetPtr != 0L && lastRenderedVideoWidgetPtr != videoWidget.nativePointer) {
+            cachedVideoStageSurfaces.clear()
+            lastPaintedVideoStageCacheKey = null
+            cachedColumnSurfaces.clear()
+            clearBackBufferRegionKeys()
+        }
+        lastRenderedVideoWidgetPtr = videoWidget.nativePointer
         Win32NativeWindowHost.lastRenderedVideoStageRect = intArrayOf(left, top, right, stageBottom)
         cachedVideoWidget = videoWidget
         cachedOverlayWidget = overlayWidget
@@ -5197,7 +5344,8 @@ object Win32WorkspaceWindowRenderUtil {
             (overlayWidget.attributes["onBeforeTargetFramePresent"] as? ((Long, Double?) -> Unit))?.invoke(videoSwapCount, null)
         }
         Win32NativeWindowHost.lastRenderedVideoSwapCount = videoSwapCount
-        val hasActiveVideoFrames = hasVideoSurface && videoSwapCount > 0L
+        val hasActiveVideoFrames = hasVideoSurface &&
+            (videoSwapCount > 0L || videoWidget.attributes.containsKey("offscreenCanvas3D"))
 
         // Extract overlay sections from `overlayWidget` (`topHudBar`, optional `centerOverlay`, and `transportBar`)
         val rawOverlayChildren = overlayWidget.children.filter { !it.disposed && it !in titleBarWidgets }
@@ -5822,7 +5970,8 @@ object Win32WorkspaceWindowRenderUtil {
                 it.attributes["nativeImpl"] is DesktopProgressBarNativeImpl<*> ||
                 Win32NativeWindowHost.widgetHasClass(it, "spinner-border")
         }
-        val showCenterButton = !(isPlaying && hasActiveVideoFrames && !hasCenterSpinner) || isStageHovered
+        val hasCenterOverlayControl = centerOverlay != null || playPauseBtnWidget != null || hasCenterSpinner
+        val showCenterButton = hasCenterOverlayControl && (!(isPlaying && hasActiveVideoFrames && !hasCenterSpinner) || isStageHovered)
         val hasVisiblePopup = settingsPanelWidget != null
 
         val stageCacheKey = if (!isResizeFrame && !hasVisiblePopup && !hadVisibleVideoStagePopupLastFrame && canUseSurfaceRegionCache(left, top, right, stageBottom)) {
@@ -5908,13 +6057,7 @@ object Win32WorkspaceWindowRenderUtil {
             val canSkipOuterBorderFill = hasActiveVideoFrames &&
                 isFastPathStagePaint &&
                 Win32NativeWindowHost.activeMainBackBufferPreserved &&
-                lastPaintedVideoStageHwnd == hwnd &&
-                lastPaintedVideoStageCacheKey != null &&
-                lastPaintedVideoStageCacheKey!!.left == left &&
-                lastPaintedVideoStageCacheKey!!.top == top &&
-                lastPaintedVideoStageCacheKey!!.width == availW &&
-                lastPaintedVideoStageCacheKey!!.height == stageH &&
-                lastPaintedVideoStageCacheKey!!.fullViewportMode == fullViewportMode
+                lastPaintedVideoStageHwnd == hwnd
             if (!canSkipOuterBorderFill) {
                 if (fullViewportMode) {
                     Win32NativeWindowHost.fillRectColor(hdc, left, top, right, stageBottom, 0x0A0705u)
@@ -6206,7 +6349,7 @@ object Win32WorkspaceWindowRenderUtil {
                         (centerOverlay?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>)?.dispatchClick()
                     }
                 }
-                if (drawBg && settingsPanelWidget == null) {
+                if (drawBg && settingsPanelWidget == null && (centerOverlay != null || playPauseBtnWidget != null)) {
                     Win32NativeWindowHost.addHitRegion(
                         Win32NativeWindowHost.HitRegion(
                             left = left + 8,
@@ -6337,7 +6480,7 @@ object Win32WorkspaceWindowRenderUtil {
                             }
                             curBtnX = bR + centerGap
                         }
-                    } else {
+                    } else if (centerOverlay != null || playPauseBtnWidget != null || hasCenterSpinner) {
                         if (drawBg) {
                             val isCenterPlayHovered = Win32NativeWindowHost.isRectHovered(hwnd, cx - 32, cy - 32, cx + 32, cy + 32)
                             Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
@@ -7560,6 +7703,7 @@ object Win32WorkspaceWindowRenderUtil {
             Win32NativeWindowHost.lastVideoStageFastBlitRect[3] = stageBottom
         } else {
             lastPaintedVideoStageCacheKey = null
+            lastPaintedVideoStageHwnd = hwnd
             lastPaintedTimePillTxt = ""
             Win32NativeWindowHost.lastVideoStageFastBlitRect[0] = left
             Win32NativeWindowHost.lastVideoStageFastBlitRect[1] = top
@@ -7684,7 +7828,6 @@ object Win32WorkspaceWindowRenderUtil {
         }
         if (fullRowCacheKey != null) {
             val cachedFullRow = cachedCompositeRowRegions[fullRowCacheKey]
-                ?: cachedCompositeRowRegions[fullRowCacheKey.copy(hasActiveBgra = !hasActiveBgra)]
             if (cachedFullRow != null && tryBlitCachedRegion(
                     region = cachedFullRow,
                     left = left,
@@ -7700,7 +7843,6 @@ object Win32WorkspaceWindowRenderUtil {
         }
         if (rowCacheKey != null && rowCacheKey != fullRowCacheKey) {
             val cachedRow = cachedCompositeRowRegions[rowCacheKey]
-                ?: cachedCompositeRowRegions[rowCacheKey.copy(hasActiveBgra = !hasActiveBgra)]
             if (cachedRow != null && tryBlitCachedRegion(cachedRow, left, visTop, right, visBottom)) {
                 return bottom
             }
@@ -7736,6 +7878,7 @@ object Win32WorkspaceWindowRenderUtil {
                     prevRegion.bgra.size >= oldW * rowH * 4 &&
                     prevKey.mutVer == rowWidget.subtreeMutationVersion &&
                     prevKey.isRowHovered == isRowHovered &&
+                    prevKey.hasActiveBgra == hasActiveBgra &&
                     prevKey.hoveredRightBtnPtr == hoveredRightBtnPtr &&
                     prevKey.pressedRightBtnPtr == pressedRightBtnPtr &&
                     prevKey.isDark == theme.isDark
@@ -7991,7 +8134,8 @@ object Win32WorkspaceWindowRenderUtil {
                 surfaceBgColorRef = theme.bgElevated,
                 drawBoxBackground = false,
                 drawBackground = true,
-                drawForeground = false
+                drawForeground = false,
+                suppressDefaultLoadingPlaceholder = true
             )
         } else {
             false
@@ -8181,7 +8325,7 @@ object Win32WorkspaceWindowRenderUtil {
                 colorRef = if (isDisabled) theme.textMuted else theme.textPrimary,
                 center = true
             )
-        } else if (!iconUrl.isNullOrBlank() && !drewIconImage) {
+        } else if (!iconUrl.isNullOrBlank() && !drewIconImage && withImageCacheLock { iconUrl.trim() in failedImageUrls }) {
             val iconOwner = imgChild ?: rowWidget
             val monogram = if (iconOwner.attributes["_cachedMonogramSrc"] == titleText) {
                 iconOwner.attributes["_cachedMonogram"] as? String ?: ""
@@ -8315,7 +8459,12 @@ object Win32WorkspaceWindowRenderUtil {
                         fullRowCacheKey.hoveredRightBtnPtr == 0L &&
                         fullRowCacheKey.pressedRightBtnPtr == 0L
                     ) {
-                        cachedFullRowByWidgetPtr[fullRowPtrKey(rowWidget.nativePointer, fullRowCacheKey.isRowHovered)] = fullRowCacheKey to captured
+                        val effectiveFullKey = if (postHasActiveBgra != fullRowCacheKey.hasActiveBgra) {
+                            fullRowCacheKey.copy(hasActiveBgra = postHasActiveBgra)
+                        } else {
+                            fullRowCacheKey
+                        }
+                        cachedFullRowByWidgetPtr[fullRowPtrKey(rowWidget.nativePointer, effectiveFullKey.isRowHovered)] = effectiveFullKey to captured
                     }
                 }
             }
@@ -8978,7 +9127,8 @@ object Win32WorkspaceWindowRenderUtil {
         drawBackground: Boolean = true,
         drawForeground: Boolean = true,
         transparentBackground: Boolean = false,
-        opacity: Float = 1f
+        opacity: Float = 1f,
+        suppressDefaultLoadingPlaceholder: Boolean = false
     ): Boolean {
         val boxW = (right - left).coerceAtLeast(1)
         val boxH = (bottom - top).coerceAtLeast(1)
@@ -9058,7 +9208,7 @@ object Win32WorkspaceWindowRenderUtil {
                 // While loading asynchronously (or if primary URL is empty/loading), render the placeholder image (`loading.svg` by default)
                 val cleanPlaceholder = placeholderUrl.trim().ifEmpty { ImageLoader.DEFAULT_PLACEHOLDER_URI }
                 val isLoading = cleanUrl.isNotEmpty() && withImageCacheLock { cleanUrl in inFlightImageUrls }
-                if (isLoading || cleanUrl.isEmpty()) {
+                if ((isLoading || cleanUrl.isEmpty()) && (!suppressDefaultLoadingPlaceholder || !isDefaultLoadingPlaceholderUrl(cleanPlaceholder))) {
                     val fastPlaceholder = (ownerWidget?.attributes?.get("activePlaceholderEntry") as? CompositeBgraEntry)
                         ?.takeIf { it.width == dstW && it.height == dstH }
                     fastPlaceholder ?: getOrFetchImageBgra(
@@ -9073,7 +9223,7 @@ object Win32WorkspaceWindowRenderUtil {
                         ownerWidget = ownerWidget
                     )
                 } else {
-                    if (cleanUrl.isNotEmpty() && ownerWidget != null) {
+                    if (cleanUrl.isNotEmpty() && !isLoading && ownerWidget != null) {
                         ownerWidget.attributes["_imgFailedUrl"] = cleanUrl
                     }
                     null
@@ -9267,6 +9417,12 @@ object Win32WorkspaceWindowRenderUtil {
                 }
                 target
             }
+            if (hit == null && ownerWidget != null && !isDefaultLoadingPlaceholderUrl(url) && url !in failedImageUrls) {
+                val waiters = imageWaitingWidgets.getOrPut(url) { mutableListOf() }
+                if (waiters.none { it === ownerWidget }) {
+                    waiters.add(ownerWidget)
+                }
+            }
             if (hit == null && (url in inFlightImageUrls || url in failedImageUrls)) {
                 skipBecauseInFlightOrFailed = true
             }
@@ -9384,7 +9540,7 @@ object Win32WorkspaceWindowRenderUtil {
                             surfaceBgColorRef = surfaceBgColorRef
                         )
                     }.getOrNull()
-                    withImageCacheLock {
+                    val waiters = withImageCacheLock {
                         inFlightCompositeKeys.remove(compositeKey)
                         if (entry != null) {
                             if (decodedImageBgraCache.size > 512) {
@@ -9393,14 +9549,32 @@ object Win32WorkspaceWindowRenderUtil {
                             }
                             putStrongCompositeBgraLruLocked(compositeKey, entry)
                             decodedImageBgraCache[compositeKey] = WeakReference(entry)
+                            imageWaitingWidgets.remove(url)?.toList().orEmpty()
+                        } else {
+                            emptyList()
                         }
                     }
                     if (entry != null) {
-                        ownerWidget?.attributes?.set("activeBgraEntry", entry)
-                        ownerWidget?.attributes?.set("activeBgraUrl", url)
-                        ownerWidget?.attributes?.set("activeBgraFilter", cssFilter ?: CssFilter.NONE)
-                        ownerWidget?.attributes?.set("activeBgraBg", surfaceBgColorRef)
-                        ownerWidget?.notifyTreeInvalidated()
+                        val toNotify = if (ownerWidget != null && waiters.none { it === ownerWidget }) {
+                            waiters + ownerWidget
+                        } else {
+                            waiters
+                        }
+                        for (w in toNotify) {
+                            w.attributes["activeBgraEntry"] = entry
+                            w.attributes["activeBgraUrl"] = url
+                            w.attributes["activeBgraFilter"] = cssFilter ?: CssFilter.NONE
+                            w.attributes["activeBgraBg"] = surfaceBgColorRef
+                            w.notifyTreeInvalidated()
+                        }
+                        cachedCompositeRowRegions.clear()
+                        cachedFullRowByWidgetPtr.clear()
+                        cachedLazyViewportSurfaces.clear()
+                        lastLazyViewportStateKey = null
+                        lastLazyViewportBaseKey = null
+                        cachedColumnSurfaces.clear()
+                        clearBackBufferRegionKeys()
+                        currentRootWidget?.let { it.subtreeMutationVersion++ }
                         Win32NativeWindowHost.markNonOverlayUiDirty(hwnd)
                     }
                 }
@@ -9458,15 +9632,9 @@ object Win32WorkspaceWindowRenderUtil {
                             surfaceBgColorRef = surfaceBgColorRef
                         )
                     }.getOrNull()
-                    ownerWidget?.attributes?.set("activeRawBuffer", rgbaBuf)
-                    if (entry != null) {
-                        ownerWidget?.attributes?.set("activeBgraEntry", entry)
-                        ownerWidget?.attributes?.set("activeBgraUrl", url)
-                    }
-                    ownerWidget?.notifyTreeInvalidated()
                     ImageLoader.trackWeakImageReference(url, rgbaBuf)
                     ImageCacheManager.putInCache(url, rgbaBuf)
-                    withImageCacheLock {
+                    val waiters = withImageCacheLock {
                         if (rawImageBufferCache.size > 512) {
                             val deadKeys = rawImageBufferCache.entries.filter { it.value.get() == null }.map { it.key }
                             for (k in deadKeys) rawImageBufferCache.remove(k)
@@ -9478,13 +9646,50 @@ object Win32WorkspaceWindowRenderUtil {
                             decodedImageBgraCache[compositeKey] = WeakReference(entry)
                         }
                         inFlightImageUrls.remove(url)
+                        imageWaitingWidgets.remove(url)?.toList().orEmpty()
                     }
+                    val toNotify = if (ownerWidget != null && waiters.none { it === ownerWidget }) {
+                        waiters + ownerWidget
+                    } else {
+                        waiters
+                    }
+                    for (w in toNotify) {
+                        w.attributes["activeRawBuffer"] = rgbaBuf
+                        if (entry != null) {
+                            w.attributes["activeBgraEntry"] = entry
+                            w.attributes["activeBgraUrl"] = url
+                            w.attributes["activeBgraFilter"] = cssFilter ?: CssFilter.NONE
+                            w.attributes["activeBgraBg"] = surfaceBgColorRef
+                        }
+                        w.notifyTreeInvalidated()
+                    }
+                    cachedCompositeRowRegions.clear()
+                    cachedFullRowByWidgetPtr.clear()
+                    cachedLazyViewportSurfaces.clear()
+                    lastLazyViewportStateKey = null
+                    lastLazyViewportBaseKey = null
+                    cachedColumnSurfaces.clear()
+                    clearBackBufferRegionKeys()
+                    currentRootWidget?.let { it.subtreeMutationVersion++ }
                     Win32NativeWindowHost.markNonOverlayUiDirty(hwnd)
                 } else {
-                    withImageCacheLock {
+                    val waiters = withImageCacheLock {
                         inFlightImageUrls.remove(url)
                         failedImageUrls.add(url)
+                        imageWaitingWidgets.remove(url)?.toList().orEmpty()
                     }
+                    for (w in waiters) {
+                        w.attributes["_imgFailedUrl"] = url
+                        w.notifyTreeInvalidated()
+                    }
+                    cachedCompositeRowRegions.clear()
+                    cachedFullRowByWidgetPtr.clear()
+                    cachedLazyViewportSurfaces.clear()
+                    lastLazyViewportStateKey = null
+                    lastLazyViewportBaseKey = null
+                    cachedColumnSurfaces.clear()
+                    clearBackBufferRegionKeys()
+                    Win32NativeWindowHost.markNonOverlayUiDirty(hwnd)
                 }
             }
         }

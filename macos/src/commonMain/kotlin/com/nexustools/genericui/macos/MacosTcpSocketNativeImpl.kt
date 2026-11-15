@@ -4,7 +4,6 @@ package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.io.ByteBuffer
 import com.nexustools.genericui.nativeimpl.net.DefaultTcpSocketNativeImpl
-import com.nexustools.genericui.threading.GenericUiThreading
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.IntVar
@@ -44,25 +43,32 @@ import platform.posix.fcntl
 import platform.posix.fd_set
 import platform.posix.freeaddrinfo
 import platform.posix.getaddrinfo
+import platform.posix.getsockname
 import platform.posix.getsockopt
+import platform.posix.memcpy
 import platform.posix.memset
 import platform.posix.posix_FD_SET
 import platform.posix.posix_FD_ZERO
+import platform.posix.posix_htons
 import platform.posix.recv
 import platform.posix.select
 import platform.posix.send
+import platform.posix.sockaddr_in
 import platform.posix.socket
 import platform.posix.timeval
+import kotlin.concurrent.AtomicInt
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.coroutineContext
 
 /**
  * macOS POSIX BSD / Network.framework implementation of
- * [com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl] with automatic loopback delegation
- * for unit tests when [MacosApplicationNativeImpl.interactiveMacosGuiEnabled] is `false`.
+ * [com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl].
  */
 class MacosTcpSocketNativeImpl : DefaultTcpSocketNativeImpl() {
     val nativeApi: String = "NWConnection_NetworkFramework"
 
     private var socketFd: Int = -1
+    private val readLock = AtomicInt(0)
     private var readerJob: Job? = null
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -72,27 +78,41 @@ class MacosTcpSocketNativeImpl : DefaultTcpSocketNativeImpl() {
         timeoutMs: Long,
         tls: Boolean
     ): Boolean {
-        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
-            return super.connect(host, port, timeoutMs, tls)
-        }
         if (isDisposed || host.isBlank() || port !in 1..65535) return false
 
-        val fd = withContext(Dispatchers.Default) {
-            openPosixTcpSocket(host, port, timeoutMs.coerceIn(250L, 60_000L))
+        val isLoopbackHost = host == "127.0.0.1" || host.equals("localhost", ignoreCase = true)
+        if (isLoopbackHost && hasLoopbackServer(port)) {
+            return super.connect(host, port, timeoutMs, tls)
+        }
+
+        val fd = runSocketIo {
+            openPosixTcpSocket(host.trim(), port, timeoutMs.coerceIn(250L, 60_000L))
         }
         if (fd < 0) return false
 
         socketFd = fd
-        remoteHost = host
-        remotePort = port
-        isConnected = true
-        startPosixReaderLoop(fd)
+        val boundLocalPort = queryLocalPort(fd)
+        markConnected(host, port, boundLocalPort)
+        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
+            startPosixReaderLoop(fd)
+        }
         return true
+    }
+
+    override suspend fun read(maxBytes: Int): ByteBuffer? {
+        if (isDisposed || isEnded) return null
+        val fd = socketFd
+        if (fd >= 0 && !hasBufferedInbound()) {
+            runSocketIo {
+                pollInboundOnce(fd, waitMs = 250L)
+            }
+        }
+        return super.read(maxBytes)
     }
 
     override fun write(chunk: ByteArray, offset: Int, length: Int): Boolean {
         val fd = socketFd
-        if (fd < 0 || !MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
+        if (fd < 0) {
             return super.write(chunk, offset, length)
         }
         if (!isWritable) return false
@@ -115,11 +135,8 @@ class MacosTcpSocketNativeImpl : DefaultTcpSocketNativeImpl() {
             }
             total == slice.size
         }
-        if (sentOk && writeListeners.isNotEmpty()) {
-            val buf = ByteBuffer.wrap(slice, byteOrder = byteOrder)
-            writeListeners.toList().forEach { it(buf.duplicate()) }
-        }
-        return sentOk
+        if (!sentOk) return false
+        return recordOutboundWrite(slice)
     }
 
     override fun dispose() {
@@ -190,48 +207,68 @@ class MacosTcpSocketNativeImpl : DefaultTcpSocketNativeImpl() {
         }
     }
 
+    private fun queryLocalPort(fd: Int): Int = memScoped {
+        val actualAddr = alloc<sockaddr_in>()
+        val lenVar = alloc<platform.posix.socklen_tVar>().apply { value = sizeOf<sockaddr_in>().convert() }
+        if (getsockname(fd, actualAddr.ptr.reinterpret(), lenVar.ptr) == 0) {
+            posix_htons(actualAddr.sin_port.toShort()).toInt() and 0xFFFF
+        } else {
+            0
+        }
+    }
+
+    private fun pollInboundOnce(fd: Int, waitMs: Long) {
+        if (!readLock.compareAndSet(0, 1)) return
+        try {
+            memScoped {
+                val readSet = alloc<fd_set>()
+                posix_FD_ZERO(readSet.ptr)
+                posix_FD_SET(fd, readSet.ptr)
+                val tv = alloc<timeval>()
+                tv.tv_sec = (waitMs / 1000L).convert()
+                tv.tv_usec = ((waitMs % 1000L) * 1000L).convert()
+
+                val ready = select(fd + 1, readSet.ptr, null, null, tv.ptr)
+                if (ready <= 0) return@memScoped
+
+                val bufSize = 16384
+                val rawBuf = allocArray<ByteVar>(bufSize)
+                val n = recv(fd, rawBuf, bufSize.convert(), 0).toInt()
+                if (n > 0) {
+                    val chunk = ByteArray(n)
+                    chunk.usePinned { pinned ->
+                        memcpy(pinned.addressOf(0), rawBuf, n.convert())
+                    }
+                    notifyInboundBytes(chunk)
+                } else if (n == 0) {
+                    markDisconnectedByPeer()
+                } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    markDisconnectedByPeer()
+                }
+            }
+        } finally {
+            readLock.value = 0
+        }
+    }
+
     private fun startPosixReaderLoop(fd: Int) {
         readerJob?.cancel()
         readerJob = ioScope.launch {
-            memScoped {
-                val bufSize = 8192
-                val rawBuf = allocArray<ByteVar>(bufSize)
-                while (isActive && socketFd == fd && !isDisposed) {
-                    val readSet = alloc<fd_set>()
-                    posix_FD_ZERO(readSet.ptr)
-                    posix_FD_SET(fd, readSet.ptr)
-                    val tv = alloc<timeval>()
-                    tv.tv_sec = 0
-                    tv.tv_usec = 100_000 // 100 ms
-                    val ready = select(fd + 1, readSet.ptr, null, null, tv.ptr)
-                    if (ready < 0) break
-                    if (ready == 0 || isPaused) continue
-
-                    val n = recv(fd, rawBuf, bufSize.convert(), 0).toInt()
-                    if (n > 0) {
-                        val chunk = ByteArray(n)
-                        chunk.usePinned { pinned ->
-                            platform.posix.memcpy(pinned.addressOf(0), rawBuf, n.convert())
-                        }
-                        pushInboundBytes(chunk)
-                        if (dataListeners.isNotEmpty()) {
-                            val wrapped = ByteBuffer.wrap(chunk, byteOrder = byteOrder)
-                            GenericUiThreading.runOnLogicAsync {
-                                dataListeners.toList().forEach { it(wrapped.duplicate()) }
-                            }
-                        }
-                    } else if (n == 0) {
-                        isConnected = false
-                        GenericUiThreading.runOnLogicAsync {
-                            endListeners.toList().forEach { it() }
-                        }
-                        break
-                    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                        isConnected = false
-                        break
-                    }
+            while (isActive && socketFd == fd && !isDisposed && isConnected) {
+                if (!isPaused) {
+                    pollInboundOnce(fd, waitMs = 50L)
+                } else {
+                    kotlinx.coroutines.delay(25L)
                 }
             }
+        }
+    }
+
+    private suspend inline fun <T> runSocketIo(crossinline block: () -> T): T {
+        return if (coroutineContext[ContinuationInterceptor] == null) {
+            block()
+        } else {
+            withContext(Dispatchers.Default) { block() }
         }
     }
 

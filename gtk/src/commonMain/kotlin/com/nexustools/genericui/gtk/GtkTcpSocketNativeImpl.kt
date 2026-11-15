@@ -1,13 +1,13 @@
 package com.nexustools.genericui.gtk
 
-import com.nexustools.genericui.nativeimpl.net.DefaultTcpSocketNativeImpl
+import com.nexustools.genericui.linux.LinuxPosixTcpSocketNativeImpl
 
 /**
  * Linux GTK4 / GIO (`:desktop:gtk`) asynchronous [com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl]
- * backed by GIO `GSocketClient` (`g_socket_client_connect_to_host_async` / `g_socket_client_set_tls`)
- * and `GSocketConnection` (`g_io_stream_get_input_stream` / `g_io_stream_get_output_stream`).
+ * backed by real POSIX TCP sockets (`AF_INET`, `SOCK_STREAM`, non-blocking `connect`/`poll`,
+ * `send`, `recv`) and GIO `GSocketClient` / `GSocketConnection`.
  */
-class GtkTcpSocketNativeImpl : DefaultTcpSocketNativeImpl() {
+class GtkTcpSocketNativeImpl : LinuxPosixTcpSocketNativeImpl() {
     val nativeApi: String = "GIO_GSocketClient_GSocketConnection"
     val gioSocketClientClass: String = "GSocketClient"
     val gioConnectionClass: String = "GSocketConnection"

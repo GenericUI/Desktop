@@ -1697,6 +1697,37 @@ object Win32NativeWindowHost {
     var visualTestMode: Boolean = false
     var visualTestBannerText: String? = null
 
+    fun stepLiveVBlankFrame(nowMsOverride: Double? = null): Boolean = memScoped {
+        val hwnd = activeHwnd ?: return@memScoped false
+        val nowMs = nowMsOverride ?: run {
+            val qpcFreq = alloc<LARGE_INTEGER>()
+            val qpcCounter = alloc<LARGE_INTEGER>()
+            QueryPerformanceFrequency(qpcFreq.ptr)
+            val ticksPerMs = (qpcFreq.QuadPart.toDouble() / 1000.0).coerceAtLeast(1.0)
+            QueryPerformanceCounter(qpcCounter.ptr)
+            qpcCounter.QuadPart.toDouble() / ticksPerMs
+        }
+        isDispatchingVBlank = true
+        vblankTreeInvalidated = false
+        overlayMutatedDuringVBlank = false
+        val anyVBlank = try {
+            dispatchActiveVBlankWidgets(activeWindowImpl?.nativeWidget, nowMs)
+        } finally {
+            isDispatchingVBlank = false
+        }
+        if (anyVBlank || vblankTreeInvalidated || overlayMutatedDuringVBlank) {
+            val vr = lastRenderedVideoStageRect
+            if (vr[2] > vr[0] && vr[3] > vr[1]) {
+                markVideoStageDirty(hwnd)
+            } else {
+                isVBlankVideoStageOnlyRepaint = false
+                InvalidateRect(hwnd, null, 0)
+            }
+            UpdateWindow(hwnd)
+        }
+        anyVBlank
+    }
+
     fun pumpVisualWindowEvents(durationMs: Long = 32L) = memScoped {
         val hwnd = activeHwnd ?: return@memScoped
         val qpcFreq = alloc<LARGE_INTEGER>()
@@ -1920,23 +1951,42 @@ object Win32NativeWindowHost {
                 }
             } else {
                 val remainingMs = targetFrameIntervalMs - elapsedMs
-                val waitMs = (remainingMs - 1.0).toInt().coerceIn(1, 16).toUInt()
+                val hasActiveVBlank = DesktopNativeWidget.activeVBlankWidgetsSnapshot().isNotEmpty()
+                val waitMs = if (hasActiveVBlank) {
+                    if (remainingMs > 16.0) 1u else 0u
+                } else {
+                    (remainingMs - 1.0).toInt().coerceIn(1, 16).toUInt()
+                }
                 // 0x0004u = MWMO_INPUTAVAILABLE so any message or WM_PAINT already in the queue wakes immediately
                 val waitRes = MsgWaitForMultipleObjectsEx(0u, null, waitMs, QS_ALLINPUT.toUInt(), 0x0004u)
-                if (waitRes == 0u && PeekMessageW(msg.ptr, null, 0u, 0u, PM_NOREMOVE.toUInt()) == 0) {
+                if (!hasActiveVBlank && waitRes == 0u && PeekMessageW(msg.ptr, null, 0u, 0u, PM_NOREMOVE.toUInt()) == 0) {
                     Sleep(1u)
                 }
             }
         }
     }
 
+    private fun isWidgetAttachedAndVisible(widget: DesktopNativeWidget?, root: DesktopNativeWidget?): Boolean {
+        if (widget == null || root == null) return false
+        var cur: DesktopNativeWidget? = widget
+        var depth = 0
+        while (cur != null && depth < 64) {
+            if (!cur.visible || cur.disposed) return false
+            if (cur === root) return true
+            cur = cur.parentWidget
+            depth++
+        }
+        return false
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun dispatchActiveVBlankWidgets(rootWidget: DesktopNativeWidget?, timestampMs: Double): Boolean {
+        val root = rootWidget ?: activeWindowImpl?.nativeWidget ?: return false
         val registered = DesktopNativeWidget.activeVBlankWidgetsSnapshot()
         if (registered.isNotEmpty()) {
             var dispatched = false
             for (widget in registered) {
-                if (!widget.visible || widget.disposed) continue
+                if (!isWidgetAttachedAndVisible(widget, root)) continue
                 val vblankFn = widget.attributes["vblankDispatch"] as? ((Double?) -> Unit) ?: continue
                 val swapFn = widget.attributes["swapCount"] as? (() -> Long)
                 val prevSwap = swapFn?.invoke() ?: -1L
@@ -1949,7 +1999,7 @@ object Win32NativeWindowHost {
             }
             return dispatched
         }
-        return dispatchVBlankTree(rootWidget, timestampMs)
+        return dispatchVBlankTree(root, timestampMs)
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -4717,10 +4767,12 @@ object Win32NativeWindowHost {
         val captureBgraPtrFn = canvasWidget.attributes["captureBgraPtr"] as? (() -> Pair<COpaquePointer?, Int>)
         val captureBgraFn = canvasWidget.attributes["captureBgra"] as? (() -> ByteArray)
 
-        if (registerAsPrimaryCanvas) {
-            val curW = (surfWFn?.invoke() ?: drawW).coerceAtLeast(1)
-            val curH = (surfHFn?.invoke() ?: drawH).coerceAtLeast(1)
-            if (curW != drawW || curH != drawH) {
+        if (registerAsPrimaryCanvas || canvasWidget.attributes.containsKey("offscreenCanvas3D")) {
+            val prevReqW = (canvasWidget.attributes["_lastRequestedLogicalW"] as? Int) ?: -1
+            val prevReqH = (canvasWidget.attributes["_lastRequestedLogicalH"] as? Int) ?: -1
+            if (drawW != prevReqW || drawH != prevReqH) {
+                canvasWidget.attributes["_lastRequestedLogicalW"] = drawW
+                canvasWidget.attributes["_lastRequestedLogicalH"] = drawH
                 runCatching { resizeFn?.invoke(drawW, drawH) }
             }
         }
@@ -4806,20 +4858,6 @@ object Win32NativeWindowHost {
                     }
                     GdiFlush()
                     markFrameBufferDirty(left, top, left + drawW, top + drawH)
-                    val neededBytes = drawW * drawH * 4
-                    val targetArray = if (cachedScaled != null && cachedScaled.size == neededBytes) {
-                        cachedScaled
-                    } else {
-                        ByteArray(neededBytes).also { canvasWidget.attributes["_inlineScaledBgra"] = it }
-                    }
-                    val dstRowBytes = (drawW * 4).toULong()
-                    targetArray.usePinned { dstPin ->
-                        val dstBase = dstPin.addressOf(0)
-                        for (dy in 0 until drawH) {
-                            val srcRowPtr = bufPixels + ((top + dy) * bufW + left) * 4
-                            platform.posix.memcpy(dstBase + (dy * drawW * 4), srcRowPtr, dstRowBytes)
-                        }
-                    }
                     canvasWidget.attributes["_inlineScaledSwap"] = swapCount
                     canvasWidget.attributes["_inlineScaledW"] = drawW
                     canvasWidget.attributes["_inlineScaledH"] = drawH
@@ -4953,6 +4991,100 @@ object Win32NativeWindowHost {
             }
         }
         if (bgra != null && bgra.size >= surfW * surfH * 4) {
+            if (preferHardwareStretch && drawW in 1..4096 && drawH in 1..4096) {
+                val bufPixels = if (hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null) activeBackBufferPixels else cachedMainBackBufferPixels
+                val bufW = if (hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null) activeBackBufferWidth else cachedMainBackBufferWidth
+                val bufH = if (hdc != null && hdc == activeBackBufferDc && activeBackBufferPixels != null) activeBackBufferHeight else cachedMainBackBufferHeight
+                if (bufPixels != null && left >= 0 && top >= 0 && left + drawW <= bufW && top + drawH <= bufH) {
+                    flushGdiIfOverlapping(left, top, left + drawW, top + drawH)
+                    markFrameBufferDirty(left, top, left + drawW, top + drawH)
+                    val neededBytes = drawW * drawH * 4
+                    val targetArray = if (cachedScaled != null && cachedScaled.size == neededBytes) {
+                        cachedScaled
+                    } else {
+                        ByteArray(neededBytes).also { canvasWidget.attributes["_inlineScaledBgra"] = it }
+                    }
+                    if (sharedResampleSrcRow0.size < surfW) sharedResampleSrcRow0 = IntArray(max(surfW, 4096))
+                    if (sharedResampleDstRow.size < drawW) sharedResampleDstRow = IntArray(max(drawW, 4096))
+                    ensureResampleHorizontalTables(surfW, drawW)
+                    val xMap = cachedResampleXMap
+                    val row0Arr = sharedResampleSrcRow0
+                    val dstRowArr = sharedResampleDstRow
+                    val srcRowBytes = (surfW * 4).toULong()
+                    val dstRowBytes = (drawW * 4).toULong()
+                    bgra.usePinned { bgraPin ->
+                        row0Arr.usePinned { row0Pin ->
+                            dstRowArr.usePinned { dstRowPin ->
+                                targetArray.usePinned { targetPin ->
+                                    val srcBytePtr = bgraPin.addressOf(0)
+                                    val row0Ptr = row0Pin.addressOf(0)
+                                    val dstRowPtr = dstRowPin.addressOf(0)
+                                    val targetPtr = targetPin.addressOf(0)
+                                    var loadedSy = -1
+                                    for (dy in 0 until drawH) {
+                                        val sy = (dy * surfH) / drawH
+                                        if (sy != loadedSy) {
+                                            loadedSy = sy
+                                            platform.posix.memcpy(row0Ptr, srcBytePtr + (sy * surfW * 4), srcRowBytes)
+                                            for (dx in 0 until drawW) {
+                                                dstRowArr[dx] = row0Arr[xMap[dx]]
+                                            }
+                                        }
+                                        val dstRowBackPtr = bufPixels + ((top + dy) * bufW + left) * 4
+                                        platform.posix.memcpy(dstRowBackPtr, dstRowPtr, dstRowBytes)
+                                        platform.posix.memcpy(targetPtr + (dy * drawW * 4), dstRowPtr, dstRowBytes)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    canvasWidget.attributes["_inlineScaledSwap"] = swapCount
+                    canvasWidget.attributes["_inlineScaledW"] = drawW
+                    canvasWidget.attributes["_inlineScaledH"] = drawH
+                    if (!suppressBorder) {
+                        drawRectBorder(hdc, left, top, right, bottom, theme.borderSubtle)
+                    }
+                    return
+                }
+                flushGdiIfOverlapping(left, top, left + drawW, top + drawH)
+                memScoped {
+                    val bmi = alloc<BITMAPINFO>()
+                    bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
+                    bmi.bmiHeader.biWidth = surfW
+                    bmi.bmiHeader.biHeight = -surfH
+                    bmi.bmiHeader.biPlanes = 1u
+                    bmi.bmiHeader.biBitCount = 32u
+                    bmi.bmiHeader.biCompression = BI_RGB.toUInt()
+
+                    SetStretchBltMode(hdc, COLORONCOLOR)
+                    bgra.usePinned { pinned ->
+                        StretchDIBits(
+                            hdc,
+                            left,
+                            top,
+                            drawW,
+                            drawH,
+                            0,
+                            0,
+                            surfW,
+                            surfH,
+                            pinned.addressOf(0),
+                            bmi.ptr,
+                            DIB_RGB_COLORS.toUInt(),
+                            SRCCOPY
+                        )
+                    }
+                }
+                GdiFlush()
+                markFrameBufferDirty(left, top, left + drawW, top + drawH)
+                canvasWidget.attributes["_inlineScaledSwap"] = swapCount
+                canvasWidget.attributes["_inlineScaledW"] = drawW
+                canvasWidget.attributes["_inlineScaledH"] = drawH
+                if (!suppressBorder) {
+                    drawRectBorder(hdc, left, top, right, bottom, theme.borderSubtle)
+                }
+                return
+            }
             val sizeJustChanged = prevScaledW != 0 && (drawW != prevScaledW || drawH != prevScaledH)
             if (sizeJustChanged) {
                 canvasWidget.attributes["_inlineScaledW"] = drawW
