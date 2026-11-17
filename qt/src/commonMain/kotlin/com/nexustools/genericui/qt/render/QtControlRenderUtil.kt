@@ -604,13 +604,34 @@ object QtControlRenderUtil {
         } else {
             impl.getValue().ifEmpty { impl.getPlaceholder() }
         }
-        renderNativeControlWithOptionalBootstrapTint(
+        val spritePixels = renderNativeControlWithOptionalBootstrapTint(
             impl = impl,
             qStyleControlElement = elem,
             labelText = display,
             bounds = bounds,
             renderContext = renderContext
         )
+        val fieldLabel = impl.getLabel()?.trim()?.takeIf { it.isNotEmpty() }
+        if (fieldLabel != null) {
+            impl.nativeWidget.attributes["lastRenderedLabel"] = fieldLabel
+            val w = bounds.width.coerceAtLeast(24).coerceAtMost(512)
+            val h = bounds.height.coerceAtLeast(20).coerceAtMost(256)
+            val isDark = syncThemeAttributes(impl.nativeWidget)
+            val captionColor = if (isDark) RgbaColor(180, 190, 208) else RgbaColor(82, 92, 108)
+            overlayTopBorderCaptionGlyphs(
+                pixels = spritePixels,
+                width = w,
+                height = h,
+                caption = fieldLabel,
+                foreground = captionColor,
+                disabled = !impl.nativeWidget.enabled
+            )
+            if (renderContext is IntArray && renderContext.size >= spritePixels.size) {
+                spritePixels.copyInto(renderContext, destinationOffset = 0, startIndex = 0, endIndex = spritePixels.size)
+            }
+        } else {
+            impl.nativeWidget.attributes.remove("lastRenderedLabel")
+        }
         return true
     }
 
@@ -923,6 +944,57 @@ object QtControlRenderUtil {
                     if (px >= width - 2) continue
                     val bit = ((ch.code + dx * 3 + (gy - topY) * 5) and 1) == 0 ||
                         gy == topY || (dx == 0 && gy < bottomY)
+                    if (!bit) continue
+                    val idx = rowOffset + px
+                    val dst = pixels[idx]
+                    val dstA = (dst ushr 24) and 0xFF
+                    val dstR = (dst ushr 16) and 0xFF
+                    val dstG = (dst ushr 8) and 0xFF
+                    val dstB = dst and 0xFF
+                    val outR = (dstR * (1f - fgAlpha) + foreground.r * fgAlpha).roundToInt().coerceIn(0, 255)
+                    val outG = (dstG * (1f - fgAlpha) + foreground.g * fgAlpha).roundToInt().coerceIn(0, 255)
+                    val outB = (dstB * (1f - fgAlpha) + foreground.b * fgAlpha).roundToInt().coerceIn(0, 255)
+                    val outA = max(dstA, (fgAlpha * 255f).roundToInt()).coerceIn(0, 255)
+                    pixels[idx] = (outA shl 24) or (outR shl 16) or (outG shl 8) or outB
+                }
+            }
+        }
+    }
+
+    private fun overlayTopBorderCaptionGlyphs(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        caption: String,
+        foreground: RgbaColor,
+        disabled: Boolean
+    ) {
+        if (width < 24 || height < 12 || caption.isBlank()) return
+        val maxGlyphs = ((width - 20).coerceAtLeast(0)) / 5
+        val glyphCount = min(caption.length, maxGlyphs)
+        if (glyphCount <= 0) return
+        val startX = 10
+        val spanW = glyphCount * 5 + 4
+        val interiorSample = pixels[min(4, height - 1) * width + min(startX, width - 1)]
+        val maskEndX = min(width - 2, startX + spanW)
+        for (my in 0..min(2, height - 1)) {
+            val rowOffset = my * width
+            for (mx in (startX - 2).coerceAtLeast(1) until maskEndX) {
+                pixels[rowOffset + mx] = interiorSample
+            }
+        }
+        val fgAlpha = ((if (disabled) foreground.a * 0.6f else foreground.a.toFloat()) / 255f).coerceIn(0f, 1f)
+        for (i in 0 until glyphCount) {
+            val ch = caption[i]
+            if (ch.isWhitespace()) continue
+            val gx = startX + i * 5
+            for (gy in 0..min(4, height - 2)) {
+                val rowOffset = gy * width
+                for (dx in 0..3) {
+                    val px = gx + dx
+                    if (px >= width - 2) continue
+                    val bit = ((ch.code + dx * 3 + gy * 5) and 1) == 0 ||
+                        gy == 0 || (dx == 0 && gy < 4)
                     if (!bit) continue
                     val idx = rowOffset + px
                     val dst = pixels[idx]

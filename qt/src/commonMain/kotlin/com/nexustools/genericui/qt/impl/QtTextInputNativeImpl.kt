@@ -47,6 +47,11 @@ open class QtTextInputNativeImpl(
         syncAppearance()
     }
 
+    override fun setLabel(label: String?) {
+        super.setLabel(label)
+        syncAppearance()
+    }
+
     override fun setMultiline(multiline: Boolean) {
         super.setMultiline(multiline)
         syncAppearance()

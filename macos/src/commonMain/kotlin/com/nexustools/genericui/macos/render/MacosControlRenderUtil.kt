@@ -1066,6 +1066,12 @@ object MacosControlRenderUtil {
             bounds = bounds,
             renderContext = renderContext
         )
+        val fieldLabel = impl.getLabel()?.trim()?.takeIf { it.isNotEmpty() }
+        if (fieldLabel != null) {
+            impl.nativeWidget.attributes["lastRenderedLabel"] = fieldLabel
+        } else {
+            impl.nativeWidget.attributes.remove("lastRenderedLabel")
+        }
 
         if (renderContext is MacosRenderContext) {
             val isFocused = renderContext.focusedWidget === impl.nativeWidget || impl.isFocusedState()
@@ -1079,6 +1085,42 @@ object MacosControlRenderUtil {
                     6f,
                     renderContext.palette.accentPrimary,
                     2f
+                )
+            }
+            if (fieldLabel != null && bounds.width >= 36) {
+                val capSize = MacosGraphicsDrawUtil.measureText(
+                    text = fieldLabel,
+                    fontSizePx = 11f,
+                    weightNumeric = 500,
+                    singleLine = true
+                )
+                val capPadX = 4
+                val maxCapW = (bounds.width - 20).coerceAtLeast(12)
+                val capW = (capSize.width + capPadX * 2).coerceAtMost(maxCapW)
+                val capH = capSize.height.coerceAtLeast(13)
+                val capX = bounds.x + 10
+                val capY = bounds.y - capH / 2
+                MacosGraphicsDrawUtil.fillRect(
+                    renderContext,
+                    capX - 2,
+                    bounds.y - 2,
+                    capW + 4,
+                    4,
+                    renderContext.palette.bgInput
+                )
+                val capColor = if (isFocused) renderContext.palette.accentPrimary else renderContext.palette.textSecondary
+                MacosGraphicsDrawUtil.drawText(
+                    ctx = renderContext,
+                    text = fieldLabel,
+                    x = capX + capPadX,
+                    y = capY,
+                    w = (capW - capPadX * 2).coerceAtLeast(1),
+                    h = capH,
+                    color = capColor,
+                    fontSizePx = 11f,
+                    weightNumeric = 500,
+                    singleLine = true,
+                    verticallyCentered = true
                 )
             }
             val isPlaceholder = rawVal.isEmpty()

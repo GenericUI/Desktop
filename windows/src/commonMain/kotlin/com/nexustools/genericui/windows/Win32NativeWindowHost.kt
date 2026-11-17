@@ -2405,6 +2405,30 @@ object Win32NativeWindowHost {
             drawTextInRect(hdc, display, left + 8, top + 2, right - 8, bottom - 2, fg)
         }
 
+        val fieldLabel = (inputImpl.getLabel() ?: widget.attributes["label"] as? String)?.trim()?.takeIf { it.isNotEmpty() }
+        if (fieldLabel != null && right - left >= 32) {
+            val availW = (right - left - 24).coerceAtLeast(12)
+            val measuredW = measureSingleLineTextWidthWithFont(fieldLabel, fontKind = -1)
+            val capW = measuredW.coerceAtMost(availW)
+            val capLeft = left + 10
+            val capRight = (capLeft + capW + 8).coerceAtMost(right - 8)
+            fillRectColor(hdc, capLeft - 2, top - 1, capRight + 2, top + 3, bg)
+            val labelFont = cachedFontSmall ?: effectiveFont
+            if (labelFont != null) {
+                SelectObject(hdc, labelFont)
+            }
+            drawTextInRect(
+                hdc = hdc,
+                text = fieldLabel,
+                left = capLeft + 2,
+                top = top - 6,
+                right = capRight - 2,
+                bottom = top + 7,
+                colorRef = if (isFocused) theme.accentBlueBorder else theme.textSecondary,
+                center = false
+            )
+        }
+
         addHitRegion(
             HitRegion(
                 left = left,

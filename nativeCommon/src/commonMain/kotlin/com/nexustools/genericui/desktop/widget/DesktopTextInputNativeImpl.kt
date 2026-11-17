@@ -14,6 +14,7 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
 
     protected var textValue: String = ""
     protected var placeholderText: String = ""
+    protected var labelText: String? = null
     protected var readOnlyState: Boolean = false
     protected var passwordModeState: Boolean = false
     protected var multilineState: Boolean = multiline
@@ -43,6 +44,20 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun getPlaceholder(): String = placeholderText
+
+    override fun setLabel(label: String?) {
+        val normalized = label?.takeIf { it.isNotBlank() }
+        if (labelText == normalized) return
+        labelText = normalized
+        if (normalized != null) {
+            nativeWidget.attributes["label"] = normalized
+        } else {
+            nativeWidget.attributes.remove("label")
+        }
+        nativeWidget.notifyTreeInvalidated()
+    }
+
+    override fun getLabel(): String? = labelText
 
     override fun setReadOnly(readOnly: Boolean) {
         readOnlyState = readOnly

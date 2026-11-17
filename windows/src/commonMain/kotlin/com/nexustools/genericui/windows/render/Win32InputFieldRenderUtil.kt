@@ -136,6 +136,7 @@ object Win32InputFieldRenderUtil {
             )
         }
 
+        drawTopBorderCaptionLabel(ctx, widget, inputImpl, left, top, right)
         registerInputHitRegion(ctx, widget, inputImpl, left, top, right, bottom)
         return bottom
     }
@@ -215,6 +216,7 @@ object Win32InputFieldRenderUtil {
             colorRef = if (rawValue.isEmpty()) ctx.textMutedColorRef else ctx.textPrimaryColorRef
         )
 
+        drawTopBorderCaptionLabel(ctx, widget, inputImpl, left, top, right)
         registerInputHitRegion(ctx, widget, inputImpl, left, top, right, bottom)
         return bottom
     }
@@ -323,6 +325,7 @@ object Win32InputFieldRenderUtil {
             lineY += 18
         }
 
+        drawTopBorderCaptionLabel(ctx, widget, inputImpl, left, top, right)
         registerInputHitRegion(ctx, widget, inputImpl, left, top, right, bottom)
         return bottom
     }
@@ -446,6 +449,7 @@ object Win32InputFieldRenderUtil {
             colorRef = ctx.textSecondaryColorRef,
             center = true
         )
+        drawTopBorderCaptionLabel(ctx, widget, inputImpl, left, top, right)
         registerInputHitRegion(ctx, widget, inputImpl, left, top, right, bottom)
         return bottom
     }
@@ -544,6 +548,37 @@ object Win32InputFieldRenderUtil {
                 borderColor = if (focused) ctx.accentBlueColorRef else ctx.borderSubtleColorRef
             )
         }
+    }
+
+    internal fun drawTopBorderCaptionLabel(
+        ctx: Win32RenderContext,
+        widget: DesktopNativeWidget,
+        inputImpl: DesktopTextInputNativeImpl<*>?,
+        left: Int,
+        top: Int,
+        right: Int
+    ) {
+        val rawLabel = inputImpl?.getLabel() ?: (widget.attributes["label"] as? String)
+        val clean = rawLabel?.trim()?.takeIf { it.isNotEmpty() } ?: return
+        if (right - left < 32) return
+        val focused = inputImpl?.isFocusedState() == true || widget.attributes["focused"] == true
+        val availW = (right - left - 24).coerceAtLeast(12)
+        val measuredW = Win32NativeWindowHost.measureSingleLineTextWidthWithFont(clean, fontKind = -1)
+        val capW = measuredW.coerceAtMost(availW)
+        val capLeft = left + 10
+        val capRight = (capLeft + capW + 8).coerceAtMost(right - 8)
+        Win32NativeWindowHost.fillRectColor(ctx.hdc, capLeft - 2, top - 1, capRight + 2, top + 3, ctx.bgBaseColorRef)
+        ctx.selectFont(ctx.fontSmall ?: ctx.fontNormal)
+        Win32NativeWindowHost.drawTextInRect(
+            hdc = ctx.hdc,
+            text = clean,
+            left = capLeft + 2,
+            top = top - 6,
+            right = capRight - 2,
+            bottom = top + 7,
+            colorRef = if (focused) ctx.accentBlueColorRef else ctx.textSecondaryColorRef,
+            center = false
+        )
     }
 
     private fun registerInputHitRegion(

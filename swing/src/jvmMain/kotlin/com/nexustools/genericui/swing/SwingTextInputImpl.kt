@@ -15,6 +15,8 @@ class SwingTextInputImpl(
     override val nativeWidget: JTextComponent get() = super.nativeWidget as JTextComponent
 
     private var placeholderVal: String = ""
+    private var labelText: String? = null
+    private val defaultBorder: javax.swing.border.Border? = nativeWidget.border
     private var onValueChangedListener: ((String) -> Unit)? = null
     private var onSubmitListener: ((String) -> Unit)? = null
 
@@ -37,6 +39,19 @@ class SwingTextInputImpl(
     }
 
     override fun getPlaceholder(): String = placeholderVal
+
+    override fun setLabel(label: String?) {
+        val normalized = label?.takeIf { it.isNotBlank() }
+        labelText = normalized
+        nativeWidget.putClientProperty("label", normalized)
+        nativeWidget.border = if (normalized != null) {
+            javax.swing.BorderFactory.createTitledBorder(defaultBorder, normalized)
+        } else {
+            defaultBorder
+        }
+    }
+
+    override fun getLabel(): String? = labelText
 
     override fun setReadOnly(readOnly: Boolean) {
         nativeWidget.isEditable = !readOnly
