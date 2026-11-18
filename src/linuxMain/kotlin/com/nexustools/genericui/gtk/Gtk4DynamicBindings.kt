@@ -152,6 +152,9 @@ internal object Gtk4DynamicBindings {
     private var fnGdkMemoryTextureNew: CPointer<CFunction<(Int, Int, Int, COpaquePointer?, ULong) -> COpaquePointer?>>? = null
     private var fnGdkCursorNewFromTexture: CPointer<CFunction<(COpaquePointer?, Int, Int, COpaquePointer?) -> COpaquePointer?>>? = null
     private var fnGdkDisplayGetClipboard: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGdkDisplayGetDefault: CPointer<CFunction<() -> COpaquePointer?>>? = null
+    private var fnGdkDisplayGetMonitors: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGdkMonitorGetGeometry: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
     private var fnGdkClipboardSetText: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?) -> Unit>>? = null
     private var fnGdkClipboardReadTextAsync: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, COpaquePointer?, COpaquePointer?) -> Unit>>? = null
     private var fnGdkClipboardReadTextFinish: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, CPointer<COpaquePointerVar>?) -> CPointer<ByteVar>?>>? = null
@@ -333,6 +336,9 @@ internal object Gtk4DynamicBindings {
             fnGdkMemoryTextureNew = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_memory_texture_new")?.reinterpret()
             fnGdkCursorNewFromTexture = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_cursor_new_from_texture")?.reinterpret()
             fnGdkDisplayGetClipboard = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_display_get_clipboard")?.reinterpret()
+            fnGdkDisplayGetDefault = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_display_get_default")?.reinterpret()
+            fnGdkDisplayGetMonitors = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_display_get_monitors")?.reinterpret()
+            fnGdkMonitorGetGeometry = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_monitor_get_geometry")?.reinterpret()
             fnGdkClipboardSetText = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_clipboard_set_text")?.reinterpret()
             fnGdkClipboardReadTextAsync = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_clipboard_read_text_async")?.reinterpret()
             fnGdkClipboardReadTextFinish = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_clipboard_read_text_finish")?.reinterpret()
@@ -581,6 +587,29 @@ internal object Gtk4DynamicBindings {
         fnGdkCursorNewFromTexture?.invoke(texture, hotX, hotY, fallback)
 
     fun gdkDisplayGetClipboard(display: COpaquePointer): COpaquePointer? = fnGdkDisplayGetClipboard?.invoke(display)
+
+    fun getPrimaryMonitorBounds(): com.nexustools.genericui.geometry.Rect? {
+        if (!ensureGtkInitialized()) return null
+        val dpy = fnGdkDisplayGetDefault?.invoke() ?: return null
+        val monitors = fnGdkDisplayGetMonitors?.invoke(dpy) ?: return null
+        val count = LinuxGlibGioBindings.listModelGetNItems(monitors)
+        if (count <= 0) return null
+        val mon = LinuxGlibGioBindings.listModelGetItem(monitors, 0) ?: return null
+        return try {
+            memScoped {
+                val rectBuf = allocArray<IntVar>(4)
+                rectBuf[0] = 0; rectBuf[1] = 0; rectBuf[2] = 0; rectBuf[3] = 0
+                fnGdkMonitorGetGeometry?.invoke(mon, rectBuf)
+                val x = rectBuf[0]
+                val y = rectBuf[1]
+                val w = rectBuf[2]
+                val h = rectBuf[3]
+                if (w > 0 && h > 0) com.nexustools.genericui.geometry.Rect(x, y, w, h) else null
+            }
+        } finally {
+            LinuxGlibGioBindings.objectUnref(mon)
+        }
+    }
     fun gdkClipboardSetText(clipboard: COpaquePointer, text: String) = memScoped { fnGdkClipboardSetText?.invoke(clipboard, text.cstr.ptr) }
     fun gdkClipboardReadTextAsync(clipboard: COpaquePointer, callback: COpaquePointer, userData: COpaquePointer?) {
         fnGdkClipboardReadTextAsync?.invoke(clipboard, null, callback, userData)

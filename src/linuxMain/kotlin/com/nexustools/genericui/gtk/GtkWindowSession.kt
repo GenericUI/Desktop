@@ -8,6 +8,7 @@ import com.nexustools.genericui.gtk.render.GtkHitRegion
 import com.nexustools.genericui.gtk.render.GtkScrollRegion
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.StableRef
+import kotlin.time.TimeMark
 
 internal class GtkWindowSession(
     val windowKey: Long,
@@ -36,5 +37,10 @@ internal class GtkWindowSession(
     var lastClampUnclampedInput: Pair<Int, Int>? = null
     var lastClampTargetSize: Pair<Int, Int>? = null
     var lastAppliedCursorKey: String = ""
+    var pendingTargetFullscreen: Boolean? = null
+    var fullscreenTransitionMark: TimeMark? = null
+    var lastReportedX: Int = Int.MIN_VALUE
+    var lastReportedY: Int = Int.MIN_VALUE
+    var suppressMoveUntilMark: TimeMark? = null
     var closed: Boolean = false
 }

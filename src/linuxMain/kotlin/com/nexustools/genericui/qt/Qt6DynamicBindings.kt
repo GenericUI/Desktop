@@ -111,6 +111,7 @@ internal object Qt6DynamicBindings {
     private var fnCoreAppExit: CPointer<CFunction<(Int) -> Unit>>? = null
 
     private var fnGuiAppStyleHints: CPointer<CFunction<() -> COpaquePointer?>>? = null
+    private var fnGuiAppPrimaryScreen: CPointer<CFunction<() -> COpaquePointer?>>? = null
     private var fnStyleHintsColorScheme: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnGuiAppMouseButtons: CPointer<CFunction<() -> UInt>>? = null
     private var fnGuiAppKeyboardModifiers: CPointer<CFunction<() -> UInt>>? = null
@@ -246,6 +247,7 @@ internal object Qt6DynamicBindings {
 
         if (gui != null) {
             fnGuiAppStyleHints = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication10styleHintsEv")?.reinterpret()
+            fnGuiAppPrimaryScreen = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication13primaryScreenEv")?.reinterpret()
             fnStyleHintsColorScheme = LinuxDynamicLibraryLoader.symbol(gui, "_ZNK11QStyleHints11colorSchemeEv")?.reinterpret()
             fnGuiAppMouseButtons = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication12mouseButtonsEv")?.reinterpret()
             fnGuiAppKeyboardModifiers = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication17keyboardModifiersEv")?.reinterpret()
@@ -656,6 +658,21 @@ internal object Qt6DynamicBindings {
         qPoint[0] = x
         qPoint[1] = y
         fnWidgetMove?.invoke(widget, qPoint)
+    }
+
+    fun getPrimaryScreenBounds(): com.nexustools.genericui.geometry.Rect? {
+        if (!ensureLibrariesLoaded()) return null
+        val hasEnv = getenv("DISPLAY")?.toKString()?.isNotBlank() == true ||
+            getenv("WAYLAND_DISPLAY")?.toKString()?.isNotBlank() == true
+        if (!hasEnv) return null
+        if (!hasActiveApplication() && !ensureApplication()) return null
+        val screen = fnGuiAppPrimaryScreen?.invoke() ?: return null
+        val geom = readPropertyQRect(screen, "geometry") ?: return null
+        return if (geom[2] > 0 && geom[3] > 0) {
+            com.nexustools.genericui.geometry.Rect(geom[0], geom[1], geom[2], geom[3])
+        } else {
+            null
+        }
     }
 
     fun setMinimumSize(widget: COpaquePointer, minW: Int, minH: Int) {

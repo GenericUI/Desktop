@@ -15,6 +15,7 @@ import com.nexustools.genericui.apple.AppleUserDirectoryNativeImpl
 import com.nexustools.genericui.apple.AppleWebSocketNativeImpl
 import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.NativeFactory
+import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
@@ -123,6 +124,12 @@ class MacosNativeFactory : NativeFactory {
     override val layoutFactory: LayoutFactory = DesktopLayoutFactory
 
     override val supportsSystemMenuBar: Boolean = true
+
+    override val supportsWindowStatePersistence: Boolean = true
+
+    override fun getPrimaryMonitorBounds(): Rect? = MacosNativeWindowHost.getPrimaryMonitorBounds()
+
+    override fun isWindowRectOnScreen(rect: Rect): Boolean = MacosNativeWindowHost.isWindowRectOnScreen(rect)
 
     override fun supportsTcp(): Boolean = true
 

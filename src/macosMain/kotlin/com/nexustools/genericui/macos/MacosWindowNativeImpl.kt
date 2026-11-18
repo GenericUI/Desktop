@@ -135,6 +135,13 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         }
     }
 
+    override fun setWindowPosition(x: Int, y: Int) {
+        super.setWindowPosition(x, y)
+        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
+            MacosNativeWindowHost.syncWindowPosition(this)
+        }
+    }
+
     override fun setWindowState(state: WindowState) {
         super.setWindowState(state)
         if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
@@ -281,6 +288,15 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         }
         if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
             MacosNativeWindowHost.syncWindowAspectRatio(this)
+        }
+    }
+
+    internal fun notifyHostMovedFromOs(x: Int, y: Int) {
+        suppressHostSync = true
+        try {
+            updatePositionFromHost(x, y)
+        } finally {
+            suppressHostSync = false
         }
     }
 

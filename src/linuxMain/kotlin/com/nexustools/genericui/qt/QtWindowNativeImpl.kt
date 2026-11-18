@@ -124,6 +124,22 @@ class QtWindowNativeImpl : DesktopWindowNativeImpl<QtWidgetHandle>(
         }
     }
 
+    override fun setWindowPosition(x: Int, y: Int) {
+        super.setWindowPosition(x, y)
+        if (QtApplicationNativeImpl.interactiveQtGuiEnabled && !suppressHostSync) {
+            QtNativeWindowHost.syncWindowPosition(this)
+        }
+    }
+
+    internal fun notifyHostPositionChanged(x: Int, y: Int) {
+        suppressHostSync = true
+        try {
+            updatePositionFromHost(x, y)
+        } finally {
+            suppressHostSync = false
+        }
+    }
+
     override fun setWindowState(state: WindowState) {
         super.setWindowState(state)
         if (QtApplicationNativeImpl.interactiveQtGuiEnabled && !suppressHostSync) {

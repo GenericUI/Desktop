@@ -3,6 +3,7 @@ package com.nexustools.genericui.swing
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.enums.window.DisplayCutoutMode
 import com.nexustools.genericui.enums.window.WindowState
+import com.nexustools.genericui.geometry.Point
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
@@ -87,6 +88,19 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
                     extendedState = frame.extendedState
                 )
             }
+
+            override fun componentMoved(e: ComponentEvent?) {
+                val frame = jFrame ?: return
+                if (!frame.isVisible || fullscreenFlag || getWindowState() != WindowState.NORMAL) return
+                val nx = frame.x
+                val ny = frame.y
+                if (!hasExplicitPosition || positionX != nx || positionY != ny) {
+                    positionX = nx
+                    positionY = ny
+                    hasExplicitPosition = true
+                    onMovedListener?.invoke(nx, ny)
+                }
+            }
         })
         jFrame?.addWindowStateListener(WindowStateListener { e ->
             val frame = jFrame ?: return@WindowStateListener
@@ -110,6 +124,9 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     }
 
     private var titleText: String = "GenericUI"
+    private var positionX: Int = 0
+    private var positionY: Int = 0
+    private var hasExplicitPosition: Boolean = false
     private var windowSize: Size = Size(1280, 800)
     private var minWindowSize: Size? = null
     private var alwaysOnTopFlag: Boolean = false
@@ -120,6 +137,7 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     private var fullscreenFlag: Boolean = false
     private var pipActive: Boolean = false
     private var activeTitleBar: TitleBar? = null
+    private var onMovedListener: ((Int, Int) -> Unit)? = null
 
     private inline fun runOnEdt(crossinline block: () -> Unit) {
         if (GraphicsEnvironment.isHeadless() || SwingUtilities.isEventDispatchThread()) {
@@ -447,6 +465,17 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
 
     override fun getWindowSize(): Size = windowSize
 
+    override fun setWindowPosition(x: Int, y: Int) {
+        positionX = x
+        positionY = y
+        hasExplicitPosition = true
+        runOnEdt { jFrame?.setLocation(x, y) }
+    }
+
+    override fun getWindowPosition(): Point = Point(positionX.toFloat(), positionY.toFloat())
+
+    override fun hasExplicitWindowPosition(): Boolean = hasExplicitPosition
+
     override fun setWindowState(state: WindowState) {
         val prevState = windowState
         windowState = state
@@ -584,6 +613,9 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
                 applySwingAlwaysOnTop()
                 frame.isVisible = true
                 if (!fullscreenFlag && getWindowState() == WindowState.NORMAL) {
+                    if (hasExplicitPosition) {
+                        frame.setLocation(positionX, positionY)
+                    }
                     val insets = frame.insets
                     val insetW = insets.left + insets.right
                     val insetH = insets.top + insets.bottom
@@ -627,6 +659,7 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     override fun getBounds(): Rect = Rect(0, 0, windowSize.width, windowSize.height)
 
     override fun setOnWindowResize(listener: ((WindowConfiguration) -> Unit)?) { onResizeListener = listener }
+    override fun setOnWindowMoved(listener: ((Int, Int) -> Unit)?) { onMovedListener = listener }
     override fun setOnWindowFocusChanged(listener: ((Boolean) -> Unit)?) { onFocusListener = listener }
     override fun setOnWindowCloseRequested(listener: (() -> Boolean)?) { onCloseRequestedListener = listener }
 

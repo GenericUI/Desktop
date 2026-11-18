@@ -57,6 +57,7 @@ internal class MacosWindowSession(
     var fullscreenTransitionStartedMs: Double = 0.0
     var targetFullscreen: Boolean = false
     var pendingTargetFullscreen: Boolean? = null
+    var hidingAfterFullscreenExit: Boolean = false
     var programmaticMaximized: Boolean = false
     var lastKnownZoomed: Boolean = false
 }

@@ -3,6 +3,9 @@ package com.nexustools.genericui.qt
 import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.core.NativeFactory
+import com.nexustools.genericui.desktop.core.DesktopCanvasWidgetHooks
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.linux.LinuxX11WindowHintsBridge
 import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
@@ -130,14 +133,27 @@ class QtNativeFactory : NativeFactory {
 
     override fun supportsMulticastUdp(): Boolean = true
 
+    override val supportsWindowStatePersistence: Boolean = true
+
+    override fun getPrimaryMonitorBounds(): Rect? =
+        Qt6DynamicBindings.getPrimaryScreenBounds() ?: LinuxX11WindowHintsBridge.getPrimaryScreenBounds()
+
     val imageCodec: LinuxGdkPixbufImageCodecNativeImpl = LinuxGdkPixbufImageCodecNativeImpl()
 
     init {
         DesktopImageCodecHooks.install(backendName)
         ImageLoader.activeNativeCodec = imageCodec
+        DesktopCanvasWidgetHooks.createCanvas2DWidgetAndApiName = {
+            QtWidgetHandle("QWidget_QPainterCanvas") to "Qt6 QPainter 2D"
+        }
     }
 
-    override fun createApplication(): ApplicationNativeImpl<*> = QtApplicationNativeImpl()
+    override fun createApplication(): ApplicationNativeImpl<*> {
+        DesktopCanvasWidgetHooks.createCanvas2DWidgetAndApiName = {
+            QtWidgetHandle("QWidget_QPainterCanvas") to "Qt6 QPainter 2D"
+        }
+        return QtApplicationNativeImpl()
+    }
 
     override fun createWindow(): WindowNativeImpl<*> = QtWindowNativeImpl()
 

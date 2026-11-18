@@ -7,6 +7,7 @@ import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.qt.render.QtHitRegion
 import com.nexustools.genericui.qt.render.QtScrollRegion
 import kotlinx.cinterop.COpaquePointer
+import kotlin.time.TimeMark
 
 internal class QtWindowSession(
     val windowKey: Long,
@@ -40,5 +41,10 @@ internal class QtWindowSession(
     var lastClampTargetSize: Pair<Int, Int>? = null
     var lastAppliedCursorShape: Int = Qt6DynamicBindings.QT_CURSOR_ARROW
     var lastAppliedAlwaysOnTop: Boolean = false
+    var pendingTargetFullscreen: Boolean? = null
+    var fullscreenTransitionMark: TimeMark? = null
+    var lastReportedX: Int = Int.MIN_VALUE
+    var lastReportedY: Int = Int.MIN_VALUE
+    var suppressMoveUntilMark: TimeMark? = null
     var closed: Boolean = false
 }

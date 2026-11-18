@@ -25,6 +25,10 @@ internal class MacosWindowDelegate(
         MacosNativeWindowHost.onNativeWindowDidResize(windowKey, isDialog)
     }
 
+    override fun windowDidMove(notification: NSNotification) {
+        MacosNativeWindowHost.onNativeWindowDidMove(windowKey, isDialog)
+    }
+
     override fun windowWillUseStandardFrame(window: NSWindow, defaultFrame: CValue<NSRect>): CValue<NSRect> {
         MacosNativeWindowHost.onNativeWindowWillUseStandardFrame(windowKey, isDialog, window)
         return defaultFrame

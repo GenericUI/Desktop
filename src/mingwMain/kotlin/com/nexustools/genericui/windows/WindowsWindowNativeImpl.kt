@@ -121,6 +121,22 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         }
     }
 
+    override fun setWindowPosition(x: Int, y: Int) {
+        super.setWindowPosition(x, y)
+        if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this)) {
+            Win32NativeWindowHost.setWindowPosition(this, x, y)
+        }
+    }
+
+    internal fun notifyHostPositionChanged(x: Int, y: Int) {
+        suppressHostSync = true
+        try {
+            updatePositionFromHost(x, y)
+        } finally {
+            suppressHostSync = false
+        }
+    }
+
     override fun setWindowState(state: WindowState) {
         super.setWindowState(state)
         if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this)) {

@@ -3,6 +3,9 @@ package com.nexustools.genericui.gtk
 import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.core.NativeFactory
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.linux.LinuxX11WindowHintsBridge
+import com.nexustools.genericui.desktop.core.DesktopCanvasWidgetHooks
 import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
@@ -131,14 +134,27 @@ class GtkNativeFactory : NativeFactory {
 
     override fun supportsMulticastUdp(): Boolean = true
 
+    override val supportsWindowStatePersistence: Boolean = true
+
+    override fun getPrimaryMonitorBounds(): Rect? =
+        Gtk4DynamicBindings.getPrimaryMonitorBounds() ?: LinuxX11WindowHintsBridge.getPrimaryScreenBounds()
+
     val imageCodec: LinuxGdkPixbufImageCodecNativeImpl = LinuxGdkPixbufImageCodecNativeImpl()
 
     init {
         DesktopImageCodecHooks.install(backendName)
         ImageLoader.activeNativeCodec = imageCodec
+        DesktopCanvasWidgetHooks.createCanvas2DWidgetAndApiName = {
+            GtkWidgetHandle("GtkDrawingArea") to "Cairo 2D (cairo_t) + Pango"
+        }
     }
 
-    override fun createApplication(): ApplicationNativeImpl<*> = GtkApplicationNativeImpl()
+    override fun createApplication(): ApplicationNativeImpl<*> {
+        DesktopCanvasWidgetHooks.createCanvas2DWidgetAndApiName = {
+            GtkWidgetHandle("GtkDrawingArea") to "Cairo 2D (cairo_t) + Pango"
+        }
+        return GtkApplicationNativeImpl()
+    }
 
     override fun createWindow(): WindowNativeImpl<*> = GtkWindowNativeImpl()
 

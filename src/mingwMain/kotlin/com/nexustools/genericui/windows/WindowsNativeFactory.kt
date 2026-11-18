@@ -2,6 +2,7 @@ package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.NativeFactory
+import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
@@ -72,6 +73,12 @@ class WindowsNativeFactory : NativeFactory {
     override fun supportsTcp(): Boolean = true
 
     override fun supportsUdp(): Boolean = true
+
+    override val supportsWindowStatePersistence: Boolean = true
+
+    override fun getPrimaryMonitorBounds(): Rect? = Win32NativeWindowHost.getPrimaryMonitorBounds()
+
+    override fun isWindowRectOnScreen(rect: Rect): Boolean = Win32NativeWindowHost.isWindowRectOnScreen(rect)
 
     val imageCodec: WindowsWicImageCodecNativeImpl = WindowsWicImageCodecNativeImpl()
 

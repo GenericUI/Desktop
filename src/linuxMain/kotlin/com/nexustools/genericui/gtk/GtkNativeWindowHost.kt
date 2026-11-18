@@ -28,6 +28,7 @@ import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.staticCFunction
 import platform.posix.usleep
+import kotlin.time.TimeSource
 
 object GtkNativeWindowHost {
     private val sessions = LinkedHashMap<Long, GtkWindowSession>(8)
@@ -130,9 +131,7 @@ object GtkNativeWindowHost {
         val key = windowImpl.nativeWidget.nativePointer
         val existing = sessions[key]
         if (existing != null && !existing.closed) {
-            syncWindowProperties(windowImpl)
-            Gtk4DynamicBindings.gtkWindowPresent(existing.gtkWindow)
-            Gtk4DynamicBindings.gtkWidgetQueueDraw(existing.drawingArea)
+            restoreWindowModeAndPresent(existing, windowImpl)
             return
         }
 
@@ -177,10 +176,46 @@ object GtkNativeWindowHost {
             }
         }
 
+        applyRequestedModeForShow(session, windowImpl)
         Gtk4DynamicBindings.gtkWindowPresent(gtkWin)
         syncSessionX11Hints(session)
         Gtk4DynamicBindings.gtkWidgetGrabFocus(drawingArea)
         Gtk4DynamicBindings.gtkWidgetQueueDraw(drawingArea)
+    }
+
+    private fun applyRequestedModeForShow(session: GtkWindowSession, windowImpl: GtkWindowNativeImpl) {
+        if (windowImpl.isFullscreen()) {
+            session.pendingTargetFullscreen = true
+            session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+            Gtk4DynamicBindings.gtkWindowFullscreen(session.gtkWindow)
+        } else {
+            val currentlyFs = Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow)
+            if (currentlyFs) {
+                session.pendingTargetFullscreen = false
+                session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+                Gtk4DynamicBindings.gtkWindowUnfullscreen(session.gtkWindow)
+            } else {
+                session.pendingTargetFullscreen = null
+            }
+            if (windowImpl.getWindowState() == WindowState.MAXIMIZED) {
+                Gtk4DynamicBindings.gtkWindowMaximize(session.gtkWindow)
+            } else if (Gtk4DynamicBindings.gtkWindowIsMaximized(session.gtkWindow)) {
+                Gtk4DynamicBindings.gtkWindowUnmaximize(session.gtkWindow)
+            }
+        }
+    }
+
+    private fun restoreWindowModeAndPresent(session: GtkWindowSession, windowImpl: GtkWindowNativeImpl) {
+        syncWindowProperties(windowImpl)
+        if (!windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL) {
+            val size = windowImpl.getWindowSize()
+            Gtk4DynamicBindings.gtkWindowSetDefaultSize(session.gtkWindow, size.width.coerceAtLeast(1), size.height.coerceAtLeast(1))
+        }
+        applyRequestedModeForShow(session, windowImpl)
+        Gtk4DynamicBindings.gtkWidgetSetVisible(session.gtkWindow, true)
+        Gtk4DynamicBindings.gtkWindowPresent(session.gtkWindow)
+        syncSessionX11Hints(session)
+        Gtk4DynamicBindings.gtkWidgetQueueDraw(session.drawingArea)
     }
 
     private fun presentDialog(
@@ -354,9 +389,37 @@ object GtkNativeWindowHost {
         val winImpl = session.windowImpl
         val dlgImpl = session.dialogImpl
         if (winImpl != null) {
-            val isFs = Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow)
+            val rawFs = Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow)
+            val pendingFs = session.pendingTargetFullscreen
+            val isFs = if (pendingFs != null) {
+                val elapsedMs = session.fullscreenTransitionMark?.elapsedNow()?.inWholeMilliseconds ?: 0L
+                if (rawFs == pendingFs || elapsedMs >= 1200L) {
+                    session.pendingTargetFullscreen = null
+                    rawFs
+                } else {
+                    pendingFs
+                }
+            } else {
+                rawFs
+            }
             val isMax = Gtk4DynamicBindings.gtkWindowIsMaximized(session.gtkWindow)
             winImpl.syncHostClientSize(width, height, fullscreenNow = isFs, maximizedNow = isMax)
+            if (session.paintedFrameCount > 1 && winImpl.isVisible() && !isFs && !isMax &&
+                winImpl.getWindowState() == WindowState.NORMAL
+            ) {
+                val moveSuppressElapsed = session.suppressMoveUntilMark?.elapsedNow()?.inWholeMilliseconds ?: 999L
+                if (moveSuppressElapsed >= 200L) {
+                    val xid = Gtk4DynamicBindings.gtkWindowX11Xid(session.gtkWindow)
+                    if (xid != 0uL) {
+                        val pos = LinuxX11WindowHintsBridge.queryWindowPosition(xid)
+                        if (pos != null && (pos.first != session.lastReportedX || pos.second != session.lastReportedY)) {
+                            session.lastReportedX = pos.first
+                            session.lastReportedY = pos.second
+                            winImpl.notifyHostPositionChanged(pos.first, pos.second)
+                        }
+                    }
+                }
+            }
             GtkWorkspaceLayoutRenderUtil.renderMainWindow(
                 ctx = ctx,
                 windowImpl = winImpl as DesktopWindowNativeImpl<DesktopNativeWidget>
@@ -385,7 +448,11 @@ object GtkNativeWindowHost {
                 return
             }
 
-            while (eventLoopRunning && !stopRequested && sessions.values.any { !it.closed }) {
+            while (
+                eventLoopRunning &&
+                !stopRequested &&
+                (sessions.values.any { !it.closed } || GtkWindowNativeImpl.activeWindows.any { !it.isDisposed })
+            ) {
                 var didWork = false
                 if (ctx != null) {
                     var spins = 0
@@ -455,6 +522,30 @@ object GtkNativeWindowHost {
             alwaysOnTop = winImpl.isAlwaysOnTop(),
             aspectRatio = effectiveWindowedAspectRatio(session, winImpl)
         )
+        if (!winImpl.isFullscreen() && winImpl.getWindowState() == WindowState.NORMAL && winImpl.hasExplicitWindowPosition()) {
+            val pos = winImpl.getWindowPosition()
+            val targetX = pos.x.toInt()
+            val targetY = pos.y.toInt()
+            session.lastReportedX = targetX
+            session.lastReportedY = targetY
+            session.suppressMoveUntilMark = TimeSource.Monotonic.markNow()
+            LinuxX11WindowHintsBridge.moveWindow(xid, targetX, targetY)
+        }
+    }
+
+    fun syncWindowPosition(windowImpl: GtkWindowNativeImpl) {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        if (windowImpl.isFullscreen() || windowImpl.getWindowState() != WindowState.NORMAL) return
+        val xid = Gtk4DynamicBindings.gtkWindowX11Xid(session.gtkWindow)
+        if (xid != 0uL && windowImpl.hasExplicitWindowPosition()) {
+            val pos = windowImpl.getWindowPosition()
+            val targetX = pos.x.toInt()
+            val targetY = pos.y.toInt()
+            session.lastReportedX = targetX
+            session.lastReportedY = targetY
+            session.suppressMoveUntilMark = TimeSource.Monotonic.markNow()
+            LinuxX11WindowHintsBridge.moveWindow(xid, targetX, targetY)
+        }
     }
 
     fun syncWindowAlwaysOnTop(windowImpl: GtkWindowNativeImpl) {
@@ -541,10 +632,14 @@ object GtkNativeWindowHost {
                 if (xid != 0uL) {
                     LinuxX11WindowHintsBridge.setAspectRatioHint(xid, null)
                 }
+                session.pendingTargetFullscreen = true
+                session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
                 Gtk4DynamicBindings.gtkWindowFullscreen(session.gtkWindow)
             }
             WindowState.NORMAL, WindowState.PICTURE_IN_PICTURE -> {
-                if (Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow)) {
+                if (Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow) || session.pendingTargetFullscreen == true) {
+                    session.pendingTargetFullscreen = false
+                    session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
                     Gtk4DynamicBindings.gtkWindowUnfullscreen(session.gtkWindow)
                 }
                 if (Gtk4DynamicBindings.gtkWindowIsMaximized(session.gtkWindow)) {
@@ -562,8 +657,12 @@ object GtkNativeWindowHost {
             if (xid != 0uL) {
                 LinuxX11WindowHintsBridge.setAspectRatioHint(xid, null)
             }
+            session.pendingTargetFullscreen = true
+            session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
             Gtk4DynamicBindings.gtkWindowFullscreen(session.gtkWindow)
         } else {
+            session.pendingTargetFullscreen = false
+            session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
             Gtk4DynamicBindings.gtkWindowUnfullscreen(session.gtkWindow)
             syncWindowAspectRatio(windowImpl)
         }
@@ -572,12 +671,16 @@ object GtkNativeWindowHost {
     fun syncWindowVisibility(windowImpl: GtkWindowNativeImpl, visible: Boolean) {
         val session = sessions[windowImpl.nativeWidget.nativePointer]
         if (visible) {
-            if (session == null) presentWindow(windowImpl)
+            if (session == null || session.closed) presentWindow(windowImpl)
             else {
-                Gtk4DynamicBindings.gtkWidgetSetVisible(session.gtkWindow, true)
-                Gtk4DynamicBindings.gtkWindowPresent(session.gtkWindow)
+                restoreWindowModeAndPresent(session, windowImpl)
             }
         } else if (session != null) {
+            if (Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow) || session.pendingTargetFullscreen == true) {
+                session.pendingTargetFullscreen = false
+                session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+                Gtk4DynamicBindings.gtkWindowUnfullscreen(session.gtkWindow)
+            }
             Gtk4DynamicBindings.gtkWidgetSetVisible(session.gtkWindow, false)
         }
     }

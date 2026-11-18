@@ -22,6 +22,7 @@ import com.nexustools.genericui.style.color.BootstrapColorPalette
 import kotlinx.cinterop.COpaquePointer
 import platform.posix.usleep
 import kotlin.math.roundToInt
+import kotlin.time.TimeSource
 
 /**
  * Native Qt 6 (`QApplication` + `QWidget` + `QImage(Format_ARGB32)` + `QPainter` + `QPixmap` + `QLabel`)
@@ -118,11 +119,7 @@ object QtNativeWindowHost {
         val key = windowImpl.nativeWidget.nativePointer
         val existing = sessions[key]
         if (existing != null && !existing.closed) {
-            Qt6DynamicBindings.showWidget(existing.qWidget)
-            Qt6DynamicBindings.raiseWidget(existing.qWidget)
-            Qt6DynamicBindings.activateWindow(existing.qWidget)
-            existing.needsRepaint = true
-            renderSessionFrame(existing)
+            restoreWindowModeAndPresent(existing, windowImpl)
             return
         }
 
@@ -156,11 +153,91 @@ object QtNativeWindowHost {
         }
         sessions[key] = session
         syncWindowProperties(windowImpl)
+        if (!windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL && windowImpl.hasExplicitWindowPosition()) {
+            val pos = windowImpl.getWindowPosition()
+            val tx = pos.x.toInt()
+            val ty = pos.y.toInt()
+            session.lastReportedX = tx
+            session.lastReportedY = ty
+            session.suppressMoveUntilMark = TimeSource.Monotonic.markNow()
+            Qt6DynamicBindings.moveWidget(qWidget, tx, ty)
+        }
+        if (windowImpl.isFullscreen()) {
+            session.pendingTargetFullscreen = true
+            session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+        }
         renderSessionFrame(session)
-        Qt6DynamicBindings.showWidget(qWidget)
+        when {
+            windowImpl.isFullscreen() -> Qt6DynamicBindings.showFullScreen(qWidget)
+            windowImpl.getWindowState() == WindowState.MAXIMIZED -> Qt6DynamicBindings.showMaximized(qWidget)
+            else -> Qt6DynamicBindings.showWidget(qWidget)
+        }
         syncSessionX11Hints(session)
         Qt6DynamicBindings.raiseWidget(qWidget)
         Qt6DynamicBindings.activateWindow(qWidget)
+    }
+
+    private fun restoreWindowModeAndPresent(session: QtWindowSession, windowImpl: QtWindowNativeImpl) {
+        syncWindowProperties(windowImpl)
+        if (windowImpl.isFullscreen()) {
+            session.pendingTargetFullscreen = true
+            session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+            val xid = Qt6DynamicBindings.widgetX11Xid(session.qWidget)
+            if (xid != 0uL) {
+                LinuxX11WindowHintsBridge.setAspectRatioHint(xid, null)
+            }
+            Qt6DynamicBindings.setWidgetVisible(session.qWidget, true)
+            Qt6DynamicBindings.showFullScreen(session.qWidget)
+        } else {
+            val currentlyFs = Qt6DynamicBindings.isWidgetFullScreen(session.qWidget)
+            if (currentlyFs) {
+                session.pendingTargetFullscreen = false
+                session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+                Qt6DynamicBindings.showNormal(session.qWidget)
+            } else {
+                session.pendingTargetFullscreen = null
+            }
+            val size = windowImpl.getWindowSize()
+            val w = size.width.coerceAtLeast(1)
+            val h = size.height.coerceAtLeast(1)
+            Qt6DynamicBindings.resizeWidget(session.qWidget, w, h)
+            Qt6DynamicBindings.setWidgetGeometry(session.qLabel, 0, 0, w, h)
+            if (windowImpl.getWindowState() == WindowState.NORMAL && windowImpl.hasExplicitWindowPosition()) {
+                val pos = windowImpl.getWindowPosition()
+                val tx = pos.x.toInt()
+                val ty = pos.y.toInt()
+                session.lastReportedX = tx
+                session.lastReportedY = ty
+                session.suppressMoveUntilMark = TimeSource.Monotonic.markNow()
+                Qt6DynamicBindings.moveWidget(session.qWidget, tx, ty)
+            }
+            Qt6DynamicBindings.setWidgetVisible(session.qWidget, true)
+            if (windowImpl.getWindowState() == WindowState.MAXIMIZED) {
+                Qt6DynamicBindings.showMaximized(session.qWidget)
+            } else {
+                Qt6DynamicBindings.showWidget(session.qWidget)
+            }
+            syncWindowAspectRatio(windowImpl)
+        }
+        syncSessionX11Hints(session)
+        Qt6DynamicBindings.raiseWidget(session.qWidget)
+        Qt6DynamicBindings.activateWindow(session.qWidget)
+        session.needsRepaint = true
+        renderSessionFrame(session)
+    }
+
+    fun syncWindowPosition(windowImpl: QtWindowNativeImpl) {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        if (windowImpl.isFullscreen() || windowImpl.getWindowState() != WindowState.NORMAL) return
+        if (windowImpl.hasExplicitWindowPosition()) {
+            val pos = windowImpl.getWindowPosition()
+            val tx = pos.x.toInt()
+            val ty = pos.y.toInt()
+            session.lastReportedX = tx
+            session.lastReportedY = ty
+            session.suppressMoveUntilMark = TimeSource.Monotonic.markNow()
+            Qt6DynamicBindings.moveWidget(session.qWidget, tx, ty)
+        }
     }
 
     private fun presentDialog(
@@ -223,7 +300,11 @@ object QtNativeWindowHost {
                 return
             }
 
-            while (eventLoopRunning && !stopRequested && sessions.values.any { !it.closed }) {
+            while (
+                eventLoopRunning &&
+                !stopRequested &&
+                (sessions.values.any { !it.closed } || QtWindowNativeImpl.activeWindows.any { !it.isDisposed })
+            ) {
                 Qt6DynamicBindings.processEvents(16)
                 onLoopTickHook?.invoke()
                 syncAndRenderSessions()
@@ -381,9 +462,15 @@ object QtNativeWindowHost {
                 if (xid != 0uL) {
                     LinuxX11WindowHintsBridge.setAspectRatioHint(xid, null)
                 }
+                session.pendingTargetFullscreen = true
+                session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
                 Qt6DynamicBindings.showFullScreen(session.qWidget)
             }
             WindowState.NORMAL, WindowState.PICTURE_IN_PICTURE -> {
+                if (Qt6DynamicBindings.isWidgetFullScreen(session.qWidget) || session.pendingTargetFullscreen == true) {
+                    session.pendingTargetFullscreen = false
+                    session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+                }
                 Qt6DynamicBindings.showNormal(session.qWidget)
                 syncWindowAspectRatio(windowImpl)
             }
@@ -398,8 +485,12 @@ object QtNativeWindowHost {
             if (xid != 0uL) {
                 LinuxX11WindowHintsBridge.setAspectRatioHint(xid, null)
             }
+            session.pendingTargetFullscreen = true
+            session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
             Qt6DynamicBindings.showFullScreen(session.qWidget)
         } else {
+            session.pendingTargetFullscreen = false
+            session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
             Qt6DynamicBindings.showNormal(session.qWidget)
             syncWindowAspectRatio(windowImpl)
         }
@@ -409,13 +500,16 @@ object QtNativeWindowHost {
     fun syncWindowVisibility(windowImpl: QtWindowNativeImpl, visible: Boolean) {
         val session = sessions[windowImpl.nativeWidget.nativePointer]
         if (visible) {
-            if (session == null) presentWindow(windowImpl)
+            if (session == null || session.closed) presentWindow(windowImpl)
             else {
-                Qt6DynamicBindings.setWidgetVisible(session.qWidget, true)
-                Qt6DynamicBindings.raiseWidget(session.qWidget)
-                session.needsRepaint = true
+                restoreWindowModeAndPresent(session, windowImpl)
             }
         } else if (session != null) {
+            if (Qt6DynamicBindings.isWidgetFullScreen(session.qWidget) || session.pendingTargetFullscreen == true) {
+                session.pendingTargetFullscreen = false
+                session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
+                Qt6DynamicBindings.showNormal(session.qWidget)
+            }
             Qt6DynamicBindings.setWidgetVisible(session.qWidget, false)
         }
     }
@@ -511,9 +605,41 @@ object QtNativeWindowHost {
                 val winImpl = session.windowImpl
                 val dlgImpl = session.dialogImpl
                 if (winImpl != null) {
-                    val isFs = Qt6DynamicBindings.isWidgetFullScreen(session.qWidget)
+                    val rawFs = Qt6DynamicBindings.isWidgetFullScreen(session.qWidget)
+                    val pendingFs = session.pendingTargetFullscreen
+                    val isFs = if (pendingFs != null) {
+                        val elapsedMs = session.fullscreenTransitionMark?.elapsedNow()?.inWholeMilliseconds ?: 0L
+                        if (rawFs == pendingFs || elapsedMs >= 1200L) {
+                            session.pendingTargetFullscreen = null
+                            rawFs
+                        } else {
+                            pendingFs
+                        }
+                    } else {
+                        rawFs
+                    }
                     val isMax = Qt6DynamicBindings.isWidgetMaximized(session.qWidget)
                     winImpl.syncHostClientSize(width, height, fullscreenNow = isFs, maximizedNow = isMax)
+                    if (session.paintedFrameCount > 1 && winImpl.isVisible() && !isFs && !isMax &&
+                        winImpl.getWindowState() == WindowState.NORMAL
+                    ) {
+                        val moveSuppressElapsed = session.suppressMoveUntilMark?.elapsedNow()?.inWholeMilliseconds ?: 999L
+                        if (moveSuppressElapsed >= 200L) {
+                            val frameGeom = Qt6DynamicBindings.readPropertyQRect(session.qWidget, "frameGeometry")
+                                ?: Qt6DynamicBindings.widgetX11Xid(session.qWidget).takeIf { it != 0uL }?.let { xid ->
+                                    LinuxX11WindowHintsBridge.queryWindowPosition(xid)?.let { intArrayOf(it.first, it.second, width, height) }
+                                }
+                            if (frameGeom != null) {
+                                val fx = frameGeom[0]
+                                val fy = frameGeom[1]
+                                if (fx != session.lastReportedX || fy != session.lastReportedY) {
+                                    session.lastReportedX = fx
+                                    session.lastReportedY = fy
+                                    winImpl.notifyHostPositionChanged(fx, fy)
+                                }
+                            }
+                        }
+                    }
                     QtWorkspaceLayoutRenderUtil.renderMainWindow(
                         ctx = ctx,
                         windowImpl = winImpl as DesktopWindowNativeImpl<DesktopNativeWidget>

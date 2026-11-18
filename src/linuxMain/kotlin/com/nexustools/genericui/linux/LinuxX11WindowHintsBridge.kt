@@ -2,12 +2,16 @@
 
 package com.nexustools.genericui.linux
 
+import com.nexustools.genericui.geometry.Rect
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CFunction
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.LongVar
+import kotlinx.cinterop.UIntVar
+import kotlinx.cinterop.ULongVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.cstr
@@ -51,6 +55,12 @@ internal object LinuxX11WindowHintsBridge {
     private var fnXSetWMNormalHints: CPointer<CFunction<(COpaquePointer?, ULong, COpaquePointer?) -> Unit>>? = null
     private var fnXFree: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnXFlush: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
+    private var fnXDefaultScreen: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
+    private var fnXDisplayWidth: CPointer<CFunction<(COpaquePointer?, Int) -> Int>>? = null
+    private var fnXDisplayHeight: CPointer<CFunction<(COpaquePointer?, Int) -> Int>>? = null
+    private var fnXMoveWindow: CPointer<CFunction<(COpaquePointer?, ULong, Int, Int) -> Int>>? = null
+    private var fnXTranslateCoordinates: CPointer<CFunction<(COpaquePointer?, ULong, ULong, Int, Int, CPointer<IntVar>?, CPointer<IntVar>?, CPointer<ULongVar>?) -> Int>>? = null
+    private var fnXQueryTree: CPointer<CFunction<(COpaquePointer?, ULong, CPointer<ULongVar>?, CPointer<ULongVar>?, CPointer<CPointerVar<ULongVar>>?, CPointer<UIntVar>?) -> Int>>? = null
 
     fun ensureLoaded(): Boolean = lock.withLock {
         if (librariesLoaded) return x11Available
@@ -68,6 +78,12 @@ internal object LinuxX11WindowHintsBridge {
             fnXSetWMNormalHints = LinuxDynamicLibraryLoader.symbol(x11, "XSetWMNormalHints")?.reinterpret()
             fnXFree = LinuxDynamicLibraryLoader.symbol(x11, "XFree")?.reinterpret()
             fnXFlush = LinuxDynamicLibraryLoader.symbol(x11, "XFlush")?.reinterpret()
+            fnXDefaultScreen = LinuxDynamicLibraryLoader.symbol(x11, "XDefaultScreen")?.reinterpret()
+            fnXDisplayWidth = LinuxDynamicLibraryLoader.symbol(x11, "XDisplayWidth")?.reinterpret()
+            fnXDisplayHeight = LinuxDynamicLibraryLoader.symbol(x11, "XDisplayHeight")?.reinterpret()
+            fnXMoveWindow = LinuxDynamicLibraryLoader.symbol(x11, "XMoveWindow")?.reinterpret()
+            fnXTranslateCoordinates = LinuxDynamicLibraryLoader.symbol(x11, "XTranslateCoordinates")?.reinterpret()
+            fnXQueryTree = LinuxDynamicLibraryLoader.symbol(x11, "XQueryTree")?.reinterpret()
         }
 
         x11Available = fnXOpenDisplay != null &&
@@ -173,6 +189,75 @@ internal object LinuxX11WindowHintsBridge {
                 fnXFlush?.invoke(dpy)
             }
             ok
+        } finally {
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    fun getPrimaryScreenBounds(): Rect? {
+        if (!isDisplayEnvironmentPresent() || !ensureLoaded()) return null
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return null
+        return try {
+            val scr = fnXDefaultScreen?.invoke(dpy) ?: 0
+            val w = fnXDisplayWidth?.invoke(dpy, scr) ?: 0
+            val h = fnXDisplayHeight?.invoke(dpy, scr) ?: 0
+            if (w > 0 && h > 0) Rect(0, 0, w, h) else null
+        } finally {
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    fun moveWindow(windowXid: ULong, x: Int, y: Int): Boolean {
+        if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return false
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return false
+        return try {
+            fnXMoveWindow?.invoke(dpy, windowXid, x, y)
+            fnXFlush?.invoke(dpy)
+            true
+        } finally {
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    fun queryWindowPosition(windowXid: ULong): Pair<Int, Int>? = memScoped {
+        if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return@memScoped null
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return@memScoped null
+        try {
+            val rootWin = fnXDefaultRootWindow?.invoke(dpy) ?: 0uL
+            if (rootWin == 0uL) return@memScoped null
+            var targetWin = windowXid
+            val qTree = fnXQueryTree
+            if (qTree != null) {
+                var current = windowXid
+                for (depth in 0 until 8) {
+                    val outRoot = alloc<ULongVar>()
+                    val outParent = alloc<ULongVar>()
+                    val outChildren = alloc<CPointerVar<ULongVar>>()
+                    val outCount = alloc<UIntVar>()
+                    outRoot.value = 0uL
+                    outParent.value = 0uL
+                    outChildren.value = null
+                    outCount.value = 0u
+                    val ok = qTree.invoke(dpy, current, outRoot.ptr, outParent.ptr, outChildren.ptr, outCount.ptr)
+                    outChildren.value?.let { fnXFree?.invoke(it) }
+                    if (ok == 0) break
+                    val parent = outParent.value
+                    if (parent == 0uL || parent == outRoot.value) {
+                        targetWin = current
+                        break
+                    }
+                    current = parent
+                    targetWin = parent
+                }
+            }
+            val dstX = alloc<IntVar>()
+            val dstY = alloc<IntVar>()
+            val childRet = alloc<ULongVar>()
+            dstX.value = 0
+            dstY.value = 0
+            childRet.value = 0uL
+            val translated = fnXTranslateCoordinates?.invoke(dpy, targetWin, rootWin, 0, 0, dstX.ptr, dstY.ptr, childRet.ptr) ?: 0
+            if (translated != 0) dstX.value to dstY.value else null
         } finally {
             fnXCloseDisplay?.invoke(dpy)
         }

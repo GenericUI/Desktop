@@ -3,6 +3,9 @@ package com.nexustools.genericui.swing
 import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.NativeFactory
 import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.window.MainWindowSavedState
+import java.awt.GraphicsEnvironment
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.action.DropdownNativeImpl
@@ -60,6 +63,38 @@ class SwingNativeFactory : NativeFactory {
 
     override fun supportsTcp(): Boolean = true
     override fun supportsUdp(): Boolean = true
+
+    override val supportsWindowStatePersistence: Boolean = true
+
+    override fun getPrimaryMonitorBounds(): Rect? {
+        if (GraphicsEnvironment.isHeadless()) return null
+        return runCatching {
+            val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
+            val bounds = ge.defaultScreenDevice.defaultConfiguration.bounds
+            if (bounds.width > 0 && bounds.height > 0) {
+                Rect(bounds.x, bounds.y, bounds.width, bounds.height)
+            } else {
+                null
+            }
+        }.getOrNull()
+    }
+
+    override fun isWindowRectOnScreen(rect: Rect): Boolean {
+        if (GraphicsEnvironment.isHeadless()) return true
+        return runCatching {
+            val devices = GraphicsEnvironment.getLocalGraphicsEnvironment().screenDevices
+            if (devices.isEmpty()) return@runCatching true
+            for (dev in devices) {
+                val b = dev.defaultConfiguration.bounds
+                if (b.width > 0 && b.height > 0 &&
+                    MainWindowSavedState.intersectsVisibleArea(rect, Rect(b.x, b.y, b.width, b.height))
+                ) {
+                    return@runCatching true
+                }
+            }
+            false
+        }.getOrDefault(true)
+    }
 
     init {
         ImageLoader.activeNativeCodec = SwingImageIoCodecImpl()

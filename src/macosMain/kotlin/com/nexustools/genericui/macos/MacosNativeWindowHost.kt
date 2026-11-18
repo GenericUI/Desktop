@@ -47,6 +47,7 @@ import com.nexustools.genericui.style.css.CssCustomCursor
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.style.theme.ThemeConfig
 import com.nexustools.genericui.threading.GenericUiThreading
+import com.nexustools.genericui.window.MainWindowSavedState
 import com.nexustools.genericui.window.WindowAspectRatioHelper
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.addressOf
@@ -328,16 +329,22 @@ object MacosNativeWindowHost {
         val cornerY = (h * 0.02).toInt().coerceIn(0, h - 1)
         val cornerIdx = (cornerY * w + cornerX) * 4
         val cornerAlpha = rgba.bytes[cornerIdx + 3].toInt() and 0xFF
-        if (cornerAlpha >= 24) return false
+        if (cornerAlpha >= 16) return false
 
-        val tileBorderX = (w * 0.13).toInt().coerceIn(0, w - 1)
+        val diagX = (w * 0.11).toInt().coerceIn(0, w - 1)
+        val diagY = (h * 0.11).toInt().coerceIn(0, h - 1)
+        val diagIdx = (diagY * w + diagX) * 4
+        val diagAlpha = rgba.bytes[diagIdx + 3].toInt() and 0xFF
+        if (diagAlpha >= 16) return false
+
+        val tileBorderX = (w * 0.12).toInt().coerceIn(0, w - 1)
         val tileBorderY = (h / 2).coerceIn(0, h - 1)
         val borderIdx = (tileBorderY * w + tileBorderX) * 4
         val r = rgba.bytes[borderIdx].toInt() and 0xFF
         val g = rgba.bytes[borderIdx + 1].toInt() and 0xFF
         val b = rgba.bytes[borderIdx + 2].toInt() and 0xFF
         val a = rgba.bytes[borderIdx + 3].toInt() and 0xFF
-        return r >= 235 && g >= 235 && b >= 235 && a >= 220
+        return r >= 245 && g >= 245 && b >= 245 && a >= 240
     }
 
     internal fun composeRuntimeDockIconBuffer(source: ImageBuffer): ImageBuffer {
@@ -639,23 +646,100 @@ object MacosNativeWindowHost {
         }
     }
 
+    fun getPrimaryMonitorBounds(): Rect? {
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return null
+        val screen = (NSScreen.screens.firstOrNull() as? NSScreen) ?: NSScreen.mainScreen ?: return null
+        var w = 0
+        var h = 0
+        screen.frame.useContents {
+            w = size.width.roundToInt()
+            h = size.height.roundToInt()
+        }
+        return if (w > 0 && h > 0) Rect(0, 0, w, h) else null
+    }
+
+    fun isWindowRectOnScreen(rect: Rect): Boolean {
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return true
+        val screens = NSScreen.screens
+        if (screens.isEmpty()) return true
+        val primary = (screens.firstOrNull() as? NSScreen) ?: NSScreen.mainScreen ?: return true
+        val primaryH = primary.frame.useContents { size.height }
+        var checked = 0
+        for (item in screens) {
+            val scr = item as? NSScreen ?: continue
+            var sx = 0
+            var sy = 0
+            var sw = 0
+            var sh = 0
+            scr.visibleFrame.useContents {
+                sx = origin.x.roundToInt()
+                sy = (primaryH - (origin.y + size.height)).roundToInt()
+                sw = size.width.roundToInt()
+                sh = size.height.roundToInt()
+            }
+            if (sw > 0 && sh > 0) {
+                checked++
+                if (MainWindowSavedState.intersectsVisibleArea(rect, Rect(sx, sy, sw, sh))) {
+                    return true
+                }
+            }
+        }
+        return checked == 0
+    }
+
+    private fun primaryScreenFullHeight(): Double {
+        val primary = (NSScreen.screens.firstOrNull() as? NSScreen) ?: NSScreen.mainScreen ?: return 0.0
+        return primary.frame.useContents { size.height }
+    }
+
+    private fun applyWindowOriginTopLeft(nsWindow: NSWindow, x: Int, y: Int) {
+        val primaryH = primaryScreenFullHeight()
+        if (primaryH <= 0.0) return
+        val frameH = nsWindow.frame.useContents { size.height }
+        val appKitY = primaryH - y.toDouble() - frameH
+        nsWindow.setFrameOrigin(NSMakePoint(x.toDouble(), appKitY))
+    }
+
+    private fun computeWindowOriginTopLeft(nsWindow: NSWindow): Pair<Int, Int>? {
+        val primaryH = primaryScreenFullHeight()
+        if (primaryH <= 0.0) return null
+        var outX = 0
+        var outY = 0
+        nsWindow.frame.useContents {
+            outX = origin.x.roundToInt()
+            outY = (primaryH - (origin.y + size.height)).roundToInt()
+        }
+        return outX to outY
+    }
+
     fun presentWindow(windowImpl: MacosWindowNativeImpl) {
         if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
             dispatch_async(dispatch_get_main_queue()) { presentWindow(windowImpl) }
             return
         }
+        if (!windowImpl.isVisible()) return
         ensureAppInitialized()
         val key = windowImpl.nativeWidget.nativePointer
         val existing = sessions[key]
         if (existing != null) {
+            existing.hidingAfterFullscreenExit = false
             existing.lastStageActivityTimeMs = monotonicTimeMs()
             existing.overlayHudAlpha = 1f
+            val wantFs = windowImpl.isFullscreen()
+            if (wantFs) {
+                clearWindowContentAspectRatio(existing.nsWindow)
+            }
+            requestWindowFullscreen(existing, wantFs, deferToggleToNextTurn = wantFs)
             syncWindowProperties(windowImpl)
+            if (!wantFs && windowImpl.getWindowState() == WindowState.NORMAL && windowImpl.hasExplicitWindowPosition()) {
+                val pos = windowImpl.getWindowPosition()
+                applyWindowOriginTopLeft(existing.nsWindow, pos.x.toInt(), pos.y.toInt())
+            }
+            applyWindowLevel(existing.nsWindow, windowImpl, existing)
             existing.nsWindow.makeKeyAndOrderFront(null)
             existing.nsWindow.makeFirstResponder(existing.canvasView)
             NSApplication.sharedApplication.activateIgnoringOtherApps(true)
             activeKeyWindowId = key
-            requestWindowFullscreen(existing, windowImpl.isFullscreen())
             existing.canvasView.setNeedsDisplay(true)
             return
         }
@@ -688,14 +772,26 @@ object MacosNativeWindowHost {
         )
         session.appliedTitleBarChromeMode = initialChromeMode
         session.lastStageActivityTimeMs = monotonicTimeMs()
+        val initialFullscreen = windowImpl.isFullscreen()
+        if (initialFullscreen) {
+            clearWindowContentAspectRatio(nsWindow)
+        }
         sessions[key] = session
 
         nsWindow.contentView = canvasView
         nsWindow.delegate = delegate
 
         applyAppearanceToWindow(nsWindow)
+        if (initialFullscreen) {
+            requestWindowFullscreen(session, targetFullscreen = true, deferToggleToNextTurn = true)
+        }
         syncWindowProperties(windowImpl)
-        nsWindow.center()
+        if (windowImpl.hasExplicitWindowPosition()) {
+            val pos = windowImpl.getWindowPosition()
+            applyWindowOriginTopLeft(nsWindow, pos.x.toInt(), pos.y.toInt())
+        } else {
+            nsWindow.center()
+        }
 
         val ownerImpl = windowImpl.ownerWindow as? MacosWindowNativeImpl
         if (ownerImpl != null) {
@@ -712,10 +808,6 @@ object MacosNativeWindowHost {
         nsWindow.makeFirstResponder(canvasView)
         NSApplication.sharedApplication.activateIgnoringOtherApps(true)
         activeKeyWindowId = key
-
-        if (windowImpl.isFullscreen()) {
-            requestWindowFullscreen(session, targetFullscreen = true, deferToggleToNextTurn = true)
-        }
 
         onNativeWindowDidResize(key, isDialog = false)
         canvasView.setNeedsDisplay(true)
@@ -836,8 +928,18 @@ object MacosNativeWindowHost {
         }
     }
 
-    private fun applyWindowLevel(nsWindow: NSWindow, windowImpl: MacosWindowNativeImpl) {
-        val shouldFloat = windowImpl.isAlwaysOnTop() || (windowImpl.isToolModalWindow && windowImpl.alwaysOnTopOfOwner)
+    private fun applyWindowLevel(
+        nsWindow: NSWindow,
+        windowImpl: MacosWindowNativeImpl,
+        session: MacosWindowSession? = sessions[windowImpl.nativeWidget.nativePointer]
+    ) {
+        val isNativeFs = (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+        val inFullscreenOrTransition = isNativeFs ||
+            windowImpl.isFullscreen() ||
+            (session?.isFullscreenTransitionInFlight == true) ||
+            (session?.targetFullscreen == true)
+        val shouldFloat = !inFullscreenOrTransition &&
+            (windowImpl.isAlwaysOnTop() || (windowImpl.isToolModalWindow && windowImpl.alwaysOnTopOfOwner))
         if (shouldFloat) {
             if (nsWindow.level < NSFloatingWindowLevel) {
                 nsWindow.level = NSFloatingWindowLevel
@@ -845,6 +947,10 @@ object MacosNativeWindowHost {
         } else if (nsWindow.level <= NSFloatingWindowLevel) {
             nsWindow.level = NSNormalWindowLevel
         }
+    }
+
+    internal fun clearWindowContentAspectRatio(nsWindow: NSWindow) {
+        nsWindow.contentResizeIncrements = NSMakeSize(1.0, 1.0)
     }
 
     private fun applyWindowAspectRatio(session: MacosWindowSession, windowImpl: MacosWindowNativeImpl) {
@@ -857,23 +963,18 @@ object MacosNativeWindowHost {
             !session.programmaticMaximized &&
             !nsWindow.zoomed
         val ratio = windowImpl.getAspectRatio()
-        val targetW: Double
-        val targetH: Double
         if (isNormal && ratio != null && ratio.isFinite() && ratio > 0.0) {
-            targetW = ratio
-            targetH = 1.0
+            var curW = 0.0
+            var curH = 0.0
+            nsWindow.contentAspectRatio.useContents {
+                curW = width
+                curH = height
+            }
+            if (abs(curW - ratio) > 1e-4 || abs(curH - 1.0) > 1e-4) {
+                nsWindow.contentAspectRatio = NSMakeSize(ratio, 1.0)
+            }
         } else {
-            targetW = 0.0
-            targetH = 0.0
-        }
-        var curW = 0.0
-        var curH = 0.0
-        nsWindow.contentAspectRatio.useContents {
-            curW = width
-            curH = height
-        }
-        if (abs(curW - targetW) > 1e-4 || abs(curH - targetH) > 1e-4) {
-            nsWindow.contentAspectRatio = NSMakeSize(targetW, targetH)
+            clearWindowContentAspectRatio(nsWindow)
         }
     }
 
@@ -884,9 +985,12 @@ object MacosNativeWindowHost {
         }
         val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
         val nsWindow = session.nsWindow
-        syncUnifiedTitleBarChrome(session, force = true)
+        val isNativeFs = (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+        if (!isNativeFs && !session.isFullscreenTransitionInFlight) {
+            syncUnifiedTitleBarChrome(session, force = true)
+        }
         nsWindow.title = windowImpl.getTitle()
-        applyWindowLevel(nsWindow, windowImpl)
+        applyWindowLevel(nsWindow, windowImpl, session)
         applyWindowAspectRatio(session, windowImpl)
         syncWindowSize(windowImpl)
         session.canvasView.setNeedsDisplay(true)
@@ -960,7 +1064,11 @@ object MacosNativeWindowHost {
                 }
                 applyTitleBarAppearanceForMode(nsWindow, mode)
                 applyMinContentSizeForMode(session, mode)
-                if ((maskChanged || (previousMode >= 0 && modeChanged)) && savedW > 0.0 && savedH > 0.0) {
+                if ((maskChanged || (previousMode >= 0 && modeChanged)) &&
+                    savedX.isFinite() && savedY.isFinite() &&
+                    savedW.isFinite() && savedH.isFinite() &&
+                    savedW > 0.0 && savedH > 0.0
+                ) {
                     nsWindow.setFrame(NSMakeRect(savedX, savedY, savedW, savedH), display = false)
                 }
                 var expectedW = 0.0
@@ -975,7 +1083,8 @@ object MacosNativeWindowHost {
                     curCanvasW = size.width
                     curCanvasH = size.height
                 }
-                if (expectedW > 0.0 && expectedH > 0.0 &&
+                if (expectedW.isFinite() && expectedH.isFinite() &&
+                    expectedW > 0.0 && expectedH > 0.0 &&
                     (abs(curCanvasW - expectedW) > 0.5 || abs(curCanvasH - expectedH) > 0.5)
                 ) {
                     session.canvasView.setFrameSize(NSMakeSize(expectedW, expectedH))
@@ -1036,6 +1145,26 @@ object MacosNativeWindowHost {
         }
     }
 
+    fun syncWindowPosition(windowImpl: MacosWindowNativeImpl) {
+        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
+            dispatch_async(dispatch_get_main_queue()) { syncWindowPosition(windowImpl) }
+            return
+        }
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        val nsWindow = session.nsWindow
+        if (session.isFullscreenTransitionInFlight ||
+            (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL ||
+            windowImpl.isFullscreen() ||
+            windowImpl.getWindowState() != WindowState.NORMAL
+        ) {
+            return
+        }
+        if (windowImpl.hasExplicitWindowPosition()) {
+            val pos = windowImpl.getWindowPosition()
+            applyWindowOriginTopLeft(nsWindow, pos.x.toInt(), pos.y.toInt())
+        }
+    }
+
     fun syncWindowState(windowImpl: MacosWindowNativeImpl) {
         if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
             dispatch_async(dispatch_get_main_queue()) { syncWindowState(windowImpl) }
@@ -1050,7 +1179,7 @@ object MacosNativeWindowHost {
             }
             WindowState.MAXIMIZED -> {
                 session.programmaticMaximized = true
-                nsWindow.contentAspectRatio = NSMakeSize(0.0, 0.0)
+                clearWindowContentAspectRatio(nsWindow)
                 if (nsWindow.miniaturized) nsWindow.deminiaturize(null)
                 NSScreen.mainScreen?.visibleFrame?.let { visibleRect ->
                     nsWindow.setFrame(visibleRect, display = true)
@@ -1058,7 +1187,7 @@ object MacosNativeWindowHost {
             }
             WindowState.FULLSCREEN -> {
                 session.programmaticMaximized = false
-                nsWindow.contentAspectRatio = NSMakeSize(0.0, 0.0)
+                clearWindowContentAspectRatio(nsWindow)
                 syncFullscreen(windowImpl, true)
             }
             WindowState.NORMAL, WindowState.PICTURE_IN_PICTURE -> {
@@ -1089,11 +1218,15 @@ object MacosNativeWindowHost {
         if (targetFullscreen == currentlyFullscreen) {
             session.targetFullscreen = currentlyFullscreen
             session.pendingTargetFullscreen = null
-            session.windowImpl?.let { applyWindowAspectRatio(session, it) }
+            session.windowImpl?.let {
+                applyWindowLevel(nsWindow, it, session)
+                applyWindowAspectRatio(session, it)
+            }
             return
         }
-        if (targetFullscreen) {
-            nsWindow.contentAspectRatio = NSMakeSize(0.0, 0.0)
+        clearWindowContentAspectRatio(nsWindow)
+        if (nsWindow.level <= NSFloatingWindowLevel && nsWindow.level > NSNormalWindowLevel) {
+            nsWindow.level = NSNormalWindowLevel
         }
         session.targetFullscreen = targetFullscreen
         session.isFullscreenTransitionInFlight = true
@@ -1102,10 +1235,24 @@ object MacosNativeWindowHost {
         if (deferToggleToNextTurn) {
             dispatch_async(dispatch_get_main_queue()) {
                 val liveSession = sessions[session.windowKey] ?: return@dispatch_async
+                val liveWin = liveSession.windowImpl
                 val liveNowFullscreen = (liveSession.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+                if (liveSession.hidingAfterFullscreenExit || (liveWin != null && !liveWin.isVisible())) {
+                    liveSession.pendingTargetFullscreen = null
+                    if (!liveNowFullscreen) {
+                        liveSession.isFullscreenTransitionInFlight = false
+                        liveSession.targetFullscreen = false
+                        liveSession.hidingAfterFullscreenExit = false
+                        liveSession.nsWindow.orderOut(null)
+                        return@dispatch_async
+                    }
+                    liveSession.hidingAfterFullscreenExit = true
+                    liveSession.targetFullscreen = false
+                }
                 if (liveSession.targetFullscreen != liveNowFullscreen) {
-                    if (liveSession.targetFullscreen) {
-                        liveSession.nsWindow.contentAspectRatio = NSMakeSize(0.0, 0.0)
+                    clearWindowContentAspectRatio(liveSession.nsWindow)
+                    if (liveSession.nsWindow.level <= NSFloatingWindowLevel && liveSession.nsWindow.level > NSNormalWindowLevel) {
+                        liveSession.nsWindow.level = NSNormalWindowLevel
                     }
                     liveSession.fullscreenTransitionStartedMs = monotonicTimeMs()
                     liveSession.nsWindow.toggleFullScreen(null)
@@ -1124,6 +1271,17 @@ object MacosNativeWindowHost {
             return
         }
         val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        if (!windowImpl.isVisible()) {
+            val currentlyFullscreen = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+            if (!fullscreen && (currentlyFullscreen || session.isFullscreenTransitionInFlight || session.targetFullscreen)) {
+                session.hidingAfterFullscreenExit = true
+                requestWindowFullscreen(session, false)
+            } else if (!session.isFullscreenTransitionInFlight) {
+                session.targetFullscreen = fullscreen
+                session.pendingTargetFullscreen = null
+            }
+            return
+        }
         requestWindowFullscreen(session, fullscreen)
         session.canvasView.setNeedsDisplay(true)
     }
@@ -1146,20 +1304,33 @@ object MacosNativeWindowHost {
             if (session == null) {
                 presentWindow(windowImpl)
             } else {
+                session.hidingAfterFullscreenExit = false
                 session.lastStageActivityTimeMs = monotonicTimeMs()
                 session.overlayHudAlpha = 1f
+                val wantFs = windowImpl.isFullscreen()
+                if (wantFs) {
+                    clearWindowContentAspectRatio(session.nsWindow)
+                }
+                requestWindowFullscreen(session, wantFs, deferToggleToNextTurn = wantFs)
+                syncWindowProperties(windowImpl)
+                if (!wantFs && windowImpl.getWindowState() == WindowState.NORMAL && windowImpl.hasExplicitWindowPosition()) {
+                    val pos = windowImpl.getWindowPosition()
+                    applyWindowOriginTopLeft(session.nsWindow, pos.x.toInt(), pos.y.toInt())
+                }
+                applyWindowLevel(session.nsWindow, windowImpl, session)
                 session.nsWindow.makeKeyAndOrderFront(null)
                 session.nsWindow.makeFirstResponder(session.canvasView)
                 NSApplication.sharedApplication.activateIgnoringOtherApps(true)
                 activeKeyWindowId = session.windowKey
-                requestWindowFullscreen(session, windowImpl.isFullscreen())
                 session.canvasView.setNeedsDisplay(true)
             }
         } else if (session != null) {
             val currentlyFullscreen = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-            if (currentlyFullscreen || session.isFullscreenTransitionInFlight) {
+            if (currentlyFullscreen || session.isFullscreenTransitionInFlight || session.targetFullscreen) {
+                session.hidingAfterFullscreenExit = true
                 requestWindowFullscreen(session, false)
             } else {
+                session.hidingAfterFullscreenExit = false
                 session.nsWindow.orderOut(null)
             }
         }
@@ -1235,9 +1406,10 @@ object MacosNativeWindowHost {
             val win = session.windowImpl
             if (win != null) {
                 val nativeIsFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+                val expectedFs = session.pendingTargetFullscreen ?: session.targetFullscreen
                 val effectiveIsFs = when {
                     !win.isVisible() -> win.isFullscreen()
-                    session.isFullscreenTransitionInFlight -> session.targetFullscreen
+                    session.isFullscreenTransitionInFlight || session.pendingTargetFullscreen != null -> expectedFs
                     else -> nativeIsFs
                 }
                 val nativeZoomed = session.nsWindow.zoomed
@@ -1252,12 +1424,45 @@ object MacosNativeWindowHost {
                     syncUnifiedTitleBarChrome(session)
                 }
                 applyWindowAspectRatio(session, win)
+                val origin = if (
+                    win.isVisible() &&
+                    !effectiveIsFs &&
+                    !effectiveMaximized &&
+                    !nativeIsFs &&
+                    !session.isFullscreenTransitionInFlight
+                ) {
+                    computeWindowOriginTopLeft(session.nsWindow)
+                } else {
+                    null
+                }
                 GenericUiThreading.runOnLogic {
+                    if (origin != null) {
+                        win.notifyHostMovedFromOs(origin.first, origin.second)
+                    }
                     win.notifyHostResizedFromOs(w, h, effectiveIsFs, effectiveMaximized)
                 }
             }
         }
         invalidateSessionWindow(session)
+    }
+
+    internal fun onNativeWindowDidMove(windowKey: Long, isDialog: Boolean) {
+        if (isDialog) return
+        val session = sessions[windowKey] ?: return
+        if (session.isApplyingChromeGeometryTransition || session.isFullscreenTransitionInFlight) return
+        val win = session.windowImpl ?: return
+        if (!win.isVisible()) return
+        val nativeIsFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+        if (nativeIsFs || win.isFullscreen() || session.targetFullscreen ||
+            session.pendingTargetFullscreen == true || session.programmaticMaximized ||
+            session.nsWindow.zoomed || win.getWindowState() != WindowState.NORMAL
+        ) {
+            return
+        }
+        val origin = computeWindowOriginTopLeft(session.nsWindow) ?: return
+        GenericUiThreading.runOnLogic {
+            win.notifyHostMovedFromOs(origin.first, origin.second)
+        }
     }
 
     internal fun onNativeWindowWillUseStandardFrame(windowKey: Long, isDialog: Boolean, window: NSWindow) {
@@ -1270,7 +1475,7 @@ object MacosNativeWindowHost {
         if (isDialog) return
         val session = sessions[windowKey] ?: return
         if (!session.lastKnownZoomed && !session.programmaticMaximized) {
-            window.contentAspectRatio = NSMakeSize(0.0, 0.0)
+            clearWindowContentAspectRatio(window)
         }
     }
 
@@ -1307,8 +1512,9 @@ object MacosNativeWindowHost {
     ) {
         if (isDialog) return
         val session = sessions[windowKey] ?: return
-        if (enteringFullscreen) {
-            session.nsWindow.contentAspectRatio = NSMakeSize(0.0, 0.0)
+        clearWindowContentAspectRatio(session.nsWindow)
+        if (session.nsWindow.level <= NSFloatingWindowLevel && session.nsWindow.level > NSNormalWindowLevel) {
+            session.nsWindow.level = NSNormalWindowLevel
         }
         session.targetFullscreen = enteringFullscreen
         session.isFullscreenTransitionInFlight = true
@@ -1319,9 +1525,17 @@ object MacosNativeWindowHost {
         if (isDialog) return
         val session = sessions[windowKey] ?: return
         session.isFullscreenTransitionInFlight = false
-        session.targetFullscreen = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+        val nativeFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+        session.targetFullscreen = nativeFs
         session.pendingTargetFullscreen = null
-        session.windowImpl?.let { applyWindowAspectRatio(session, it) }
+        val win = session.windowImpl
+        if ((session.hidingAfterFullscreenExit || win?.isVisible() == false) && !nativeFs) {
+            session.hidingAfterFullscreenExit = false
+            session.nsWindow.orderOut(null)
+        } else if (win != null) {
+            applyWindowLevel(session.nsWindow, win, session)
+            applyWindowAspectRatio(session, win)
+        }
         invalidateSessionWindow(session)
     }
 
@@ -1332,25 +1546,15 @@ object MacosNativeWindowHost {
         session.isFullscreenTransitionInFlight = false
         session.targetFullscreen = fullscreen
         if (!fullscreen) {
-            syncUnifiedTitleBarChrome(session, force = true)
-            applyWindowAspectRatio(session, win)
-            val ratio = win.getAspectRatio()
-            if (ratio != null && !session.programmaticMaximized && !session.nsWindow.zoomed) {
-                val curViewW = session.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
-                val curViewH = session.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
-                val curViewSize = Size(curViewW, curViewH)
-                if (!WindowAspectRatioHelper.matchesAspectRatio(curViewSize, ratio, tolerancePx = 2)) {
-                    val clamped = WindowAspectRatioHelper.clampClientSize(curViewSize, ratio, win.getMinWindowSize())
-                    session.nsWindow.setContentSize(NSMakeSize(clamped.width.toDouble(), clamped.height.toDouble()))
-                }
-            }
-            if (!win.isVisible()) {
+            if (!win.isVisible() || session.hidingAfterFullscreenExit) {
+                session.hidingAfterFullscreenExit = false
                 session.pendingTargetFullscreen = null
                 session.nsWindow.orderOut(null)
+                invalidateSessionWindow(session)
                 return
             }
         } else {
-            session.nsWindow.contentAspectRatio = NSMakeSize(0.0, 0.0)
+            clearWindowContentAspectRatio(session.nsWindow)
             var expectedW = 0.0
             var expectedH = 0.0
             session.nsWindow.contentRectForFrameRect(session.nsWindow.frame).useContents {
@@ -1363,10 +1567,16 @@ object MacosNativeWindowHost {
                 curW = size.width
                 curH = size.height
             }
-            if (expectedW > 0.0 && expectedH > 0.0 &&
+            if (expectedW.isFinite() && expectedH.isFinite() &&
+                expectedW > 0.0 && expectedH > 0.0 &&
                 (abs(curW - expectedW) > 0.5 || abs(curH - expectedH) > 0.5)
             ) {
                 session.canvasView.setFrameSize(NSMakeSize(expectedW, expectedH))
+            }
+            if (!win.isVisible() || session.hidingAfterFullscreenExit) {
+                session.hidingAfterFullscreenExit = true
+                requestWindowFullscreen(session, false, deferToggleToNextTurn = true)
+                return
             }
         }
         val w = session.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
@@ -1374,11 +1584,54 @@ object MacosNativeWindowHost {
         val pendingTarget = session.pendingTargetFullscreen
         session.pendingTargetFullscreen = null
         if (pendingTarget != null && pendingTarget != fullscreen) {
-            requestWindowFullscreen(session, pendingTarget)
+            requestWindowFullscreen(session, pendingTarget, deferToggleToNextTurn = true)
         } else {
             val effectiveMax = !fullscreen && (session.nsWindow.zoomed || session.programmaticMaximized)
             GenericUiThreading.runOnLogic {
                 win.notifyHostResizedFromOs(w, h, fullscreen, effectiveMax)
+            }
+            if (!fullscreen) {
+                dispatch_async(dispatch_get_main_queue()) {
+                    val liveSession = sessions[windowKey] ?: return@dispatch_async
+                    val liveWin = liveSession.windowImpl ?: return@dispatch_async
+                    if (liveSession.isFullscreenTransitionInFlight ||
+                        (liveSession.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL ||
+                        !liveWin.isVisible()
+                    ) {
+                        return@dispatch_async
+                    }
+                    syncUnifiedTitleBarChrome(liveSession, force = true)
+                    applyWindowLevel(liveSession.nsWindow, liveWin, liveSession)
+                    applyWindowAspectRatio(liveSession, liveWin)
+                    val ratio = liveWin.getAspectRatio()
+                    if (ratio != null && !liveSession.programmaticMaximized && !liveSession.nsWindow.zoomed) {
+                        val curViewW = liveSession.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
+                        val curViewH = liveSession.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
+                        val curViewSize = Size(curViewW, curViewH)
+                        if (!WindowAspectRatioHelper.matchesAspectRatio(curViewSize, ratio, tolerancePx = 2)) {
+                            val screen = liveSession.nsWindow.screen ?: NSScreen.mainScreen
+                            var maxContentW = curViewW
+                            var maxContentH = curViewH
+                            if (screen != null) {
+                                liveSession.nsWindow.contentRectForFrameRect(screen.visibleFrame).useContents {
+                                    if (size.width > 64.0 && size.height > 64.0) {
+                                        maxContentW = size.width.toInt()
+                                        maxContentH = size.height.toInt()
+                                    }
+                                }
+                            }
+                            val bounded = Size(
+                                curViewW.coerceAtMost(maxContentW),
+                                curViewH.coerceAtMost(maxContentH)
+                            )
+                            val clamped = WindowAspectRatioHelper.clampClientSize(bounded, ratio, liveWin.getMinWindowSize())
+                            val fitW = clamped.width.coerceAtMost(maxContentW)
+                            val fitH = clamped.height.coerceAtMost(maxContentH)
+                            liveSession.nsWindow.setContentSize(NSMakeSize(fitW.toDouble(), fitH.toDouble()))
+                        }
+                    }
+                    invalidateSessionWindow(liveSession)
+                }
             }
         }
         invalidateSessionWindow(session)
@@ -1417,7 +1670,11 @@ object MacosNativeWindowHost {
 
         pollSystemThemeIfChanged(nowMs)
 
-        GenericUiThreading.flushAllQueues()
+        if (NSThread.isMainThread) {
+            GenericUiThreading.activeDispatcher.drainUiQueue()
+        } else {
+            GenericUiThreading.flushAllQueues()
+        }
 
         val vblankWidgets = DesktopNativeWidget.activeVBlankWidgetsSnapshot()
         if (vblankWidgets.isNotEmpty()) {
@@ -1426,7 +1683,11 @@ object MacosNativeWindowHost {
                     widget.vblankDispatch?.invoke(nowMs)
                 }
             }
-            GenericUiThreading.flushAllQueues()
+            if (NSThread.isMainThread) {
+                GenericUiThreading.activeDispatcher.drainUiQueue()
+            } else {
+                GenericUiThreading.flushAllQueues()
+            }
         }
 
         val checkSpinnerTick = (nowMs - lastSpinnerRedrawMs) >= 66.0

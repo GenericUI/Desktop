@@ -42,6 +42,7 @@ import com.nexustools.genericui.style.css.CssCustomCursor
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.threading.GenericUiThreading
+import com.nexustools.genericui.window.MainWindowSavedState
 import com.nexustools.genericui.window.TitleBar
 import com.nexustools.genericui.window.WindowAspectRatioHelper
 import com.nexustools.genericui.windows.render.Win32WorkspaceWindowRenderUtil
@@ -1434,6 +1435,62 @@ object Win32NativeWindowHost {
         }
     }
 
+    fun getPrimaryMonitorBounds(): Rect? {
+        val w = GetSystemMetrics(SM_CXSCREEN)
+        val h = GetSystemMetrics(SM_CYSCREEN)
+        return if (w > 0 && h > 0) Rect(0, 0, w, h) else null
+    }
+
+    fun isWindowRectOnScreen(rect: Rect): Boolean = memScoped {
+        if (rect.width <= 0 || rect.height <= 0) return@memScoped false
+        val rc = alloc<RECT>().apply {
+            left = rect.x
+            top = rect.y
+            right = rect.right
+            bottom = rect.bottom
+        }
+        val hMon = MonitorFromRect(rc.ptr, 0u) ?: return@memScoped false
+        val mi = alloc<MONITORINFO>()
+        mi.cbSize = sizeOf<MONITORINFO>().toUInt()
+        if (GetMonitorInfoW(hMon, mi.ptr) == 0) return@memScoped true
+        val workRect = Rect(
+            mi.rcWork.left,
+            mi.rcWork.top,
+            (mi.rcWork.right - mi.rcWork.left).coerceAtLeast(1),
+            (mi.rcWork.bottom - mi.rcWork.top).coerceAtLeast(1)
+        )
+        MainWindowSavedState.intersectsVisibleArea(rect, workRect)
+    }
+
+    fun setWindowPosition(windowImpl: WindowsWindowNativeImpl, x: Int, y: Int) {
+        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
+        GenericUiThreading.runOnUi {
+            val hwnd = activeHwnd ?: return@runOnUi
+            if (activeWindowImpl !== windowImpl || IsWindow(hwnd) == 0) return@runOnUi
+            if (isFullscreenActiveForMainWindow() || IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0) return@runOnUi
+            memScoped {
+                val r = alloc<RECT>()
+                if (GetWindowRect(hwnd, r.ptr) != 0) {
+                    savedWindowRect = intArrayOf(
+                        x,
+                        y,
+                        (r.right - r.left).coerceAtLeast(320),
+                        (r.bottom - r.top).coerceAtLeast(240)
+                    )
+                }
+            }
+            SetWindowPos(
+                hwnd,
+                null,
+                x,
+                y,
+                0,
+                0,
+                (SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE).toUInt()
+            )
+        }
+    }
+
     fun setWindowVisible(windowImpl: WindowsWindowNativeImpl, visible: Boolean) {
         if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
         val existingHwnd = activeHwnd
@@ -1444,7 +1501,30 @@ object Win32NativeWindowHost {
             return
         }
         if (visible) {
+            if (!windowImpl.isFullscreen() && isWindowFullscreenActive) {
+                setWindowFullscreen(windowImpl = windowImpl, fullscreen = false, targetElementWidget = null)
+            }
+            if (!windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL) {
+                if (windowImpl.hasExplicitWindowPosition()) {
+                    val pos = windowImpl.getWindowPosition()
+                    setWindowPosition(windowImpl, pos.x.toInt(), pos.y.toInt())
+                }
+                setWindowClientSize(windowImpl, windowImpl.getWindowSize())
+            }
             if (windowImpl.isFullscreen() && !isWindowFullscreenActive) {
+                if (windowImpl.hasExplicitWindowPosition()) {
+                    val pos = windowImpl.getWindowPosition()
+                    SetWindowPos(
+                        existingHwnd,
+                        null,
+                        pos.x.toInt(),
+                        pos.y.toInt(),
+                        0,
+                        0,
+                        (SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE).toUInt()
+                    )
+                }
+                setWindowClientSize(windowImpl, windowImpl.getWindowSize())
                 setWindowFullscreen(
                     windowImpl = windowImpl,
                     fullscreen = true,
@@ -1594,8 +1674,8 @@ object Win32NativeWindowHost {
             val minHeightPx = maxOf(minSize?.height ?: 0, attrMinH)
             val size = windowImpl.getWindowSize()
             val hasAspect = activeWindowAspectRatio != null
-            val width = if (hasAspect) maxOf(size.width, minWidthPx, 320) else maxOf(size.width, minWidthPx, 860)
-            val height = if (hasAspect) maxOf(size.height, minHeightPx, 240) else maxOf(size.height, minHeightPx, 620)
+            val clientW = maxOf(size.width, minWidthPx, 320)
+            val clientH = maxOf(size.height, minHeightPx, 240)
             val title = windowImpl.getTitle().ifBlank { "GenericUI" }
 
             val initialStyle = if (visualTestMode || startHidden) {
@@ -1605,13 +1685,26 @@ object Win32NativeWindowHost {
             }
             val initialExStyle = WS_EX_APPWINDOW.toUInt() or
                 (if (windowImpl.isAlwaysOnTop()) WS_EX_TOPMOST.toUInt() else 0u)
+            val outerAdjust = alloc<RECT>().apply {
+                left = 0
+                top = 0
+                right = clientW
+                bottom = clientH
+            }
+            AdjustWindowRectEx(outerAdjust.ptr, initialStyle, 0, initialExStyle)
+            val width = (outerAdjust.right - outerAdjust.left).coerceAtLeast(clientW)
+            val height = (outerAdjust.bottom - outerAdjust.top).coerceAtLeast(clientH)
+            val hasExplicitPos = windowImpl.hasExplicitWindowPosition()
+            val explicitPos = windowImpl.getWindowPosition()
+            val initialX = if (hasExplicitPos) explicitPos.x.toInt() else CW_USEDEFAULT
+            val initialY = if (hasExplicitPos) explicitPos.y.toInt() else CW_USEDEFAULT
             val hwnd = CreateWindowExW(
                 dwExStyle = initialExStyle,
                 lpClassName = className,
                 lpWindowName = title,
                 dwStyle = initialStyle,
-                X = 284,
-                Y = 198,
+                X = initialX,
+                Y = initialY,
                 nWidth = width,
                 nHeight = height,
                 hWndParent = null,
@@ -1646,21 +1739,45 @@ object Win32NativeWindowHost {
                         0,
                         (SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE).toUInt()
                     )
+                    run {
+                        val wr = alloc<RECT>()
+                        if (GetWindowRect(hwnd, wr.ptr) != 0) {
+                            savedWindowRect = intArrayOf(
+                                wr.left,
+                                wr.top,
+                                (wr.right - wr.left).coerceAtLeast(320),
+                                (wr.bottom - wr.top).coerceAtLeast(240)
+                            )
+                        }
+                    }
                     ShowWindow(hwnd, SW_HIDE)
                 } else if (visualTestMode) {
                     ShowWindow(hwnd, SW_SHOWNOACTIVATE)
                     syncMultiWindowDocks()
                     syncActiveDialogWindows()
                     if (lastMultiWindowVisibilityState != true) {
+                        val posFlags = (if (hasExplicitPos) 0 else SWP_NOMOVE) or
+                            SWP_SHOWWINDOW or SWP_FRAMECHANGED or SWP_NOACTIVATE
                         SetWindowPos(
                             hwnd,
                             zInsertAfter,
-                            80,
-                            50,
+                            if (hasExplicitPos) explicitPos.x.toInt() else 0,
+                            if (hasExplicitPos) explicitPos.y.toInt() else 0,
                             width,
                             height,
-                            (SWP_SHOWWINDOW or SWP_FRAMECHANGED or SWP_NOACTIVATE).toUInt()
+                            posFlags.toUInt()
                         )
+                    }
+                    run {
+                        val wr = alloc<RECT>()
+                        if (GetWindowRect(hwnd, wr.ptr) != 0) {
+                            savedWindowRect = intArrayOf(
+                                wr.left,
+                                wr.top,
+                                (wr.right - wr.left).coerceAtLeast(320),
+                                (wr.bottom - wr.top).coerceAtLeast(240)
+                            )
+                        }
                     }
                     if (hasAspect && !windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL) {
                         setWindowClientSize(windowImpl, windowImpl.getWindowSize())
@@ -1680,15 +1797,28 @@ object Win32NativeWindowHost {
                     syncMultiWindowDocks()
                     syncActiveDialogWindows()
                     if (lastMultiWindowVisibilityState != true) {
+                        val posFlags = (if (hasExplicitPos) 0 else SWP_NOMOVE) or
+                            SWP_SHOWWINDOW or SWP_FRAMECHANGED
                         SetWindowPos(
                             hwnd,
                             zInsertAfter,
-                            80,
-                            50,
+                            if (hasExplicitPos) explicitPos.x.toInt() else 0,
+                            if (hasExplicitPos) explicitPos.y.toInt() else 0,
                             width,
                             height,
-                            (SWP_SHOWWINDOW or SWP_FRAMECHANGED).toUInt()
+                            posFlags.toUInt()
                         )
+                    }
+                    run {
+                        val wr = alloc<RECT>()
+                        if (GetWindowRect(hwnd, wr.ptr) != 0) {
+                            savedWindowRect = intArrayOf(
+                                wr.left,
+                                wr.top,
+                                (wr.right - wr.left).coerceAtLeast(320),
+                                (wr.bottom - wr.top).coerceAtLeast(240)
+                            )
+                        }
                     }
                     if (hasAspect && !windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL) {
                         setWindowClientSize(windowImpl, windowImpl.getWindowSize())
@@ -2853,6 +2983,30 @@ object Win32NativeWindowHost {
                     zoomedNow = zoomed,
                     iconicNow = iconic
                 )
+            }
+        }
+    }
+
+    fun handleWindowMove(hwnd: HWND) = memScoped {
+        if (hwnd != activeHwnd) return@memScoped
+        val winImpl = activeWindowImpl ?: return@memScoped
+        if (IsWindowVisible(hwnd) == 0 || isFullscreenActiveForMainWindow() || winImpl.isFullscreen() ||
+            IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 || winImpl.getWindowState() != WindowState.NORMAL
+        ) {
+            return@memScoped
+        }
+        val r = alloc<RECT>()
+        if (GetWindowRect(hwnd, r.ptr) != 0) {
+            val x = r.left
+            val y = r.top
+            savedWindowRect = intArrayOf(
+                x,
+                y,
+                (r.right - r.left).coerceAtLeast(320),
+                (r.bottom - r.top).coerceAtLeast(240)
+            )
+            GenericUiThreading.runOnLogic {
+                winImpl.notifyHostPositionChanged(x, y)
             }
         }
     }
@@ -13884,6 +14038,12 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
             if (hwnd != null) {
                 runCatching { Win32NativeWindowHost.handleWindowResize(hwnd) }
                 InvalidateRect(hwnd, null, 0)
+            }
+            return 0L
+        }
+        WM_MOVE -> {
+            if (hwnd != null) {
+                runCatching { Win32NativeWindowHost.handleWindowMove(hwnd) }
             }
             return 0L
         }

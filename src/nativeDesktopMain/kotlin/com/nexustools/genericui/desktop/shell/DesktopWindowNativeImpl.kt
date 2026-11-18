@@ -7,6 +7,7 @@ import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockWindowNativeImpl
 import com.nexustools.genericui.enums.window.DisplayCutoutMode
 import com.nexustools.genericui.enums.window.WindowState
+import com.nexustools.genericui.geometry.Point
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
@@ -50,6 +51,9 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         get() = _ownedDialogWindows
 
     protected var windowTitle: String = ""
+    protected var positionXState: Int = 0
+    protected var positionYState: Int = 0
+    protected var hasExplicitPositionState: Boolean = false
     protected var currentWindowSize: Size = Size(1280f, 800f)
     private var minWindowSizeState: Size? = null
     protected var alwaysOnTopFlag: Boolean = false
@@ -65,6 +69,7 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     protected var inPipMode: Boolean = false
     protected var activePipConfig: PipConfig? = null
     protected var onWindowResizeListener: ((WindowConfiguration) -> Unit)? = null
+    protected var onWindowMovedListener: ((Int, Int) -> Unit)? = null
     protected var onWindowFocusChangedListener: ((Boolean) -> Unit)? = null
     protected var onWindowCloseRequestedListener: ((() -> Boolean))? = null
 
@@ -223,6 +228,30 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun getWindowSize(): Size = currentWindowSize
+
+    override fun setWindowPosition(x: Int, y: Int) {
+        positionXState = x
+        positionYState = y
+        hasExplicitPositionState = true
+        nativeWidget.attributes["windowX"] = x
+        nativeWidget.attributes["windowY"] = y
+    }
+
+    override fun getWindowPosition(): Point = Point(positionXState.toFloat(), positionYState.toFloat())
+
+    override fun hasExplicitWindowPosition(): Boolean = hasExplicitPositionState
+
+    protected fun updatePositionFromHost(x: Int, y: Int) {
+        val changed = positionXState != x || positionYState != y || !hasExplicitPositionState
+        positionXState = x
+        positionYState = y
+        hasExplicitPositionState = true
+        nativeWidget.attributes["windowX"] = x
+        nativeWidget.attributes["windowY"] = y
+        if (changed) {
+            onWindowMovedListener?.invoke(x, y)
+        }
+    }
 
     override fun setWindowState(state: WindowState) {
         currentWindowState = state
@@ -424,6 +453,10 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setOnWindowResize(listener: ((WindowConfiguration) -> Unit)?) {
         onWindowResizeListener = listener
+    }
+
+    override fun setOnWindowMoved(listener: ((Int, Int) -> Unit)?) {
+        onWindowMovedListener = listener
     }
 
     override fun setOnWindowFocusChanged(listener: ((Boolean) -> Unit)?) {

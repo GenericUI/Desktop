@@ -108,6 +108,22 @@ class GtkWindowNativeImpl : DesktopWindowNativeImpl<GtkWidgetHandle>(
         }
     }
 
+    override fun setWindowPosition(x: Int, y: Int) {
+        super.setWindowPosition(x, y)
+        if (GtkApplicationNativeImpl.interactiveGtkGuiEnabled && !suppressHostSync) {
+            GtkNativeWindowHost.syncWindowPosition(this)
+        }
+    }
+
+    internal fun notifyHostPositionChanged(x: Int, y: Int) {
+        suppressHostSync = true
+        try {
+            updatePositionFromHost(x, y)
+        } finally {
+            suppressHostSync = false
+        }
+    }
+
     override fun setWindowState(state: WindowState) {
         super.setWindowState(state)
         if (GtkApplicationNativeImpl.interactiveGtkGuiEnabled && !suppressHostSync) {
