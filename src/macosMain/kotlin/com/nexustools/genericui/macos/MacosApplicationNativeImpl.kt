@@ -60,6 +60,7 @@ class MacosApplicationNativeImpl :
     override fun onNativeExit(exitCode: Int) {
         nativeWidget.attributes["nsAppRunning"] = false
         nativeWidget.attributes["nsAppTerminateCode"] = exitCode
+        MacosSystemTrayNativeImpl.disposeAll()
         if (interactiveMacosGuiEnabled) {
             MacosNativeWindowHost.terminateEventLoop()
         }

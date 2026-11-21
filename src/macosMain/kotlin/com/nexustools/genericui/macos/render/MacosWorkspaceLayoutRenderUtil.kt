@@ -1321,6 +1321,19 @@ object MacosWorkspaceLayoutRenderUtil {
             else -> null
         }
 
+        if (styledImpl != null && styledVisuals?.hasBackdropFilter == true) {
+            MacosGraphicsDrawUtil.applyBackdropFilterRoundedRect(
+                ctx = ctx,
+                x = bounds.x,
+                y = bounds.y,
+                w = bounds.width,
+                h = bounds.height,
+                radiusPx = radius,
+                backdropBlurPx = styledVisuals.backdropBlurPx,
+                backdropFilter = styledVisuals.backdropFilter
+            )
+        }
+
         if (bg != null && bg.a > 0) {
             MacosGraphicsDrawUtil.fillRoundedRect(ctx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
         }

@@ -6,6 +6,7 @@ import com.nexustools.genericui.nativeimpl.action.StyledButtonNativeImpl
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.StyledVisualSpec
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import java.awt.Color
@@ -37,6 +38,10 @@ class SwingStyledButtonImpl(
                     ?: StyledVisualSpec.EMPTY
                 val focusedState = (getClientProperty("styledButtonFocused") as? Boolean) ?: hasFocus()
                 val componentOpacity = (getClientProperty("opacity") as? Float) ?: 1f
+                val effBackdrop = CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
+                if (effBackdrop != null && width > 0 && height > 0) {
+                    SwingHardwareBackdropBlurRenderer.paintBackdrop(g, this, effBackdrop, spec.borderRadiusPx ?: 0f)
+                }
                 SwingStyledContainerImpl.paintStyledSurface(
                     g = g,
                     width = width,
@@ -120,9 +125,13 @@ class SwingStyledButtonImpl(
         nativeWidget.isContentAreaFilled = false
         nativeWidget.isFocusPainted = false
         nativeWidget.isOpaque = false
-        nativeWidget.putClientProperty("backdropBlurPx", null)
-        nativeWidget.putClientProperty("backdrop-filter", null)
-        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
+        nativeWidget.putClientProperty("backdropBlurPx", current.backdropBlurPx)
+        nativeWidget.putClientProperty("backdropFilter", current.backdropFilter)
+        nativeWidget.putClientProperty(
+            "-webkit-backdrop-filter",
+            current.backdropFilter?.toCssString()
+                ?: current.backdropBlurPx?.takeIf { it > 0f }?.let { "blur(${it}px)" }
+        )
         nativeWidget.putClientProperty("styledButtonVisuals", current)
         nativeWidget.putClientProperty("styledButtonFocused", focused)
         nativeWidget.putClientProperty("backgroundColor", current.backgroundColor)

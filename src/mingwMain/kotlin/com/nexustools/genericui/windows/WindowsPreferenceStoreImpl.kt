@@ -37,69 +37,157 @@ class WindowsPreferenceStoreImpl(
         private set
 
     private val memoryCache = LinkedHashMap<String, ByteArray>()
-    private val knownKeys = LinkedHashSet<String>()
+    private val dirtyKeys = LinkedHashSet<String>()
     private val listeners = mutableListOf<PreferenceChangeListener>()
 
     init {
         configDir.ensureExists()
-        knownKeys.addAll(DesktopConfigDirectoryHelper.loadPersistedKeySet(configDirectory, '\\'))
-        knownKeys.addAll(configDir.keysForExtension(".bson"))
     }
 
     fun filePathForKey(key: String): String =
         configDir.resolveKeyPath(key, ".bson")
 
+    fun backupFilePathForKey(key: String): String =
+        configDir.resolveKeyPath(key, ".bson.old")
+
+    private fun isValidBsonBytes(bytes: ByteArray): Boolean =
+        BinaryJson.decodeElementOrNull(bytes) != null
+
+    private fun scanDiskKeys(): LinkedHashSet<String> {
+        val out = LinkedHashSet<String>()
+        val base = configDirectory.trimEnd('\\', '/')
+        for (fileName in DesktopConfigDirectoryHelper.listDirectoryFiles(configDirectory)) {
+            if (fileName.startsWith(".")) continue
+            when {
+                fileName.endsWith(".bson.old") && fileName.length > ".bson.old".length -> {
+                    val bytes = DesktopConfigDirectoryHelper.readBytesFromFile("$base\\$fileName")
+                    if (bytes != null && isValidBsonBytes(bytes)) {
+                        out.add(DesktopConfigDirectoryHelper.decodeKeyFileName(fileName.removeSuffix(".bson.old")))
+                    }
+                }
+                fileName.endsWith(".bson") && fileName.length > ".bson".length -> {
+                    val bytes = DesktopConfigDirectoryHelper.readBytesFromFile("$base\\$fileName")
+                    if (bytes != null && isValidBsonBytes(bytes)) {
+                        out.add(DesktopConfigDirectoryHelper.decodeKeyFileName(fileName.removeSuffix(".bson")))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     override fun writeElement(key: String, element: PreferenceElement) {
+        if (isDisposed) return
         if (element.isNull) {
             remove(key)
             return
         }
         configDir.ensureExists()
         val encoded = BinaryJson.encodeElement(element)
+        val written = DesktopConfigDirectoryHelper.writeBytesWithOldBackup(
+            filePath = filePathForKey(key),
+            bytes = encoded,
+            validator = ::isValidBsonBytes
+        )
         memoryCache[key] = encoded
-        knownKeys.add(key)
-        configDir.writeKeyBytes(key, ".bson", encoded)
-        DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
+        if (written) {
+            dirtyKeys.remove(key)
+        } else {
+            dirtyKeys.add(key)
+        }
         notifyListeners(key, element.toPlainValue())
     }
 
     override fun readElement(key: String): PreferenceElement? {
-        val fileBytes = configDir.readKeyBytes(key, ".bson")
-        if (fileBytes != null && fileBytes.isNotEmpty()) {
-            memoryCache[key] = fileBytes
-            knownKeys.add(key)
-            return BinaryJson.decodeElement(fileBytes)
+        if (isDisposed) return null
+        val primaryPath = filePathForKey(key)
+        val backupPath = backupFilePathForKey(key)
+        val primaryExists = DesktopConfigDirectoryHelper.fileExists(primaryPath)
+        val backupExists = DesktopConfigDirectoryHelper.fileExists(backupPath)
+
+        if (primaryExists || backupExists) {
+            val recoveredBytes = DesktopConfigDirectoryHelper.readBytesWithOldRecovery(
+                filePath = primaryPath,
+                validator = ::isValidBsonBytes
+            )
+            if (recoveredBytes == null) {
+                memoryCache.remove(key)
+                return null
+            }
+            val decoded = BinaryJson.decodeElementOrNull(recoveredBytes) ?: return null
+            memoryCache[key] = recoveredBytes
+            return decoded
         }
-        val cached = memoryCache[key] ?: return null
-        return BinaryJson.decodeElement(cached)
+
+        if (key in dirtyKeys) {
+            val cached = memoryCache[key] ?: return null
+            return BinaryJson.decodeElementOrNull(cached)
+        }
+        memoryCache.remove(key)
+        return null
     }
 
-    override fun contains(key: String): Boolean =
-        key in knownKeys || memoryCache.containsKey(key) || configDir.containsKey(key, ".bson")
+    override fun contains(key: String): Boolean {
+        if (isDisposed) return false
+        val primaryBytes = DesktopConfigDirectoryHelper.readBytesFromFile(filePathForKey(key))
+        if (primaryBytes != null && isValidBsonBytes(primaryBytes)) {
+            return true
+        }
+        val backupBytes = DesktopConfigDirectoryHelper.readBytesFromFile(backupFilePathForKey(key))
+        if (backupBytes != null && isValidBsonBytes(backupBytes)) {
+            return true
+        }
+        return key in dirtyKeys && memoryCache.containsKey(key)
+    }
 
-    override fun keys(): Set<String> = LinkedHashSet(knownKeys)
+    override fun keys(): Set<String> {
+        if (isDisposed) return emptySet()
+        val out = LinkedHashSet<String>()
+        out.addAll(scanDiskKeys())
+        out.addAll(dirtyKeys)
+        return out.sorted().toCollection(LinkedHashSet())
+    }
 
     override fun remove(key: String) {
-        val existed = contains(key)
+        if (isDisposed) return
+        val primaryPath = filePathForKey(key)
+        val backupPath = backupFilePathForKey(key)
+        val existed = contains(key) ||
+            DesktopConfigDirectoryHelper.fileExists(primaryPath) ||
+            DesktopConfigDirectoryHelper.fileExists(backupPath)
         memoryCache.remove(key)
-        knownKeys.remove(key)
-        configDir.removeKey(key, ".bson")
-        DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
+        dirtyKeys.remove(key)
+        DesktopConfigDirectoryHelper.deleteFile(primaryPath)
+        DesktopConfigDirectoryHelper.deleteFile(backupPath)
         if (existed) {
             notifyListeners(key, null)
         }
     }
 
     override fun clear() {
-        val snapshotKeys = knownKeys.toList()
-        for (k in snapshotKeys) {
-            configDir.removeKey(k, ".bson")
+        if (isDisposed) return
+        val snapshotKeys = keys().toList()
+        val diskFiles = DesktopConfigDirectoryHelper.listDirectoryFiles(configDirectory)
+        val base = configDirectory.trimEnd('\\', '/')
+        var deletedAny = false
+        for (fileName in diskFiles) {
+            if (fileName.startsWith(".")) continue
+            if (fileName.endsWith(".bson") || fileName.endsWith(".bson.old")) {
+                if (DesktopConfigDirectoryHelper.deleteFile("$base\\$fileName")) {
+                    deletedAny = true
+                }
+            }
         }
-        configDir.clearKeysWithExtension(".bson")
+        for (k in snapshotKeys) {
+            if (DesktopConfigDirectoryHelper.deleteFile(filePathForKey(k))) deletedAny = true
+            if (DesktopConfigDirectoryHelper.deleteFile(backupFilePathForKey(k))) deletedAny = true
+        }
+        DesktopConfigDirectoryHelper.deleteFile("$base\\.preference_keys")
+        DesktopConfigDirectoryHelper.deleteFile("$base\\.user_dir_manifest")
+        val hadAny = snapshotKeys.isNotEmpty() || deletedAny
         memoryCache.clear()
-        knownKeys.clear()
-        DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
-        if (snapshotKeys.isNotEmpty()) {
+        dirtyKeys.clear()
+        if (hadAny) {
             notifyListeners(null, null)
         }
     }
@@ -107,11 +195,18 @@ class WindowsPreferenceStoreImpl(
     override fun flush(): Boolean {
         if (isDisposed) return false
         configDir.ensureExists()
-        for ((k, bytes) in memoryCache) {
-            configDir.writeKeyBytes(k, ".bson", bytes)
+        for (k in dirtyKeys.toList()) {
+            val bytes = memoryCache[k] ?: continue
+            val flushed = DesktopConfigDirectoryHelper.writeBytesWithOldBackup(
+                filePath = filePathForKey(k),
+                bytes = bytes,
+                validator = ::isValidBsonBytes
+            )
+            if (flushed) {
+                dirtyKeys.remove(k)
+            }
         }
-        DesktopConfigDirectoryHelper.savePersistedKeySet(configDirectory, '\\', knownKeys)
-        return true
+        return dirtyKeys.isEmpty()
     }
 
     override fun addChangeListener(listener: PreferenceChangeListener) {

@@ -55,6 +55,7 @@ class GtkApplicationNativeImpl :
     override fun onNativeExit(exitCode: Int) {
         nativeWidget.attributes["gApplicationRunning"] = false
         nativeWidget.attributes["gApplicationExitCode"] = exitCode
+        GtkSystemTrayNativeImpl.disposeAll()
         if (interactiveGtkGuiEnabled) {
             GtkNativeWindowHost.terminateEventLoop()
         }

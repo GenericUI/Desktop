@@ -1,7 +1,9 @@
-# `:desktop:common` — Cross-Desktop Infrastructure (`commonMain`)
+# `:desktop` Common Layer (`commonMain` / `desktopCommon`)
+
+> **Module Guide**: [**`:desktop` (`../README.md`)**](../README.md) | **Related**: [`shared.md`](shared.md) · [`nativeCommon.md`](nativeCommon.md) · [`linuxCommon.md`](linuxCommon.md)
 
 ## Overview
-`:desktop:common` is the platform-agnostic KMP `commonMain` module for all five desktop backends (`:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, `:desktop:qt`, and `:desktop:swing`). It targets `jvm()`, `mingwX64()`, `macosX64()`, `macosArm64()`, and `linuxX64()`, and depends on `:common` and `:systemCommon`.
+The `commonMain` source set of `:desktop` (`desktopCommon` variant scope) holds platform-agnostic pure-Kotlin desktop infrastructure shared across all five desktop targets (`Windows`, `MacOS`, `Gtk`, `Qt`, and `Swing`). It targets `jvm()`, `mingwX64()`, `macosArm64()`, `linuxX64()`, and `linuxArm64()`, sitting directly above `:common` and `:system`.
 
 ---
 
@@ -9,23 +11,23 @@
 
 | Class | Package | Description |
 |-------|---------|-------------|
-| `DesktopLazyViewportEngine` | `com.nexustools.genericui.desktop` | Viewport range math, item-height indexing, and widget recycling engine for virtualized lists and grids |
-| `DesktopFileBrowserHelper` | `com.nexustools.genericui.desktop` | Common path navigation, wildcard/MIME filter matching, and directory sorting for file browser dialogs |
+| `DesktopLazyViewportEngine` | `com.nexustools.genericui.desktop.lazy` | Viewport range math, item-height indexing, and widget recycling engine for virtualized lists and grids |
+| `DesktopFileBrowserHelper` | `com.nexustools.genericui.desktop.dialog` | Common path navigation, wildcard/MIME filter matching, and directory sorting for file browser dialogs |
 | `DesktopFileBrowserDialogNativeImpl` | `com.nexustools.genericui.desktop.dialog` | Base file/directory picker dialog implementation across desktop targets |
 | `DesktopStandardDialogsNativeImpl` | `com.nexustools.genericui.desktop.dialog` | Common alert, confirmation, prompt, and message box dialog routing |
 | `DesktopUiTimerNativeImpl` | `com.nexustools.genericui.desktop.timer` | Repeating and single-shot UI timer scheduling for desktop event loops |
 | `DesktopNetworkMonitorNativeImpl` | `com.nexustools.genericui.desktop.system` | Desktop network connectivity state tracking and change notifications |
 | `DesktopNotificationManagerNativeImpl` | `com.nexustools.genericui.desktop.system` | Desktop OS notification dispatch abstraction |
 | `DesktopPermissionManagerNativeImpl` | `com.nexustools.genericui.desktop.system` | Desktop capability and permission status reporting |
-| `DesktopSystemTrayNativeImpl` | `com.nexustools.genericui.desktop.system` | System tray icon, tooltip, and context menu management |
+| `DesktopSystemTrayNativeImpl` | `com.nexustools.genericui.desktop.system` | System tray icon, tooltip, click/activation, and context menu management (backing `ServiceWorker` tray presence on desktop targets) |
 
 ---
 
 ## Dependency Graph
 ```text
 :common
-  └── :systemCommon
-        └── :desktop:common
-              ├── :desktop:swing (JVM)
-              └── :desktop:nativeCommon (cinterop: Win32, Cocoa, GTK, Qt)
+  └── :system
+        └── :desktop (commonMain / desktopCommon)
+              ├── jvmMain (JVM Swing, + :jvm)
+              └── nativeDesktopMain (Native cinterop: Win32, macOS + :apple, Linux GTK4 & Qt6)
 ```

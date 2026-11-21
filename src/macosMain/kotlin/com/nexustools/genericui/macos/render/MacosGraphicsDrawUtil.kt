@@ -17,9 +17,15 @@ import com.nexustools.genericui.image.MonocolorImageRecolorProcessor
 import com.nexustools.genericui.res.Resources
 import com.nexustools.genericui.style.color.ImageTintMode
 import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssFilter
+import com.nexustools.genericui.style.css.CssLength
 import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.convert
+import kotlinx.cinterop.get
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.set
 import kotlinx.cinterop.useContents
 import kotlinx.cinterop.usePinned
 import platform.AppKit.NSColor
@@ -1397,6 +1403,172 @@ object MacosGraphicsDrawUtil {
             i++
         }
         return out.decodeToString(0, outIdx, throwOnInvalidSequence = false)
+    }
+
+    fun applyBackdropFilterRoundedRect(
+        ctx: MacosRenderContext,
+        x: Int,
+        y: Int,
+        w: Int,
+        h: Int,
+        radiusPx: Float,
+        backdropBlurPx: Float?,
+        backdropFilter: CssFilter?
+    ) {
+        val rawFilter = CssFilter.backdropBlurOrFilter(backdropBlurPx, backdropFilter) ?: return
+        if (w <= 0 || h <= 0) return
+        val scale = ctx.backingScale.toFloat().coerceAtLeast(1f)
+        val effBlur = (rawFilter.blur?.resolvePx() ?: 0f) * scale
+        val effFilter = if (effBlur > 0f && rawFilter.blur?.resolvePx() != effBlur) {
+            rawFilter.copy(blur = CssLength.px(effBlur))
+        } else {
+            rawFilter
+        }
+        val cgCtx = ctx.cgContext
+        val dataPtr = platform.CoreGraphics.CGBitmapContextGetData(cgCtx)?.reinterpret<UByteVar>() ?: return
+        val bufW = platform.CoreGraphics.CGBitmapContextGetWidth(cgCtx).toInt()
+        val bufH = platform.CoreGraphics.CGBitmapContextGetHeight(cgCtx).toInt()
+        val bytesPerRow = platform.CoreGraphics.CGBitmapContextGetBytesPerRow(cgCtx).toInt()
+        val bpp = platform.CoreGraphics.CGBitmapContextGetBitsPerPixel(cgCtx).toInt()
+        if (bufW <= 0 || bufH <= 0 || bytesPerRow < bufW * 4 || bpp != 32) return
+
+        val p0 = platform.CoreGraphics.CGContextConvertPointToDeviceSpace(
+            cgCtx,
+            CGPointMake(x.toDouble(), y.toDouble())
+        ).useContents { this.x to this.y }
+        val p1 = platform.CoreGraphics.CGContextConvertPointToDeviceSpace(
+            cgCtx,
+            CGPointMake((x + w).toDouble(), (y + h).toDouble())
+        ).useContents { this.x to this.y }
+
+        // Quartz device coordinates have Y pointing upward; row 0 in CGBitmapContext memory is top (devY = bufH).
+        val memX0 = min(p0.first, p1.first).roundToInt().coerceIn(0, bufW)
+        val memX1 = max(p0.first, p1.first).roundToInt().coerceIn(0, bufW)
+        val memY0 = (bufH.toDouble() - max(p0.second, p1.second)).roundToInt().coerceIn(0, bufH)
+        val memY1 = (bufH.toDouble() - min(p0.second, p1.second)).roundToInt().coerceIn(0, bufH)
+        val rw = memX1 - memX0
+        val rh = memY1 - memY0
+        if (rw <= 0 || rh <= 0) return
+
+        val pad = if (effBlur > 0f) ceil(effBlur * 1.5f).toInt().coerceIn(1, 32) else 0
+        val capX0 = (memX0 - pad).coerceAtLeast(0)
+        val capY0 = (memY0 - pad).coerceAtLeast(0)
+        val capX1 = (memX1 + pad).coerceAtMost(bufW)
+        val capY1 = (memY1 + pad).coerceAtMost(bufH)
+        val capW = capX1 - capX0
+        val capH = capY1 - capY0
+        if (capW <= 0 || capH <= 0) return
+
+        val bitmapInfo = platform.CoreGraphics.CGBitmapContextGetBitmapInfo(cgCtx)
+        val isLittleEndian =
+            (bitmapInfo and platform.CoreGraphics.kCGBitmapByteOrderMask) == kCGBitmapByteOrder32Little
+        val alphaInfo = bitmapInfo and platform.CoreGraphics.kCGBitmapAlphaInfoMask
+        val isPremul = alphaInfo == CGImageAlphaInfo.kCGImageAlphaPremultipliedFirst.value ||
+            alphaInfo == CGImageAlphaInfo.kCGImageAlphaPremultipliedLast.value
+        val isFirstAlpha = alphaInfo == CGImageAlphaInfo.kCGImageAlphaPremultipliedFirst.value ||
+            alphaInfo == CGImageAlphaInfo.kCGImageAlphaFirst.value ||
+            alphaInfo == CGImageAlphaInfo.kCGImageAlphaNoneSkipFirst.value
+        val isNoAlpha = alphaInfo == CGImageAlphaInfo.kCGImageAlphaNoneSkipFirst.value ||
+            alphaInfo == CGImageAlphaInfo.kCGImageAlphaNoneSkipLast.value ||
+            alphaInfo == CGImageAlphaInfo.kCGImageAlphaNone.value
+
+        val needed = capW * capH
+        val subArgb = MacosMetalBackdropBlurEngine.obtainScratchInputBuffer(needed)
+        var dstIdx = 0
+        for (py in capY0 until capY1) {
+            val rowByteOff = py * bytesPerRow
+            for (px in capX0 until capX1) {
+                val bOff = rowByteOff + px * 4
+                val b0 = dataPtr[bOff].toInt() and 0xFF
+                val b1 = dataPtr[bOff + 1].toInt() and 0xFF
+                val b2 = dataPtr[bOff + 2].toInt() and 0xFF
+                val b3 = dataPtr[bOff + 3].toInt() and 0xFF
+                val a: Int
+                var r: Int
+                var g: Int
+                var b: Int
+                if (isLittleEndian) {
+                    if (isFirstAlpha) {
+                        // Memory order: B, G, R, A (32-bit LE ARGB)
+                        b = b0; g = b1; r = b2; a = if (isNoAlpha) 255 else b3
+                    } else {
+                        // Memory order: A, B, G, R (32-bit LE RGBA)
+                        a = if (isNoAlpha) 255 else b0; b = b1; g = b2; r = b3
+                    }
+                } else {
+                    if (isFirstAlpha) {
+                        // Memory order: A, R, G, B
+                        a = if (isNoAlpha) 255 else b0; r = b1; g = b2; b = b3
+                    } else {
+                        // Memory order: R, G, B, A
+                        r = b0; g = b1; b = b2; a = if (isNoAlpha) 255 else b3
+                    }
+                }
+                if (isPremul && a in 1..254) {
+                    r = ((r * 255) / a).coerceIn(0, 255)
+                    g = ((g * 255) / a).coerceIn(0, 255)
+                    b = ((b * 255) / a).coerceIn(0, 255)
+                }
+                subArgb[dstIdx++] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+
+        val applied = MacosMetalBackdropBlurEngine.applyBackdropToArgbRegion(
+            filter = effFilter,
+            argbPixels = subArgb,
+            bufferWidth = capW,
+            bufferHeight = capH,
+            regionX = memX0 - capX0,
+            regionY = memY0 - capY0,
+            regionWidth = rw,
+            regionHeight = rh,
+            cornerRadiusPx = (radiusPx * scale).coerceAtLeast(0f)
+        )
+        if (!applied) return
+
+        for (py in memY0 until memY1) {
+            val rowByteOff = py * bytesPerRow
+            val srcRow = (py - capY0) * capW
+            for (px in memX0 until memX1) {
+                val pxWord = subArgb[srcRow + (px - capX0)]
+                val a = (pxWord ushr 24) and 0xFF
+                var r = (pxWord ushr 16) and 0xFF
+                var g = (pxWord ushr 8) and 0xFF
+                var b = pxWord and 0xFF
+                if (isPremul && a < 255) {
+                    r = (r * a + 127) / 255
+                    g = (g * a + 127) / 255
+                    b = (b * a + 127) / 255
+                }
+                val bOff = rowByteOff + px * 4
+                val outA = if (isNoAlpha) 255 else a
+                if (isLittleEndian) {
+                    if (isFirstAlpha) {
+                        dataPtr[bOff] = b.toUByte()
+                        dataPtr[bOff + 1] = g.toUByte()
+                        dataPtr[bOff + 2] = r.toUByte()
+                        dataPtr[bOff + 3] = outA.toUByte()
+                    } else {
+                        dataPtr[bOff] = outA.toUByte()
+                        dataPtr[bOff + 1] = b.toUByte()
+                        dataPtr[bOff + 2] = g.toUByte()
+                        dataPtr[bOff + 3] = r.toUByte()
+                    }
+                } else {
+                    if (isFirstAlpha) {
+                        dataPtr[bOff] = outA.toUByte()
+                        dataPtr[bOff + 1] = r.toUByte()
+                        dataPtr[bOff + 2] = g.toUByte()
+                        dataPtr[bOff + 3] = b.toUByte()
+                    } else {
+                        dataPtr[bOff] = r.toUByte()
+                        dataPtr[bOff + 1] = g.toUByte()
+                        dataPtr[bOff + 2] = b.toUByte()
+                        dataPtr[bOff + 3] = outA.toUByte()
+                    }
+                }
+            }
+        }
     }
 
     private fun createRoundedRectPath(

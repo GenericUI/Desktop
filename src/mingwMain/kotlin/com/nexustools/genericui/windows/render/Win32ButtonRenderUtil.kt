@@ -256,23 +256,40 @@ object Win32ButtonRenderUtil {
         val icon = btnImpl?.getIcon() ?: (widget.attributes["icon"] as? String)
 
         val bgGradient = visuals?.backgroundGradient ?: compStyle?.backgroundImage?.gradient
+        val hasBackdrop = styledBtn != null && visuals?.hasBackdropFilter == true
         val fillCol = visuals?.backgroundColor
             ?: compStyle?.backgroundColor
-            ?: Win32ControlTintRenderUtil.resolveControlTintOrNull(ctx, widget, btnImpl?.getType())
-            ?: RgbaColor(42, 48, 60, 220)
+            ?: if (hasBackdrop) {
+                null
+            } else {
+                Win32ControlTintRenderUtil.resolveControlTintOrNull(ctx, widget, btnImpl?.getType())
+                    ?: RgbaColor(42, 48, 60, 220)
+            }
         val borderCol = visuals?.borderColor
             ?: compStyle?.borderColor
-            ?: RgbaColor(255, 255, 255, if (hovered) 84 else 42)
+            ?: if (hasBackdrop) null else RgbaColor(255, 255, 255, if (hovered) 84 else 42)
         val borderWidth = visuals?.borderWidthPx
             ?: compStyle?.borderWidth?.top?.resolvePx()
-            ?: 1f
+            ?: if (hasBackdrop && borderCol == null) 0f else 1f
         val radiusPx = visuals?.borderRadiusPx
             ?: compStyle?.borderRadius?.topLeft?.resolvePx()
             ?: 6f
 
+        if (hasBackdrop && visuals != null) {
+            Win32NativeWindowHost.applyBackdropFilterRect(
+                hdc = ctx.hdc,
+                left = left,
+                top = top,
+                right = right,
+                bottom = bottom,
+                radiusPx = radiusPx,
+                backdropBlurPx = visuals.backdropBlurPx,
+                backdropFilter = visuals.backdropFilter
+            )
+        }
         if (bgGradient != null) {
             Win32NativeWindowHost.drawGradientRect(ctx.hdc, left, top, right, bottom, bgGradient, opacity = ctx.opacity)
-        } else {
+        } else if ((fillCol != null && fillCol.a > 0) || (borderCol != null && borderCol.a > 0 && borderWidth > 0f)) {
             Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                 hdc = ctx.hdc,
                 left = left,

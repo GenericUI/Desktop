@@ -112,6 +112,7 @@ internal object Qt6DynamicBindings {
 
     private var fnGuiAppStyleHints: CPointer<CFunction<() -> COpaquePointer?>>? = null
     private var fnGuiAppPrimaryScreen: CPointer<CFunction<() -> COpaquePointer?>>? = null
+    private var fnGuiAppSetQuitOnLastWindowClosed: CPointer<CFunction<(Byte) -> Unit>>? = null
     private var fnStyleHintsColorScheme: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnGuiAppMouseButtons: CPointer<CFunction<() -> UInt>>? = null
     private var fnGuiAppKeyboardModifiers: CPointer<CFunction<() -> UInt>>? = null
@@ -147,6 +148,7 @@ internal object Qt6DynamicBindings {
     private var fnPainterSetFont: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
     private var fnPainterDrawText: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, Int, COpaquePointer?, COpaquePointer?) -> Unit>>? = null
     private var fnPainterDrawRoundedRect: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, Double, Double, Int) -> Unit>>? = null
+    private var fnWindowStartSystemMove: CPointer<CFunction<(COpaquePointer?) -> Byte>>? = null
 
     private var fnQAppCtor: CPointer<CFunction<(COpaquePointer?, CPointer<IntVar>?, CPointer<CPointerVar<ByteVar>>?, Int) -> Unit>>? = null
     private var fnWidgetCtor: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, Int) -> Unit>>? = null
@@ -176,6 +178,8 @@ internal object Qt6DynamicBindings {
     private var fnWidgetWinId: CPointer<CFunction<(COpaquePointer?) -> ULong>>? = null
     private var fnWidgetIsMaximized: CPointer<CFunction<(COpaquePointer?) -> Byte>>? = null
     private var fnWidgetIsFullScreen: CPointer<CFunction<(COpaquePointer?) -> Byte>>? = null
+    private var fnWidgetIsMinimized: CPointer<CFunction<(COpaquePointer?) -> Byte>>? = null
+    private var fnWidgetWindowHandle: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
 
     private var fnLabelCtor: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, Int) -> Unit>>? = null
     private var fnLabelDtor: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
@@ -227,6 +231,27 @@ internal object Qt6DynamicBindings {
     private var fnTraySetIcon: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
     private var fnTraySetToolTip: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
     private var fnTraySetVisible: CPointer<CFunction<(COpaquePointer?, Byte) -> Unit>>? = null
+    private var fnTraySetContextMenu: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+
+    private var fnActionCtor: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+    private var fnActionDtor: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
+    private var fnActionSetEnabled: CPointer<CFunction<(COpaquePointer?, Byte) -> Unit>>? = null
+    private var fnActionSetCheckable: CPointer<CFunction<(COpaquePointer?, Byte) -> Unit>>? = null
+    private var fnActionSetChecked: CPointer<CFunction<(COpaquePointer?, Byte) -> Unit>>? = null
+    private var fnActionIsChecked: CPointer<CFunction<(COpaquePointer?) -> Byte>>? = null
+    private var fnWidgetAddAction: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+    private var fnMenuCtor: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+    private var fnMenuDtor: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
+    private var fnMenuSetTitle: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+    private var fnMenuAddMenu: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnMenuAddSeparator: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnMenuActiveAction: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnAppActivePopupWidget: CPointer<CFunction<() -> COpaquePointer?>>? = null
+
+    private var fnBlurEffectCtor: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+    private var fnBlurEffectSetRadius: CPointer<CFunction<(COpaquePointer?, Double) -> Unit>>? = null
+    private var fnBlurEffectSetHints: CPointer<CFunction<(COpaquePointer?, Int) -> Unit>>? = null
+    private var fnWidgetSetGraphicsEffect: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
 
     fun ensureLibrariesLoaded(): Boolean = lock.withLock {
         if (librariesLoaded) return qtLibrariesAvailable
@@ -248,7 +273,20 @@ internal object Qt6DynamicBindings {
         if (gui != null) {
             fnGuiAppStyleHints = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication10styleHintsEv")?.reinterpret()
             fnGuiAppPrimaryScreen = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication13primaryScreenEv")?.reinterpret()
+            fnGuiAppSetQuitOnLastWindowClosed = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication25setQuitOnLastWindowClosedEb")?.reinterpret()
             fnStyleHintsColorScheme = LinuxDynamicLibraryLoader.symbol(gui, "_ZNK11QStyleHints11colorSchemeEv")?.reinterpret()
+            fnActionCtor = (LinuxDynamicLibraryLoader.symbol(gui, "_ZN7QActionC1ERK7QStringP7QObject")
+                ?: LinuxDynamicLibraryLoader.symbol(widgets, "_ZN7QActionC1ERK7QStringP7QObject"))?.reinterpret()
+            fnActionDtor = (LinuxDynamicLibraryLoader.symbol(gui, "_ZN7QActionD1Ev")
+                ?: LinuxDynamicLibraryLoader.symbol(widgets, "_ZN7QActionD1Ev"))?.reinterpret()
+            fnActionSetEnabled = (LinuxDynamicLibraryLoader.symbol(gui, "_ZN7QAction10setEnabledEb")
+                ?: LinuxDynamicLibraryLoader.symbol(widgets, "_ZN7QAction10setEnabledEb"))?.reinterpret()
+            fnActionSetCheckable = (LinuxDynamicLibraryLoader.symbol(gui, "_ZN7QAction12setCheckableEb")
+                ?: LinuxDynamicLibraryLoader.symbol(widgets, "_ZN7QAction12setCheckableEb"))?.reinterpret()
+            fnActionSetChecked = (LinuxDynamicLibraryLoader.symbol(gui, "_ZN7QAction10setCheckedEb")
+                ?: LinuxDynamicLibraryLoader.symbol(widgets, "_ZN7QAction10setCheckedEb"))?.reinterpret()
+            fnActionIsChecked = (LinuxDynamicLibraryLoader.symbol(gui, "_ZNK7QAction9isCheckedEv")
+                ?: LinuxDynamicLibraryLoader.symbol(widgets, "_ZNK7QAction9isCheckedEv"))?.reinterpret()
             fnGuiAppMouseButtons = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication12mouseButtonsEv")?.reinterpret()
             fnGuiAppKeyboardModifiers = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication17keyboardModifiersEv")?.reinterpret()
             fnGuiAppClipboard = LinuxDynamicLibraryLoader.symbol(gui, "_ZN15QGuiApplication9clipboardEv")?.reinterpret()
@@ -282,6 +320,7 @@ internal object Qt6DynamicBindings {
             fnPainterSetFont = LinuxDynamicLibraryLoader.symbol(gui, "_ZN8QPainter7setFontERK5QFont")?.reinterpret()
             fnPainterDrawText = LinuxDynamicLibraryLoader.symbol(gui, "_ZN8QPainter8drawTextERK5QRectiRK7QStringPS0_")?.reinterpret()
             fnPainterDrawRoundedRect = LinuxDynamicLibraryLoader.symbol(gui, "_ZN8QPainter15drawRoundedRectERK6QRectFddN2Qt8SizeModeE")?.reinterpret()
+            fnWindowStartSystemMove = LinuxDynamicLibraryLoader.symbol(gui, "_ZN7QWindow15startSystemMoveEv")?.reinterpret()
         }
 
         if (widgets != null) {
@@ -313,6 +352,8 @@ internal object Qt6DynamicBindings {
             fnWidgetWinId = LinuxDynamicLibraryLoader.symbol(widgets, "_ZNK7QWidget5winIdEv")?.reinterpret()
             fnWidgetIsMaximized = LinuxDynamicLibraryLoader.symbol(widgets, "_ZNK7QWidget11isMaximizedEv")?.reinterpret()
             fnWidgetIsFullScreen = LinuxDynamicLibraryLoader.symbol(widgets, "_ZNK7QWidget12isFullScreenEv")?.reinterpret()
+            fnWidgetIsMinimized = LinuxDynamicLibraryLoader.symbol(widgets, "_ZNK7QWidget11isMinimizedEv")?.reinterpret()
+            fnWidgetWindowHandle = LinuxDynamicLibraryLoader.symbol(widgets, "_ZNK7QWidget12windowHandleEv")?.reinterpret()
 
             fnLabelCtor = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN6QLabelC1EP7QWidget6QFlagsIN2Qt10WindowTypeEE")?.reinterpret()
             fnLabelDtor = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN6QLabelD1Ev")?.reinterpret()
@@ -364,6 +405,19 @@ internal object Qt6DynamicBindings {
             fnTraySetIcon = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN15QSystemTrayIcon7setIconERK5QIcon")?.reinterpret()
             fnTraySetToolTip = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN15QSystemTrayIcon10setToolTipERK7QString")?.reinterpret()
             fnTraySetVisible = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN15QSystemTrayIcon10setVisibleEb")?.reinterpret()
+            fnTraySetContextMenu = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN15QSystemTrayIcon14setContextMenuEP5QMenu")?.reinterpret()
+            fnWidgetAddAction = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN7QWidget9addActionEP7QAction")?.reinterpret()
+            fnMenuCtor = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN5QMenuC1EP7QWidget")?.reinterpret()
+            fnMenuDtor = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN5QMenuD1Ev")?.reinterpret()
+            fnMenuSetTitle = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN5QMenu8setTitleERK7QString")?.reinterpret()
+            fnMenuAddMenu = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN5QMenu7addMenuEPS_")?.reinterpret()
+            fnMenuAddSeparator = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN5QMenu12addSeparatorEv")?.reinterpret()
+            fnMenuActiveAction = LinuxDynamicLibraryLoader.symbol(widgets, "_ZNK5QMenu12activeActionEv")?.reinterpret()
+            fnAppActivePopupWidget = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN12QApplication17activePopupWidgetEv")?.reinterpret()
+            fnBlurEffectCtor = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN19QGraphicsBlurEffectC1EP7QObject")?.reinterpret()
+            fnBlurEffectSetRadius = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN19QGraphicsBlurEffect13setBlurRadiusEd")?.reinterpret()
+            fnBlurEffectSetHints = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN19QGraphicsBlurEffect12setBlurHintsE6QFlagsINS_8BlurHintEE")?.reinterpret()
+            fnWidgetSetGraphicsEffect = LinuxDynamicLibraryLoader.symbol(widgets, "_ZN7QWidget17setGraphicsEffectEP15QGraphicsEffect")?.reinterpret()
         }
 
         qtLibrariesAvailable = fnQAppCtor != null &&
@@ -730,6 +784,13 @@ internal object Qt6DynamicBindings {
     fun isWidgetFullScreen(widget: COpaquePointer): Boolean =
         (fnWidgetIsFullScreen?.invoke(widget) ?: 0.toByte()) != 0.toByte() ||
             (readPropertyBool(widget, "fullScreen") == true)
+    fun isWidgetMinimized(widget: COpaquePointer): Boolean =
+        (fnWidgetIsMinimized?.invoke(widget) ?: 0.toByte()) != 0.toByte() ||
+            (readPropertyBool(widget, "minimized") == true)
+    fun startSystemMove(widget: COpaquePointer): Boolean {
+        val qWindow = fnWidgetWindowHandle?.invoke(widget) ?: return false
+        return (fnWindowStartSystemMove?.invoke(qWindow) ?: 0.toByte()) != 0.toByte()
+    }
 
     fun setWidgetCursorShape(widget: COpaquePointer, shape: Int) = memScoped {
         val cur = allocArray<LongVar>(2)
@@ -1158,13 +1219,105 @@ internal object Qt6DynamicBindings {
         }
     }
 
+    fun setQuitOnLastWindowClosed(quit: Boolean) {
+        if (!ensureApplication()) return
+        fnGuiAppSetQuitOnLastWindowClosed?.invoke(if (quit) 1.toByte() else 0.toByte())
+    }
+
     fun setSystemTrayVisible(tray: COpaquePointer, visible: Boolean) {
         fnTraySetVisible?.invoke(tray, if (visible) 1.toByte() else 0.toByte())
     }
+
+    fun setSystemTrayContextMenu(tray: COpaquePointer, menu: COpaquePointer?) {
+        fnTraySetContextMenu?.invoke(tray, menu)
+    }
+
+    fun createMenu(parent: COpaquePointer? = null, title: String? = null): COpaquePointer? {
+        if (!ensureApplication()) return null
+        val ctor = fnMenuCtor ?: return null
+        val ptr = calloc(1uL, 256uL) ?: return null
+        ctor.invoke(ptr, parent)
+        if (!title.isNullOrEmpty()) {
+            withRawQString(title) { qs -> fnMenuSetTitle?.invoke(ptr, qs) }
+        }
+        return ptr
+    }
+
+    fun destroyMenu(menu: COpaquePointer?) {
+        if (menu == null) return
+        fnMenuDtor?.invoke(menu)
+        posixFree(menu)
+    }
+
+    fun createAction(text: String): COpaquePointer? {
+        if (!ensureApplication()) return null
+        val ctor = fnActionCtor ?: return null
+        val ptr = calloc(1uL, 64uL) ?: return null
+        withRawQString(text) { qs -> ctor.invoke(ptr, qs, null) }
+        return ptr
+    }
+
+    fun destroyAction(action: COpaquePointer?) {
+        if (action == null) return
+        fnActionDtor?.invoke(action)
+        posixFree(action)
+    }
+
+    fun addActionToMenu(menu: COpaquePointer, action: COpaquePointer) {
+        fnWidgetAddAction?.invoke(menu, action)
+    }
+
+    fun addSubmenuToMenu(parentMenu: COpaquePointer, submenu: COpaquePointer) {
+        fnMenuAddMenu?.invoke(parentMenu, submenu)
+    }
+
+    fun addSeparatorToMenu(menu: COpaquePointer) {
+        fnMenuAddSeparator?.invoke(menu)
+    }
+
+    fun setActionEnabled(action: COpaquePointer, enabled: Boolean) {
+        fnActionSetEnabled?.invoke(action, if (enabled) 1.toByte() else 0.toByte())
+    }
+
+    fun setActionCheckable(action: COpaquePointer, checkable: Boolean) {
+        fnActionSetCheckable?.invoke(action, if (checkable) 1.toByte() else 0.toByte())
+    }
+
+    fun setActionChecked(action: COpaquePointer, checked: Boolean) {
+        fnActionSetChecked?.invoke(action, if (checked) 1.toByte() else 0.toByte())
+    }
+
+    fun isActionChecked(action: COpaquePointer): Boolean =
+        (fnActionIsChecked?.invoke(action) ?: 0.toByte()) != 0.toByte()
+
+    fun activePopupWidget(): COpaquePointer? =
+        if (hasActiveApplication()) fnAppActivePopupWidget?.invoke() else null
+
+    fun menuActiveAction(menu: COpaquePointer): COpaquePointer? =
+        fnMenuActiveAction?.invoke(menu)
+
+    fun currentMouseButtonsMask(): UInt =
+        if (hasActiveApplication()) fnGuiAppMouseButtons?.invoke() ?: 0u else 0u
 
     fun destroySystemTrayIcon(tray: COpaquePointer?) {
         if (tray == null) return
         fnTrayDtor?.invoke(tray)
         posixFree(tray)
+    }
+
+    fun hasHardwareBlurEffectSupport(): Boolean =
+        fnBlurEffectCtor != null && fnBlurEffectSetRadius != null && fnWidgetSetGraphicsEffect != null
+
+    fun attachWidgetBlurEffect(qWidget: COpaquePointer?, blurRadiusPx: Double): COpaquePointer? {
+        val ctor = fnBlurEffectCtor ?: return null
+        val setRad = fnBlurEffectSetRadius ?: return null
+        val setEff = fnWidgetSetGraphicsEffect ?: return null
+        if (qWidget == null || blurRadiusPx <= 0.0) return null
+        val eff = calloc(1uL, 256uL) ?: return null
+        ctor.invoke(eff, qWidget)
+        setRad.invoke(eff, blurRadiusPx)
+        fnBlurEffectSetHints?.invoke(eff, 0) // QGraphicsBlurEffect::PerformanceHint
+        setEff.invoke(qWidget, eff)
+        return eff
     }
 }

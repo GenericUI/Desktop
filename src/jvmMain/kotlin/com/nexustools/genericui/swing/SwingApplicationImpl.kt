@@ -13,9 +13,12 @@ import com.nexustools.genericui.window.IWindow
 import java.awt.Color
 import java.awt.Component
 import java.awt.Container
+import java.awt.GraphicsEnvironment
 import java.awt.Window
+import java.util.concurrent.locks.ReentrantLock
 import javax.swing.SwingUtilities
 import javax.swing.UIManager
+import kotlin.concurrent.withLock
 
 /**
  * Java Swing [ApplicationNativeImpl] (`:desktop:swing`).
@@ -93,12 +96,25 @@ class SwingApplicationImpl : ApplicationNativeImpl<String> {
     override fun runEventLoop(onStarted: () -> Unit) {
         running = true
         onStarted()
+        if (interactiveSwingGuiEnabled &&
+            !GraphicsEnvironment.isHeadless() &&
+            windows.isEmpty() &&
+            SwingSystemTrayImpl.hasActiveTray()
+        ) {
+            headlessLoopLock.withLock {
+                while (running && !disposed && windows.isEmpty() && SwingSystemTrayImpl.hasActiveTray()) {
+                    headlessLoopCondition.await()
+                }
+            }
+        }
     }
 
     override fun exitApplication(exitCode: Int) {
         running = false
+        SwingSystemTrayImpl.disposeAll()
         windows.toList().forEach { it.close() }
         windows.clear()
+        wakeHeadlessWaiters()
     }
 
     fun isRunning(): Boolean = running
@@ -106,10 +122,23 @@ class SwingApplicationImpl : ApplicationNativeImpl<String> {
     override fun dispose() {
         running = false
         disposed = true
+        SwingSystemTrayImpl.disposeAll()
         windows.clear()
+        wakeHeadlessWaiters()
     }
 
     companion object {
+        @Volatile
+        var interactiveSwingGuiEnabled: Boolean = false
+
+        private val headlessLoopLock = ReentrantLock()
+        private val headlessLoopCondition = headlessLoopLock.newCondition()
+
+        internal fun wakeHeadlessWaiters() {
+            headlessLoopLock.withLock {
+                headlessLoopCondition.signalAll()
+            }
+        }
         @Volatile
         private var lookAndFeelInstalled: Boolean = false
 

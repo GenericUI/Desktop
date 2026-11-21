@@ -17,27 +17,48 @@ open class DesktopStyledContainerNativeImpl<out W : DesktopNativeWidget>(
     private var styledVisuals: StyledVisualSpec = StyledVisualSpec()
     private var cachedMergedVisuals: StyledVisualSpec? = null
 
+    private fun isTextBubbleComponent(): Boolean {
+        val tokens = componentClassPrefix.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        return tokens.any { token ->
+            val norm = token.removePrefix("genericui:")
+            norm == "text-bubble" || norm == "textbubble" || norm == "gui-text-bubble"
+        }
+    }
+
     override fun setStyledVisuals(visuals: StyledVisualSpec) {
-        if (styledVisuals == visuals && nativeWidget.attributes["styledVisuals"] == visuals) return
-        styledVisuals = visuals
+        val effective = if (isTextBubbleComponent()) visuals.withoutBackdropFilter() else visuals
+        if (styledVisuals == effective && nativeWidget.attributes["styledVisuals"] == effective) return
+        styledVisuals = effective
         cachedMergedVisuals = null
-        nativeWidget.attributes["styledVisuals"] = visuals
-        visuals.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
-        visuals.backgroundGradient?.let {
+        nativeWidget.attributes["styledVisuals"] = effective
+        effective.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
+        effective.backgroundGradient?.let {
             setBackgroundGradient(it)
             nativeWidget.attributes["backgroundGradient"] = it
         }
-        visuals.textColor?.let { nativeWidget.attributes["textColor"] = it }
-        visuals.borderColor?.let { nativeWidget.attributes["borderColor"] = it }
-        visuals.borderWidthPx?.let { nativeWidget.attributes["borderWidthPx"] = it }
-        visuals.borderStyle?.let { nativeWidget.attributes["borderStyle"] = it }
-        visuals.borderRadiusPx?.let { nativeWidget.attributes["borderRadiusPx"] = it }
-        visuals.opacity?.let {
+        effective.textColor?.let { nativeWidget.attributes["textColor"] = it }
+        effective.borderColor?.let { nativeWidget.attributes["borderColor"] = it }
+        effective.borderWidthPx?.let { nativeWidget.attributes["borderWidthPx"] = it }
+        effective.borderStyle?.let { nativeWidget.attributes["borderStyle"] = it }
+        effective.borderRadiusPx?.let { nativeWidget.attributes["borderRadiusPx"] = it }
+        val blurPx = effective.backdropBlurPx ?: effective.backdropFilter?.blur?.resolvePx()
+        if (!isTextBubbleComponent() && blurPx != null && blurPx > 0f) {
+            nativeWidget.attributes["backdropBlurPx"] = blurPx
+        } else {
+            nativeWidget.attributes.remove("backdropBlurPx")
+        }
+        val bf = effective.backdropFilter
+        if (!isTextBubbleComponent() && bf != null && !bf.isNone) {
+            nativeWidget.attributes["backdropFilter"] = bf
+        } else {
+            nativeWidget.attributes.remove("backdropFilter")
+        }
+        effective.opacity?.let {
             val op = it.coerceIn(0f, 1f)
             nativeWidget.opacity = op
             nativeWidget.attributes["opacity"] = op
         }
-        visuals.padding?.let { nativeWidget.padding = it }
+        effective.padding?.let { nativeWidget.padding = it }
         nativeWidget.notifyTreeInvalidated(visualOnly = true)
     }
 
@@ -58,6 +79,8 @@ open class DesktopStyledContainerNativeImpl<out W : DesktopNativeWidget>(
     override fun getStyledVisuals(): StyledVisualSpec {
         cachedMergedVisuals?.let { return it }
         val computedBase = StyledVisualSpec.fromComponentAndComputed(lastComponentStyle, getComputedStyle())
-        return computedBase.mergeWith(styledVisuals).also { cachedMergedVisuals = it }
+        val merged = computedBase.mergeWith(styledVisuals)
+        val result = if (isTextBubbleComponent()) merged.withoutBackdropFilter() else merged
+        return result.also { cachedMergedVisuals = it }
     }
 }

@@ -34,11 +34,21 @@ class GtkStyledButtonNativeImpl(
         nativeWidget.attributes["gtkPreferDarkTheme"] = isDark
         nativeWidget.attributes["adwColorScheme"] = if (isDark) "ADW_COLOR_SCHEME_FORCE_DARK" else "ADW_COLOR_SCHEME_FORCE_LIGHT"
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
-        nativeWidget.attributes.remove("backdropBlurPx")
-        nativeWidget.attributes.remove("backdropFilter")
 
         val resolved = resolveCurrentVisuals()
         nativeWidget.attributes["styledButtonVisuals"] = resolved
+        val blurPx = resolved.backdropBlurPx ?: resolved.backdropFilter?.blur?.resolvePx()
+        if (blurPx != null && blurPx > 0f) {
+            nativeWidget.attributes["backdropBlurPx"] = blurPx
+        } else {
+            nativeWidget.attributes.remove("backdropBlurPx")
+        }
+        val bf = resolved.backdropFilter
+        if (bf != null && !bf.isNone) {
+            nativeWidget.attributes["backdropFilter"] = bf
+        } else {
+            nativeWidget.attributes.remove("backdropFilter")
+        }
         if (resolved.backgroundColor != null) nativeWidget.attributes["backgroundColor"] = resolved.backgroundColor else nativeWidget.attributes.remove("backgroundColor")
         if (resolved.backgroundGradient != null) nativeWidget.attributes["backgroundGradient"] = resolved.backgroundGradient else nativeWidget.attributes.remove("backgroundGradient")
         if (resolved.textColor != null) nativeWidget.attributes["textColor"] = resolved.textColor else nativeWidget.attributes.remove("textColor")
@@ -59,18 +69,6 @@ class GtkStyledButtonNativeImpl(
 
     override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
         GtkControlRenderUtil.renderStyledButton(this, renderContext, bounds)
-
-    override fun setAttribute(name: String, value: String?) {
-        if (
-            name.equals("backdropBlurPx", ignoreCase = true) ||
-            name.equals("backdrop-filter", ignoreCase = true) ||
-            name.equals("-webkit-backdrop-filter", ignoreCase = true)
-        ) {
-            nativeWidget.attributes.remove("backdropBlurPx")
-            return
-        }
-        super.setAttribute(name, value)
-    }
 
     override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
         super.applyComponentBootstrap(bootstrap)

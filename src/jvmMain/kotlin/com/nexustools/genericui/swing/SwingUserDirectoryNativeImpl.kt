@@ -3,7 +3,6 @@ package com.nexustools.genericui.swing
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.io.ByteBuffer
 import com.nexustools.genericui.io.FileSystem
-import com.nexustools.genericui.jvm.JvmPreferenceStoreBase
 import com.nexustools.genericui.nativeimpl.io.FileReadableNativeImpl
 import com.nexustools.genericui.nativeimpl.io.FileWritableNativeImpl
 import com.nexustools.genericui.nativeimpl.system.UserDirectoryNativeImpl
@@ -166,7 +165,7 @@ class SwingUserDirectoryNativeImpl(
     }
 
     companion object {
-        fun sanitizeName(raw: String): String = JvmPreferenceStoreBase.sanitizeName(raw)
+        fun sanitizeName(raw: String): String = SwingPreferenceStoreImpl.sanitizeName(raw)
 
         fun resolveTargetDirectory(
             appName: String,
@@ -184,22 +183,33 @@ class SwingUserDirectoryNativeImpl(
         }
 
         fun resolveHostAppConfigDirectory(appName: String): File =
-            JvmPreferenceStoreBase.resolveHostAppConfigDirectory(appName)
+            SwingPreferenceStoreImpl.resolveHostAppConfigDirectory(appName)
 
         fun resolveHostAppCacheDirectory(appName: String): File {
             val safeApp = sanitizeName(appName)
             val osName = System.getProperty("os.name", "").lowercase()
             val userHome = System.getProperty("user.home", ".")
+            if (osName.contains("mac") || osName.contains("darwin")) {
+                val home = System.getenv("HOME")?.trim()?.takeIf { it.isNotEmpty() } ?: userHome
+                return File(File(home, "Library/Caches"), safeApp)
+            }
             if (osName.contains("win")) {
                 val localAppData = System.getenv("LOCALAPPDATA")?.trim()?.takeIf { it.isNotEmpty() }
-                val baseDir = if (localAppData != null) File(localAppData) else File(userHome, "AppData/Local")
+                val baseDir = if (localAppData != null) {
+                    File(localAppData)
+                } else {
+                    val userProfile = System.getenv("USERPROFILE")?.trim()?.takeIf { it.isNotEmpty() } ?: userHome
+                    File(userProfile, "AppData/Local")
+                }
                 return File(File(baseDir, safeApp), "Cache")
             }
-            if (osName.contains("mac") || osName.contains("darwin")) {
-                return File(File(userHome, "Library/Caches"), safeApp)
-            }
             val xdg = System.getenv("XDG_CACHE_HOME")?.trim()?.takeIf { it.isNotEmpty() }
-            val baseDir = if (xdg != null) File(xdg) else File(userHome, ".cache")
+            val baseDir = if (xdg != null) {
+                File(xdg)
+            } else {
+                val home = System.getenv("HOME")?.trim()?.takeIf { it.isNotEmpty() } ?: userHome
+                File(home, ".cache")
+            }
             return File(baseDir, safeApp)
         }
     }

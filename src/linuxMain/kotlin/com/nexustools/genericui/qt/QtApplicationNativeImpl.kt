@@ -59,6 +59,7 @@ class QtApplicationNativeImpl :
     override fun onNativeExit(exitCode: Int) {
         nativeWidget.attributes["qApplicationRunning"] = false
         nativeWidget.attributes["qApplicationExitCode"] = exitCode
+        QtSystemTrayNativeImpl.disposeAll()
         if (interactiveQtGuiEnabled) {
             QtNativeWindowHost.terminateEventLoop()
         }

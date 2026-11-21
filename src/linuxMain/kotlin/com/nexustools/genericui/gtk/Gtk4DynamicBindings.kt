@@ -11,6 +11,7 @@ import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.COpaquePointerVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
+import kotlinx.cinterop.DoubleVar
 import kotlinx.cinterop.FloatVar
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.addressOf
@@ -21,6 +22,7 @@ import kotlinx.cinterop.cstr
 import kotlinx.cinterop.get
 import kotlinx.cinterop.invoke
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.plus
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
@@ -53,6 +55,7 @@ internal object Gtk4DynamicBindings {
     const val GDK_CONTROL_MASK = 4u
     const val GDK_ALT_MASK = 8u
     const val GDK_SUPER_MASK = 67108864u
+    const val GDK_TOPLEVEL_STATE_MINIMIZED = 1u
 
     const val PANGO_SCALE = 1024
     const val PANGO_ALIGN_LEFT = 0
@@ -102,6 +105,12 @@ internal object Gtk4DynamicBindings {
     private var fnGtkWidgetGetRealized: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnGtkWidgetGetNative: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
     private var fnGtkNativeGetSurface: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGdkToplevelGetType: CPointer<CFunction<() -> ULong>>? = null
+    private var fnGdkToplevelGetState: CPointer<CFunction<(COpaquePointer?) -> UInt>>? = null
+    private var fnGdkToplevelBeginMove: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, Int, Double, Double, UInt) -> Unit>>? = null
+    private var fnGdkDisplayGetDefaultSeat: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGdkSeatGetPointer: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGdkSurfaceGetDevicePosition: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, CPointer<DoubleVar>?, CPointer<DoubleVar>?, COpaquePointer?) -> Int>>? = null
     private var fnGdkX11SurfaceGetType: CPointer<CFunction<() -> ULong>>? = null
     private var fnGdkX11SurfaceGetXid: CPointer<CFunction<(COpaquePointer?) -> ULong>>? = null
 
@@ -219,12 +228,32 @@ internal object Gtk4DynamicBindings {
     private var fnCairoSetSource: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
     private var fnCairoPatternDestroy: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
     private var fnCairoImageSurfaceCreateForData: CPointer<CFunction<(COpaquePointer?, Int, Int, Int, Int) -> COpaquePointer?>>? = null
+    private var fnCairoGetTarget: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnCairoUserToDevice: CPointer<CFunction<(COpaquePointer?, CPointer<DoubleVar>?, CPointer<DoubleVar>?) -> Unit>>? = null
+    private var fnCairoImageSurfaceGetData: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnCairoImageSurfaceGetFormat: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
+    private var fnCairoImageSurfaceGetWidth: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
+    private var fnCairoImageSurfaceGetHeight: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
+    private var fnCairoImageSurfaceGetStride: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnCairoSurfaceFlush: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
     private var fnCairoSurfaceMarkDirty: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
     private var fnCairoSurfaceDestroy: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
     private var fnCairoSetSourceSurface: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, Double, Double) -> Unit>>? = null
     private var fnCairoTranslate: CPointer<CFunction<(COpaquePointer?, Double, Double) -> Unit>>? = null
     private var fnCairoScale: CPointer<CFunction<(COpaquePointer?, Double, Double) -> Unit>>? = null
+
+    private var fnGtkSnapshotNew: CPointer<CFunction<() -> COpaquePointer?>>? = null
+    private var fnGtkSnapshotPushBlur: CPointer<CFunction<(COpaquePointer?, Double) -> Unit>>? = null
+    private var fnGtkSnapshotPop: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
+    private var fnGtkSnapshotAppendCairo: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGtkSnapshotFreeToNode: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGskBlurNodeNew: CPointer<CFunction<(COpaquePointer?, Float) -> COpaquePointer?>>? = null
+    private var fnGskCairoNodeNew: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGskCairoNodeGetDrawContext: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnGskRenderNodeDraw: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+    private var fnGskRenderNodeUnref: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
+
+    private var cairoScratchArgb = IntArray(0)
 
     private var fnPangoCairoCreateLayout: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
     private var fnPangoCairoShowLayout: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
@@ -288,6 +317,12 @@ internal object Gtk4DynamicBindings {
             fnGtkWidgetGetRealized = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_widget_get_realized")?.reinterpret()
             fnGtkWidgetGetNative = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_widget_get_native")?.reinterpret()
             fnGtkNativeGetSurface = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_native_get_surface")?.reinterpret()
+            fnGdkToplevelGetType = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_toplevel_get_type")?.reinterpret()
+            fnGdkToplevelGetState = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_toplevel_get_state")?.reinterpret()
+            fnGdkToplevelBeginMove = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_toplevel_begin_move")?.reinterpret()
+            fnGdkDisplayGetDefaultSeat = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_display_get_default_seat")?.reinterpret()
+            fnGdkSeatGetPointer = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_seat_get_pointer")?.reinterpret()
+            fnGdkSurfaceGetDevicePosition = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_surface_get_device_position")?.reinterpret()
             fnGdkX11SurfaceGetType = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_x11_surface_get_type")?.reinterpret()
             fnGdkX11SurfaceGetXid = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_x11_surface_get_xid")?.reinterpret()
             fnGtkHeaderBarNew = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_header_bar_new")?.reinterpret()
@@ -374,6 +409,16 @@ internal object Gtk4DynamicBindings {
             fnColorDialogSetWithAlpha = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_color_dialog_set_with_alpha")?.reinterpret()
             fnColorDialogChooseRgba = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_color_dialog_choose_rgba")?.reinterpret()
             fnColorDialogChooseRgbaFinish = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_color_dialog_choose_rgba_finish")?.reinterpret()
+            fnGtkSnapshotNew = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_snapshot_new")?.reinterpret()
+            fnGtkSnapshotPushBlur = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_snapshot_push_blur")?.reinterpret()
+            fnGtkSnapshotPop = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_snapshot_pop")?.reinterpret()
+            fnGtkSnapshotAppendCairo = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_snapshot_append_cairo")?.reinterpret()
+            fnGtkSnapshotFreeToNode = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_snapshot_free_to_node")?.reinterpret()
+            fnGskBlurNodeNew = LinuxDynamicLibraryLoader.symbol(gtk, "gsk_blur_node_new")?.reinterpret()
+            fnGskCairoNodeNew = LinuxDynamicLibraryLoader.symbol(gtk, "gsk_cairo_node_new")?.reinterpret()
+            fnGskCairoNodeGetDrawContext = LinuxDynamicLibraryLoader.symbol(gtk, "gsk_cairo_node_get_draw_context")?.reinterpret()
+            fnGskRenderNodeDraw = LinuxDynamicLibraryLoader.symbol(gtk, "gsk_render_node_draw")?.reinterpret()
+            fnGskRenderNodeUnref = LinuxDynamicLibraryLoader.symbol(gtk, "gsk_render_node_unref")?.reinterpret()
         }
 
         if (adw != null) {
@@ -409,6 +454,13 @@ internal object Gtk4DynamicBindings {
             fnCairoSetSource = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_set_source")?.reinterpret()
             fnCairoPatternDestroy = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_pattern_destroy")?.reinterpret()
             fnCairoImageSurfaceCreateForData = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_image_surface_create_for_data")?.reinterpret()
+            fnCairoGetTarget = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_get_target")?.reinterpret()
+            fnCairoUserToDevice = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_user_to_device")?.reinterpret()
+            fnCairoImageSurfaceGetData = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_image_surface_get_data")?.reinterpret()
+            fnCairoImageSurfaceGetFormat = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_image_surface_get_format")?.reinterpret()
+            fnCairoImageSurfaceGetWidth = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_image_surface_get_width")?.reinterpret()
+            fnCairoImageSurfaceGetHeight = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_image_surface_get_height")?.reinterpret()
+            fnCairoImageSurfaceGetStride = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_image_surface_get_stride")?.reinterpret()
             fnCairoSurfaceFlush = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_surface_flush")?.reinterpret()
             fnCairoSurfaceMarkDirty = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_surface_mark_dirty")?.reinterpret()
             fnCairoSurfaceDestroy = LinuxDynamicLibraryLoader.symbol(cairo, "cairo_surface_destroy")?.reinterpret()
@@ -497,6 +549,39 @@ internal object Gtk4DynamicBindings {
     fun gtkWindowMinimize(win: COpaquePointer) { fnGtkWindowMinimize?.invoke(win) }
     fun gtkWindowIsFullscreen(win: COpaquePointer): Boolean = (fnGtkWindowIsFullscreen?.invoke(win) ?: 0) != 0
     fun gtkWindowIsMaximized(win: COpaquePointer): Boolean = (fnGtkWindowIsMaximized?.invoke(win) ?: 0) != 0
+    fun gtkWindowSurface(win: COpaquePointer): COpaquePointer? {
+        if ((fnGtkWidgetGetRealized?.invoke(win) ?: 0) == 0) return null
+        val native = fnGtkWidgetGetNative?.invoke(win) ?: win
+        return fnGtkNativeGetSurface?.invoke(native)
+    }
+    fun gtkWindowIsMinimized(win: COpaquePointer): Boolean {
+        val surface = gtkWindowSurface(win) ?: return false
+        val toplevelType = fnGdkToplevelGetType?.invoke() ?: 0uL
+        if (toplevelType == 0uL || !LinuxGlibGioBindings.typeCheckInstanceIsA(surface, toplevelType)) return false
+        val state = fnGdkToplevelGetState?.invoke(surface) ?: 0u
+        return (state and GDK_TOPLEVEL_STATE_MINIMIZED) != 0u
+    }
+    fun gtkWindowBeginMove(
+        win: COpaquePointer,
+        fallbackX: Double = 0.0,
+        fallbackY: Double = 0.0,
+        button: Int = 1,
+        timestamp: UInt = 0u
+    ): Boolean = memScoped {
+        val surface = gtkWindowSurface(win) ?: return@memScoped false
+        val toplevelType = fnGdkToplevelGetType?.invoke() ?: 0uL
+        if (toplevelType == 0uL || !LinuxGlibGioBindings.typeCheckInstanceIsA(surface, toplevelType)) return@memScoped false
+        val display = fnGtkWidgetGetDisplay?.invoke(win) ?: fnGdkDisplayGetDefault?.invoke() ?: return@memScoped false
+        val seat = fnGdkDisplayGetDefaultSeat?.invoke(display) ?: return@memScoped false
+        val pointer = fnGdkSeatGetPointer?.invoke(seat) ?: return@memScoped false
+        val xVar = alloc<DoubleVar>()
+        val yVar = alloc<DoubleVar>()
+        xVar.value = fallbackX
+        yVar.value = fallbackY
+        fnGdkSurfaceGetDevicePosition?.invoke(surface, pointer, xVar.ptr, yVar.ptr, null)
+        fnGdkToplevelBeginMove?.invoke(surface, pointer, button, xVar.value, yVar.value, timestamp)
+        fnGdkToplevelBeginMove != null
+    }
     fun gtkWindowX11Xid(win: COpaquePointer): ULong {
         if ((fnGtkWidgetGetRealized?.invoke(win) ?: 0) == 0) return 0uL
         val native = fnGtkWidgetGetNative?.invoke(win) ?: win
@@ -765,6 +850,178 @@ internal object Gtk4DynamicBindings {
                 cairoRestore(cr)
             } finally {
                 fnCairoSurfaceDestroy?.invoke(surface)
+            }
+        }
+    }
+
+    fun cairoApplyBackdropFilterRegion(
+        cr: COpaquePointer,
+        x: Int,
+        y: Int,
+        w: Int,
+        h: Int,
+        radiusPx: Float,
+        filter: com.nexustools.genericui.style.css.CssFilter
+    ) {
+        if (w <= 0 || h <= 0 || !filter.hasActiveEffects) return
+        val surface = fnCairoGetTarget?.invoke(cr) ?: return
+        fnCairoSurfaceFlush?.invoke(surface)
+        val dataPtr = fnCairoImageSurfaceGetData?.invoke(surface)?.reinterpret<ByteVar>() ?: return
+        val fmt = fnCairoImageSurfaceGetFormat?.invoke(surface) ?: return
+        // CAIRO_FORMAT_ARGB32 (0) or CAIRO_FORMAT_RGB24 (1)
+        if (fmt != 0 && fmt != 1) return
+        val surfW = fnCairoImageSurfaceGetWidth?.invoke(surface) ?: 0
+        val surfH = fnCairoImageSurfaceGetHeight?.invoke(surface) ?: 0
+        val strideBytes = fnCairoImageSurfaceGetStride?.invoke(surface) ?: 0
+        if (surfW <= 0 || surfH <= 0 || strideBytes < surfW * 4) return
+
+        var devX0 = x.toDouble()
+        var devY0 = y.toDouble()
+        var devX1 = (x + w).toDouble()
+        var devY1 = (y + h).toDouble()
+        memScoped {
+            val dxVar = alloc<DoubleVar>()
+            val dyVar = alloc<DoubleVar>()
+            fnCairoUserToDevice?.let { fn ->
+                dxVar.value = devX0; dyVar.value = devY0; fn.invoke(cr, dxVar.ptr, dyVar.ptr)
+                devX0 = dxVar.value; devY0 = dyVar.value
+                dxVar.value = devX1; dyVar.value = devY1; fn.invoke(cr, dxVar.ptr, dyVar.ptr)
+                devX1 = dxVar.value; devY1 = dyVar.value
+            }
+        }
+        val scale = ((devX1 - devX0) / w.toDouble()).toFloat().coerceAtLeast(1f)
+        val rawBlur = filter.blur?.resolvePx() ?: 0f
+        val effFilter = if (rawBlur > 0f && scale != 1f) {
+            filter.copy(blur = com.nexustools.genericui.style.css.CssLength.px(rawBlur * scale))
+        } else {
+            filter
+        }
+
+        val x0 = kotlin.math.min(devX0, devX1).toInt().coerceIn(0, surfW)
+        val y0 = kotlin.math.min(devY0, devY1).toInt().coerceIn(0, surfH)
+        val x1 = kotlin.math.max(devX0, devX1).toInt().coerceIn(0, surfW)
+        val y1 = kotlin.math.max(devY0, devY1).toInt().coerceIn(0, surfH)
+        val rw = x1 - x0
+        val rh = y1 - y0
+        if (rw <= 0 || rh <= 0) return
+
+        val blurScaled = (effFilter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
+        val pad = if (blurScaled > 0f) kotlin.math.ceil(blurScaled * 1.5f).toInt().coerceIn(1, 32) else 0
+        val capX0 = (x0 - pad).coerceAtLeast(0)
+        val capY0 = (y0 - pad).coerceAtLeast(0)
+        val capX1 = (x1 + pad).coerceAtMost(surfW)
+        val capY1 = (y1 + pad).coerceAtMost(surfH)
+        val capW = capX1 - capX0
+        val capH = capY1 - capY0
+        if (capW <= 0 || capH <= 0) return
+
+        val needed = capW * capH
+        if (cairoScratchArgb.size < needed) {
+            var cap = kotlin.math.max(4096, cairoScratchArgb.size)
+            while (cap < needed) cap = cap shl 1
+            cairoScratchArgb = IntArray(cap)
+        }
+        val subArgb = cairoScratchArgb
+        var dstIdx = 0
+        for (py in capY0 until capY1) {
+            val rowWords = (dataPtr + (py * strideBytes))!!.reinterpret<IntVar>()
+            for (px in capX0 until capX1) {
+                val word = rowWords[px]
+                val a = if (fmt == 1) 255 else (word ushr 24) and 0xFF
+                var r = (word ushr 16) and 0xFF
+                var g = (word ushr 8) and 0xFF
+                var b = word and 0xFF
+                if (fmt == 0 && a in 1..254) {
+                    r = ((r * 255) / a).coerceIn(0, 255)
+                    g = ((g * 255) / a).coerceIn(0, 255)
+                    b = ((b * 255) / a).coerceIn(0, 255)
+                }
+                subArgb[dstIdx++] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+
+        val applied = com.nexustools.genericui.style.css.FastBackdropBlurKernel.applyBackdropToArgbRegion(
+            filter = effFilter,
+            argbPixels = subArgb,
+            bufferWidth = capW,
+            bufferHeight = capH,
+            regionX = x0 - capX0,
+            regionY = y0 - capY0,
+            regionWidth = rw,
+            regionHeight = rh,
+            cornerRadiusPx = (radiusPx * scale).coerceAtLeast(0f)
+        )
+        if (!applied) return
+
+        for (py in y0 until y1) {
+            val rowWords = (dataPtr + (py * strideBytes))!!.reinterpret<IntVar>()
+            val srcRow = (py - capY0) * capW
+            for (px in x0 until x1) {
+                val argb = subArgb[srcRow + (px - capX0)]
+                val a = (argb ushr 24) and 0xFF
+                var r = (argb ushr 16) and 0xFF
+                var g = (argb ushr 8) and 0xFF
+                var b = argb and 0xFF
+                if (fmt == 0 && a < 255) {
+                    r = (r * a + 127) / 255
+                    g = (g * a + 127) / 255
+                    b = (b * a + 127) / 255
+                }
+                val outA = if (fmt == 1) 255 else a
+                rowWords[px] = (outA shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        fnCairoSurfaceMarkDirty?.invoke(surface)
+    }
+
+    fun hasHardwareGskBlur(): Boolean =
+        fnGtkSnapshotPushBlur != null || (fnGskBlurNodeNew != null && fnGskRenderNodeDraw != null)
+
+    fun applyGskBlurNodeToCairoSurface(
+        cr: COpaquePointer,
+        sourceSurface: COpaquePointer,
+        x: Double,
+        y: Double,
+        w: Double,
+        h: Double,
+        blurRadiusPx: Float
+    ): Boolean {
+        val gskCairoNew = fnGskCairoNodeNew ?: return false
+        val gskCairoCtx = fnGskCairoNodeGetDrawContext ?: return false
+        val gskBlurNew = fnGskBlurNodeNew ?: return false
+        val gskDraw = fnGskRenderNodeDraw ?: return false
+        val gskUnref = fnGskRenderNodeUnref ?: return false
+        if (w <= 0.0 || h <= 0.0 || blurRadiusPx <= 0f) return false
+
+        return memScoped {
+            val rect = allocArray<FloatVar>(4)
+            rect[0] = 0f
+            rect[1] = 0f
+            rect[2] = w.toFloat()
+            rect[3] = h.toFloat()
+            val cairoNode = gskCairoNew(rect) ?: return@memScoped false
+            val nodeCr = gskCairoCtx(cairoNode)
+            if (nodeCr == null) {
+                gskUnref(cairoNode)
+                return@memScoped false
+            }
+            try {
+                fnCairoSetSourceSurface?.invoke(nodeCr, sourceSurface, -x, -y)
+                cairoPaint(nodeCr)
+            } finally {
+                fnCairoDestroy?.invoke(nodeCr)
+            }
+            val blurNode = gskBlurNew(cairoNode, blurRadiusPx)
+            gskUnref(cairoNode)
+            if (blurNode == null) return@memScoped false
+            try {
+                cairoSave(cr)
+                cairoTranslate(cr, x, y)
+                gskDraw(blurNode, cr)
+                cairoRestore(cr)
+                true
+            } finally {
+                gskUnref(blurNode)
             }
         }
     }

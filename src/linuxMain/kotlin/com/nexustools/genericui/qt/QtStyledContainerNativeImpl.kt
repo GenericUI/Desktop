@@ -30,6 +30,15 @@ class QtStyledContainerNativeImpl(
         syncQtStyledContainerVisuals()
     }
 
+    private fun isTextBubbleComponent(): Boolean {
+        val raw = "$tagName $componentClassPrefix".trim().lowercase()
+        val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        return tokens.any {
+            val norm = it.removePrefix("genericui:")
+            norm == "text-bubble" || norm == "textbubble" || norm == "gui-text-bubble"
+        }
+    }
+
     private fun syncQtStyledContainerVisuals() {
         val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
         val isDark = effectiveTheme == ThemeMode.DARK
@@ -37,11 +46,21 @@ class QtStyledContainerNativeImpl(
         nativeWidget.attributes["qPaletteDarkMode"] = isDark
         nativeWidget.attributes["qtColorScheme"] = if (isDark) "Qt::ColorScheme::Dark" else "Qt::ColorScheme::Light"
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
-        nativeWidget.attributes.remove("backdropBlurPx")
-        nativeWidget.attributes.remove("backdropFilter")
 
         val resolved = getStyledVisuals()
         nativeWidget.attributes["styledVisuals"] = resolved
+        val blurPx = resolved.backdropBlurPx ?: resolved.backdropFilter?.blur?.resolvePx()
+        if (!isTextBubbleComponent() && blurPx != null && blurPx > 0f) {
+            nativeWidget.attributes["backdropBlurPx"] = blurPx
+        } else {
+            nativeWidget.attributes.remove("backdropBlurPx")
+        }
+        val bf = resolved.backdropFilter
+        if (!isTextBubbleComponent() && bf != null && !bf.isNone) {
+            nativeWidget.attributes["backdropFilter"] = bf
+        } else {
+            nativeWidget.attributes.remove("backdropFilter")
+        }
         resolved.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
         resolved.backgroundGradient?.let {
             setBackgroundGradient(it)
@@ -78,16 +97,21 @@ class QtStyledContainerNativeImpl(
             snapshot = styleSnapshot,
             darkTheme = isDark
         )
-        return computedBase.mergeWith(explicitStyledVisuals)
+        val merged = computedBase.mergeWith(explicitStyledVisuals)
+        return if (isTextBubbleComponent()) merged.withoutBackdropFilter() else merged
     }
 
     override fun setAttribute(name: String, value: String?) {
         if (
-            name.equals("backdropBlurPx", ignoreCase = true) ||
-            name.equals("backdrop-filter", ignoreCase = true) ||
-            name.equals("-webkit-backdrop-filter", ignoreCase = true)
+            isTextBubbleComponent() &&
+            (
+                name.equals("backdropBlurPx", ignoreCase = true) ||
+                    name.equals("backdrop-filter", ignoreCase = true) ||
+                    name.equals("-webkit-backdrop-filter", ignoreCase = true)
+                )
         ) {
             nativeWidget.attributes.remove("backdropBlurPx")
+            nativeWidget.attributes.remove("backdropFilter")
             return
         }
         super.setAttribute(name, value)

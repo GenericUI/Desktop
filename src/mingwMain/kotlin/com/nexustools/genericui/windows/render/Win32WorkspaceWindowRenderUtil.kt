@@ -889,6 +889,35 @@ object Win32WorkspaceWindowRenderUtil {
         return false
     }
 
+    private fun isBoundedFlexColumnViewportStage(vararg widgets: DesktopNativeWidget?): Boolean {
+        for (w in widgets) {
+            var cur = w
+            var depth = 0
+            var foundFlexColumn100 = false
+            while (cur != null && depth < 10) {
+                if (cur.attributes["nativeImpl"] is DesktopScrollViewNativeImpl<*> ||
+                    Win32NativeWindowHost.widgetHasClass(cur, "scrollview")
+                ) {
+                    return false
+                }
+                val overflowY = cur.resolveCssValue("overflow-y")?.lowercase()?.trim()
+                if (overflowY == "auto" || overflowY == "scroll") {
+                    return false
+                }
+                if (Win32NativeWindowHost.widgetHasClass(cur, "h-100") &&
+                    (Win32NativeWindowHost.widgetHasClass(cur, "flex-column") ||
+                        Win32NativeWindowHost.widgetHasClass(cur, "d-flex"))
+                ) {
+                    foundFlexColumn100 = true
+                }
+                cur = cur.parentWidget
+                depth++
+            }
+            if (foundFlexColumn100) return true
+        }
+        return false
+    }
+
     internal fun resolveVideoStageHeight(
         availW: Int,
         videoWidget: DesktopNativeWidget? = null,
@@ -2846,6 +2875,18 @@ object Win32WorkspaceWindowRenderUtil {
             ?: if (hasBackdropOverlay) {
                 if (theme.isDark) RgbaColor(14, 14, 18, 210) else RgbaColor(245, 245, 248, 218)
             } else null
+        if (layerVisuals?.hasBackdropFilter == true) {
+            Win32NativeWindowHost.applyBackdropFilterRect(
+                hdc = hdc,
+                left = left,
+                top = top,
+                right = right,
+                bottom = bottom,
+                radiusPx = layerVisuals.borderRadiusPx ?: 8f,
+                backdropBlurPx = layerVisuals.backdropBlurPx,
+                backdropFilter = layerVisuals.backdropFilter
+            )
+        }
         if (fillCol != null || layerVisuals?.borderColor != null || layerVisuals?.backgroundGradient != null) {
             Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                 hdc = hdc,
@@ -4291,7 +4332,11 @@ object Win32WorkspaceWindowRenderUtil {
                     right = innerRight,
                     bottomLimit = bottom + 256
                 )
-                val actualH = max(estH, renderedBottom - curY)
+                val actualH = if (renderedBottom > curY && findStageAndOverlay(child, titleBarWidgets) != null && isBoundedFlexColumnViewportStage(child)) {
+                    renderedBottom - curY
+                } else {
+                    max(estH, renderedBottom - curY)
+                }
                 if (actualH > 0) {
                     curY += actualH + 6
                 }
@@ -5149,7 +5194,19 @@ object Win32WorkspaceWindowRenderUtil {
             if (!isCompositeListRow(node, children, titleBarWidgets)) {
                 val estRowH = (styledContainerVisuals?.padding?.let { it.top + it.bottom + 28 }
                     ?: estimateFlowNodeHeight(node, titleBarWidgets, availW)).coerceAtLeast(32)
-                if (styledContainerVisuals != null && (styledContainerVisuals.backgroundColor != null || styledContainerVisuals.backgroundGradient != null || styledContainerVisuals.borderColor != null)) {
+                if (styledContainerVisuals != null && (styledContainerVisuals.hasBackdropFilter || styledContainerVisuals.backgroundColor != null || styledContainerVisuals.backgroundGradient != null || styledContainerVisuals.borderColor != null)) {
+                    if (styledContainerVisuals.hasBackdropFilter) {
+                        Win32NativeWindowHost.applyBackdropFilterRect(
+                            hdc = hdc,
+                            left = left,
+                            top = top,
+                            right = right,
+                            bottom = top + estRowH,
+                            radiusPx = styledContainerVisuals.borderRadiusPx ?: 0f,
+                            backdropBlurPx = styledContainerVisuals.backdropBlurPx,
+                            backdropFilter = styledContainerVisuals.backdropFilter
+                        )
+                    }
                     Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                         hdc = hdc,
                         left = left,
@@ -5186,9 +5243,10 @@ object Win32WorkspaceWindowRenderUtil {
 
         // 8. Default Vertical Stack (`VStack`, `Container`, `ScrollView`, `Collapse`, `StyledContainer`, etc.) with viewport culling
         val hasStyledBox = styledContainerVisuals != null &&
-            (styledContainerVisuals.backgroundColor != null || styledContainerVisuals.backgroundGradient != null || styledContainerVisuals.borderColor != null)
+            (styledContainerVisuals.hasBackdropFilter || styledContainerVisuals.backgroundColor != null || styledContainerVisuals.backgroundGradient != null || styledContainerVisuals.borderColor != null)
         val estStackH = if (hasStyledBox) estimateVerticalStackHeight(node, children, titleBarWidgets, availW).coerceAtLeast(32) else 0
         val stackCacheKey = if (hasStyledBox &&
+            !styledContainerVisuals!!.hasBackdropFilter &&
             !containsStageWithOverlay(node, titleBarWidgets) &&
             !containsLazyListInSubtree(node, titleBarWidgets) &&
             children.none { it.attributes.containsKey("captureBgra") || it.attributes.containsKey("captureRgba") } &&
@@ -5220,6 +5278,18 @@ object Win32WorkspaceWindowRenderUtil {
         }
         val stackHitStartIdx = Win32NativeWindowHost.getHitRegionsCount()
         if (hasStyledBox && styledContainerVisuals != null) {
+            if (styledContainerVisuals.hasBackdropFilter) {
+                Win32NativeWindowHost.applyBackdropFilterRect(
+                    hdc = hdc,
+                    left = left,
+                    top = top,
+                    right = right,
+                    bottom = top + estStackH,
+                    radiusPx = styledContainerVisuals.borderRadiusPx ?: 0f,
+                    backdropBlurPx = styledContainerVisuals.backdropBlurPx,
+                    backdropFilter = styledContainerVisuals.backdropFilter
+                )
+            }
             Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                 hdc = hdc,
                 left = left,
@@ -5256,7 +5326,11 @@ object Win32WorkspaceWindowRenderUtil {
                     right = right,
                     bottomLimit = bottomLimit
                 )
-                val actualH = max(estH, renderedBottom - curY)
+                val actualH = if (renderedBottom > curY && findStageAndOverlay(child, titleBarWidgets) != null && isBoundedFlexColumnViewportStage(child)) {
+                    renderedBottom - curY
+                } else {
+                    max(estH, renderedBottom - curY)
+                }
                 if (actualH > 0) {
                     curY += actualH + 6
                 }
@@ -5315,7 +5389,13 @@ object Win32WorkspaceWindowRenderUtil {
         } else if (fullHeightStage) {
             (min(bottomLimit, currentClipBottom) - top - 4).coerceAtLeast(180)
         } else {
-            resolveVideoStageHeight(availW, videoWidget, overlayWidget)
+            val naturalH = resolveVideoStageHeight(availW, videoWidget, overlayWidget)
+            val boundedBottom = min(bottomLimit, currentClipBottom)
+            if (boundedBottom < 10000 && top < boundedBottom - 184 && isBoundedFlexColumnViewportStage(videoWidget, overlayWidget)) {
+                minOf(naturalH, (boundedBottom - top - 4).coerceAtLeast(180))
+            } else {
+                naturalH
+            }
         }
         val stageBottom = top + stageH
         if (lastRenderedVideoWidgetPtr != 0L && lastRenderedVideoWidgetPtr != videoWidget.nativePointer) {
@@ -6399,13 +6479,26 @@ object Win32WorkspaceWindowRenderUtil {
                                 }
                                 val borderCol = styledVisuals?.borderColor
                                     ?: RgbaColor(255, 255, 255, if (isBtnHovered) 92 else 56)
+                                val circleRadius = styledVisuals?.borderRadiusPx ?: (dim / 2f)
+                                if (styledVisuals?.hasBackdropFilter == true) {
+                                    Win32NativeWindowHost.applyBackdropFilterRect(
+                                        hdc = hdc,
+                                        left = bL,
+                                        top = bT,
+                                        right = bR,
+                                        bottom = bB,
+                                        radiusPx = circleRadius,
+                                        backdropBlurPx = styledVisuals.backdropBlurPx,
+                                        backdropFilter = styledVisuals.backdropFilter
+                                    )
+                                }
                                 Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                                     hdc = hdc,
                                     left = bL,
                                     top = bT,
                                     right = bR,
                                     bottom = bB,
-                                    radiusPx = (dim / 2f),
+                                    radiusPx = circleRadius,
                                     fillColor = fillCol,
                                     borderColor = borderCol,
                                     borderWidthPx = styledVisuals?.borderWidthPx ?: 1.5f,
@@ -6532,6 +6625,18 @@ object Win32WorkspaceWindowRenderUtil {
                 // 4. Bottom Overlaid Transport HUD touching the bottom/left/right edges of the video stage
                 if (drawBg) {
                     val bottomStyledVisuals = (transportBar?.attributes?.get("nativeImpl") as? DesktopStyledContainerNativeImpl<*>)?.getStyledVisuals()
+                    if (bottomStyledVisuals?.hasBackdropFilter == true) {
+                        Win32NativeWindowHost.applyBackdropFilterRect(
+                            hdc = hdc,
+                            left = left,
+                            top = bottomHudTop,
+                            right = right,
+                            bottom = bottomHudBottom,
+                            radiusPx = bottomStyledVisuals.borderRadiusPx ?: 0f,
+                            backdropBlurPx = bottomStyledVisuals.backdropBlurPx,
+                            backdropFilter = bottomStyledVisuals.backdropFilter
+                        )
+                    }
                     val bottomBgRgba = bottomStyledVisuals?.backgroundColor?.let {
                         it.copy(a = (it.a * hudAlpha).roundToInt().coerceIn(0, 255))
                     }
@@ -6650,13 +6755,26 @@ object Win32WorkspaceWindowRenderUtil {
                         if (isExpandingSliderPillWidget(item)) {
                             if (drawBg) {
                                 val visuals = (item.attributes["nativeImpl"] as? DesktopStyledContainerNativeImpl<*>)?.getStyledVisuals()
+                                val pillRadius = (visuals?.borderRadiusPx ?: 20f).coerceAtLeast(itemH / 2f)
+                                if (visuals?.hasBackdropFilter == true) {
+                                    Win32NativeWindowHost.applyBackdropFilterRect(
+                                        hdc = hdc,
+                                        left = itemL,
+                                        top = itemTop,
+                                        right = itemR,
+                                        bottom = itemBottom,
+                                        radiusPx = pillRadius,
+                                        backdropBlurPx = visuals.backdropBlurPx,
+                                        backdropFilter = visuals.backdropFilter
+                                    )
+                                }
                                 Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                                     hdc = hdc,
                                     left = itemL,
                                     top = itemTop,
                                     right = itemR,
                                     bottom = itemBottom,
-                                    radiusPx = (visuals?.borderRadiusPx ?: 20f).coerceAtLeast(itemH / 2f),
+                                    radiusPx = pillRadius,
                                     fillColor = visuals?.backgroundColor ?: RgbaColor(15, 18, 24, 200),
                                     borderColor = visuals?.borderColor ?: RgbaColor(255, 255, 255, 36),
                                     borderWidthPx = (visuals?.borderWidthPx ?: 1f).coerceAtLeast(1f),
@@ -6674,8 +6792,27 @@ object Win32WorkspaceWindowRenderUtil {
                                 )
                             }
                             val muteBtn = item.children.getOrNull(0)
+                            val muteL = itemL + 2
+                            val muteR = min(itemR - 2, itemL + 38)
+                            val muteTop = itemTop + 2
+                            val muteBottom = itemBottom - 2
                             if (muteBtn != null && muteBtn.visible && !muteBtn.disposed) {
-                                renderOverlayRowControl(muteBtn, itemL + 2, min(itemR - 2, itemL + 38), fallbackIdx, itemTop + 2, itemBottom - 2, inPillContainer = true)
+                                renderOverlayRowControl(muteBtn, muteL, muteR, fallbackIdx, muteTop, muteBottom, inPillContainer = true)
+                            }
+                            if (drawFg && item.attributes["data-custom-volume-icons"] != "true") {
+                                drawExpandingVolumeIconStack(
+                                    hwnd = hwnd,
+                                    hdc = hdc,
+                                    theme = theme,
+                                    fontFallback = fontSmallBold ?: fontSmall,
+                                    pillWidget = item,
+                                    left = muteL,
+                                    top = muteTop,
+                                    right = muteR,
+                                    bottom = muteBottom,
+                                    surfaceBgColorRef = 0x18120Fu,
+                                    hudAlpha = hudAlpha
+                                )
                             }
                             if (drawBg) {
                                 val sliderHost = item.children.getOrNull(1)
@@ -6724,13 +6861,26 @@ object Win32WorkspaceWindowRenderUtil {
                             is DesktopStyledContainerNativeImpl<*> -> {
                                 if (drawBg) {
                                     val visuals = impl.getStyledVisuals()
+                                    val pillRadius = (visuals.borderRadiusPx ?: 0f).coerceAtLeast(itemH / 2f)
+                                    if (visuals.hasBackdropFilter) {
+                                        Win32NativeWindowHost.applyBackdropFilterRect(
+                                            hdc = hdc,
+                                            left = itemL,
+                                            top = itemTop,
+                                            right = itemR,
+                                            bottom = itemBottom,
+                                            radiusPx = pillRadius,
+                                            backdropBlurPx = visuals.backdropBlurPx,
+                                            backdropFilter = visuals.backdropFilter
+                                        )
+                                    }
                                     Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                                         hdc = hdc,
                                         left = itemL,
                                         top = itemTop,
                                         right = itemR,
                                         bottom = itemBottom,
-                                        radiusPx = (visuals.borderRadiusPx ?: 0f).coerceAtLeast(itemH / 2f),
+                                        radiusPx = pillRadius,
                                         fillColor = visuals.backgroundColor ?: RgbaColor(15, 18, 24, 200),
                                         borderColor = visuals.borderColor ?: RgbaColor(255, 255, 255, 36),
                                         borderWidthPx = (visuals.borderWidthPx ?: 1f).coerceAtLeast(1f),
@@ -6803,6 +6953,19 @@ object Win32WorkspaceWindowRenderUtil {
                                             it.setActivePressedState(isBtnPressed)
                                             it.resolveCurrentVisuals()
                                         }
+                                        val effBtnRadius = styledVisuals?.borderRadiusPx ?: btnRadius
+                                        if (styledVisuals?.hasBackdropFilter == true) {
+                                            Win32NativeWindowHost.applyBackdropFilterRect(
+                                                hdc = hdc,
+                                                left = itemL,
+                                                top = itemTop,
+                                                right = itemR,
+                                                bottom = itemBottom,
+                                                radiusPx = effBtnRadius,
+                                                backdropBlurPx = styledVisuals.backdropBlurPx,
+                                                backdropFilter = styledVisuals.backdropFilter
+                                            )
+                                        }
                                         val fillCol = styledVisuals?.backgroundColor ?: when {
                                             isBtnPressed -> RgbaColor(38, 44, 58, 230)
                                             isBtnHovered -> RgbaColor(28, 34, 46, 218)
@@ -6816,7 +6979,7 @@ object Win32WorkspaceWindowRenderUtil {
                                             top = itemTop,
                                             right = itemR,
                                             bottom = itemBottom,
-                                            radiusPx = btnRadius,
+                                            radiusPx = effBtnRadius,
                                             fillColor = fillCol,
                                             borderColor = borderCol,
                                             borderWidthPx = (styledVisuals?.borderWidthPx ?: 1f).coerceAtLeast(1f),
@@ -7074,6 +7237,18 @@ object Win32WorkspaceWindowRenderUtil {
                         )
                     )
                     val popVisuals = (settingsPanelWidget.attributes["nativeImpl"] as? DesktopStyledContainerNativeImpl<*>)?.getStyledVisuals()
+                    if (popVisuals?.hasBackdropFilter == true) {
+                        Win32NativeWindowHost.applyBackdropFilterRect(
+                            hdc = hdc,
+                            left = popLeft,
+                            top = popTop,
+                            right = popRight,
+                            bottom = popBottom,
+                            radiusPx = popVisuals.borderRadiusPx ?: 10f,
+                            backdropBlurPx = popVisuals.backdropBlurPx,
+                            backdropFilter = popVisuals.backdropFilter
+                        )
+                    }
                     Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                         hdc = hdc,
                         left = popLeft,
@@ -7309,6 +7484,18 @@ object Win32WorkspaceWindowRenderUtil {
                     )
 
                     val popVisuals = (settingsPanelWidget.attributes["nativeImpl"] as? DesktopStyledContainerNativeImpl<*>)?.getStyledVisuals()
+                    if (popVisuals?.hasBackdropFilter == true) {
+                        Win32NativeWindowHost.applyBackdropFilterRect(
+                            hdc = hdc,
+                            left = popLeft,
+                            top = popTop,
+                            right = popRight,
+                            bottom = popBottom,
+                            radiusPx = popVisuals.borderRadiusPx ?: 10f,
+                            backdropBlurPx = popVisuals.backdropBlurPx,
+                            backdropFilter = popVisuals.backdropFilter
+                        )
+                    }
                     Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
                         hdc = hdc,
                         left = popLeft,
@@ -9943,6 +10130,65 @@ object Win32WorkspaceWindowRenderUtil {
             }
         }
         return false
+    }
+
+    private fun resolveVolumeLayerAlpha(pillWidget: DesktopNativeWidget, layerWidget: DesktopNativeWidget): Float {
+        val attrKey = when (layerWidget.attributes["data-volume-layer"] as? String) {
+            "speaker" -> return 1f
+            "wave-1" -> "data-wave-1-opacity"
+            "wave-2" -> "data-wave-2-opacity"
+            "wave-3" -> "data-wave-3-opacity"
+            "mute-cross" -> "data-mute-cross-opacity"
+            else -> null
+        }
+        val fromAttr = attrKey?.let { (pillWidget.attributes[it] as? String)?.toFloatOrNull() }
+        return (fromAttr ?: layerWidget.opacity).coerceIn(0f, 1f)
+    }
+
+    private fun drawExpandingVolumeIconStack(
+        hwnd: HWND,
+        hdc: HDC?,
+        theme: Win32NativeWindowHost.SystemThemePalette,
+        fontFallback: HFONT?,
+        pillWidget: DesktopNativeWidget,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        surfaceBgColorRef: UInt,
+        hudAlpha: Float
+    ) {
+        val stackWidget = pillWidget.children.getOrNull(2)?.takeIf { it.visible && !it.disposed } ?: return
+        val padX = ((right - left - 18).coerceAtLeast(4)) / 2
+        val padY = ((bottom - top - 18).coerceAtLeast(4)) / 2
+        for (layerWidget in safeChildrenSnapshot(stackWidget)) {
+            if (!layerWidget.visible || layerWidget.disposed) continue
+            val imgImpl = layerWidget.attributes["nativeImpl"] as? DesktopImageNativeImpl<*> ?: continue
+            val url = imgImpl.getSourceUrl()?.trim().orEmpty()
+            if (url.isEmpty()) continue
+            val effectiveAlpha = (hudAlpha * resolveVolumeLayerAlpha(pillWidget, layerWidget)).coerceIn(0f, 1f)
+            if (effectiveAlpha <= 0.005f) continue
+            drawCachedOrAsyncImageBox(
+                hwnd = hwnd,
+                hdc = hdc,
+                theme = theme,
+                fontFallback = fontFallback,
+                url = url,
+                placeholderUrl = "",
+                antialiasing = imgImpl.isAntialiasing(),
+                ownerWidget = layerWidget,
+                fallbackLabel = "",
+                cssFilter = resolveWidgetCssFilter(layerWidget, pillWidget),
+                left = left + padX - 2,
+                top = top + padY - 2,
+                right = right - padX + 2,
+                bottom = bottom - padY + 2,
+                surfaceBgColorRef = surfaceBgColorRef,
+                drawBoxBackground = false,
+                transparentBackground = true,
+                opacity = effectiveAlpha
+            )
+        }
     }
 
     private fun measureButtonWidth(btn: DesktopButtonNativeImpl<*>): Int {

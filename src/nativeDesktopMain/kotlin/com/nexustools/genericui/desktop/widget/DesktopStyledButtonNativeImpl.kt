@@ -42,6 +42,18 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes["opacity"] = op
         }
         resolved.padding?.let { nativeWidget.padding = it }
+        val blurPx = resolved.backdropBlurPx ?: resolved.backdropFilter?.blur?.resolvePx()
+        if (blurPx != null && blurPx > 0f) {
+            nativeWidget.attributes["backdropBlurPx"] = blurPx
+        } else {
+            nativeWidget.attributes.remove("backdropBlurPx")
+        }
+        val bf = resolved.backdropFilter
+        if (bf != null && !bf.isNone) {
+            nativeWidget.attributes["backdropFilter"] = bf
+        } else {
+            nativeWidget.attributes.remove("backdropFilter")
+        }
         nativeWidget.notifyTreeInvalidated(visualOnly = visualOnly)
     }
 

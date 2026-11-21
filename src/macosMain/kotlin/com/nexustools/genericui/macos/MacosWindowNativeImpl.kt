@@ -149,6 +149,45 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         }
     }
 
+    override fun isUndecorated(): Boolean = super.isUndecorated()
+
+    override fun setUndecorated(undecorated: Boolean) {
+        val changed = super.isUndecorated() != undecorated
+        super.setUndecorated(undecorated)
+        if (undecorated) {
+            nativeWidget.styleMask = MacosViewHandle.NSWindowStyleMaskResizable
+        } else {
+            val tb = getTitleBarInstructions()
+            var mask = MacosViewHandle.NSWindowStyleMaskTitled or
+                MacosViewHandle.NSWindowStyleMaskClosable or
+                MacosViewHandle.NSWindowStyleMaskResizable
+            val allowMin = if (isToolModalWindow) minimizable else (tb?.showMinimizeButton ?: true)
+            if (allowMin) {
+                mask = mask or MacosViewHandle.NSWindowStyleMaskMiniaturizable
+            }
+            if (tb?.customTitleBar == true) {
+                mask = mask or MacosViewHandle.NSWindowStyleMaskFullSizeContentView
+            }
+            if (isToolModalWindow) {
+                mask = mask or MacosViewHandle.NSWindowStyleMaskUtilityWindow
+            }
+            nativeWidget.styleMask = mask
+        }
+        if (changed && MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
+            MacosNativeWindowHost.syncWindowProperties(this)
+        }
+    }
+
+    override fun setOnWindowStateChanged(listener: ((WindowState) -> Unit)?) {
+        super.setOnWindowStateChanged(listener)
+    }
+
+    override fun startSystemMove() {
+        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !isDisposed) {
+            MacosNativeWindowHost.startSystemMove(this)
+        }
+    }
+
     override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
         super.setFullscreen(fullscreen, cutoutMode)
         if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
@@ -233,7 +272,6 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
                         heightPx = h,
                         windowState = currentWindowState,
                         isFullscreen = fullscreenFlag,
-                        isInPictureInPicture = inPipMode,
                         themeMode = resolvedTheme
                     )
                 )
@@ -261,6 +299,7 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
             currentWindowState != nextState ||
             nativeWidget.bounds.width != w ||
             nativeWidget.bounds.height != h
+        val prevState = currentWindowState
         suppressHostSync = true
         try {
             currentWindowSize = newSize
@@ -272,6 +311,9 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         } finally {
             suppressHostSync = false
         }
+        if (prevState != currentWindowState) {
+            onWindowStateChangedListener?.invoke(currentWindowState)
+        }
         if (changed) {
             val resolvedTheme = com.nexustools.genericui.component.shell.Application.current?.getResolvedTheme()
                 ?: com.nexustools.genericui.style.theme.SystemThemeDetector.detectSystemTheme()
@@ -281,7 +323,6 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
                     heightPx = h,
                     windowState = currentWindowState,
                     isFullscreen = fullscreenFlag,
-                    isInPictureInPicture = inPipMode,
                     themeMode = resolvedTheme
                 )
             )
@@ -300,13 +341,33 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         }
     }
 
-    internal fun notifyHostMiniaturizedFromOs(miniaturized: Boolean) {
+    internal fun notifyHostMiniaturizedFromOs(
+        miniaturized: Boolean,
+        restoredState: WindowState = WindowState.NORMAL
+    ) {
+        val nextState = if (miniaturized) WindowState.MINIMIZED else restoredState
+        val prevState = currentWindowState
         suppressHostSync = true
         try {
-            currentWindowState = if (miniaturized) WindowState.MINIMIZED else WindowState.NORMAL
+            currentWindowState = nextState
             nativeWidget.attributes["windowState"] = currentWindowState
         } finally {
             suppressHostSync = false
+        }
+        if (prevState != nextState) {
+            val resolvedTheme = com.nexustools.genericui.component.shell.Application.current?.getResolvedTheme()
+                ?: com.nexustools.genericui.style.theme.SystemThemeDetector.detectSystemTheme()
+            val config = WindowConfiguration(
+                widthPx = currentWindowSize.width,
+                heightPx = currentWindowSize.height,
+                windowState = currentWindowState,
+                isFullscreen = fullscreenFlag,
+                themeMode = resolvedTheme
+            )
+            com.nexustools.genericui.threading.GenericUiThreading.runOnLogic {
+                onWindowStateChangedListener?.invoke(currentWindowState)
+                onWindowResizeListener?.invoke(config)
+            }
         }
     }
 

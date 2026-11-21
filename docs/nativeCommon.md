@@ -1,29 +1,30 @@
-# `:desktop:nativeCommon` — Native C-Interop Desktop Foundation
+# `:desktop` Native Desktop Common Layer (`nativeDesktopMain` / `nativeDesktopCommon`)
+
+> **Module Guide**: [**`:desktop` (`../README.md`)**](../README.md) | **Related**: [`common.md`](common.md) · [`linuxCommon.md`](linuxCommon.md) · [`windows.md`](windows.md) · [`macos.md`](macos.md)
 
 ## Overview
-`:desktop:nativeCommon` provides the Kotlin/Native widget, container, window, application, styling, docking, lazy viewport, user directory, and libjpeg foundation for the four native cinterop desktop backends (`:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, and `:desktop:qt`). It targets `mingwX64()`, `macosX64()`, `macosArm64()`, and `linuxX64()`.
+The `nativeDesktopMain` source set of `:desktop` (`nativeDesktopCommon` variant scope) provides the Kotlin/Native widget, container, window, application, styling, hardware blur handoff, docking, lazy viewport, user directory, and `libjpeg` foundation shared across the four native C/ObjC desktop backends (`Windows`, `MacOS`, `Gtk`, and `Qt`), targeting `mingwX64()`, `macosArm64()`, `linuxX64()`, and `linuxArm64()`.
 
-> `:desktop:swing` runs on the JVM and depends on `:desktop:common` directly rather than `:desktop:nativeCommon`.
+> `Swing` (`jvmMain`) runs on the JVM atop `:desktop` `commonMain` and `:jvm` rather than `nativeDesktopMain`.
 
 ---
 
-## Styling, `BootstrapType.NONE`, Offscreen Native Sprite Tinting (`DesktopControlTintRenderUtil`), & `DesktopRenderableNativeImpl`
+## Styling, `BootstrapType.NONE`, Offscreen Tinting, & 60+Hz `backdrop-filter` (`StyledButton` / `StyledContainer`)
 
-`DesktopBaseNativeImpl` (`com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl`), `DesktopRenderableNativeImpl`, and `DesktopControlTintRenderUtil` (`com.nexustools.genericui.desktop.nativecommon.*`) form the shared rendering and styling foundation across `:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, and `:desktop:qt`:
+`DesktopBaseNativeImpl` (`com.nexustools.genericui.desktop.core`), `DesktopRenderableNativeImpl`, `DesktopControlTintRenderUtil` (`com.nexustools.genericui.desktop.render`), `DesktopStyledContainerNativeImpl`, and `DesktopStyledButtonNativeImpl` (`com.nexustools.genericui.desktop.widget`) form the shared rendering foundation:
 
 1. **`BootstrapType.NONE` Default — 100% Unmodified Native OS Controls**:
-   - `BootstrapStyleSnapshot` defaults to `type = BootstrapType.NONE`. When `type == BootstrapType.NONE`, native desktop widgets render the 100% unmodified genuine OS control (`UxTheme` on Windows, AppKit on macOS, GTK4 on Linux GTK, Qt6 `QStyle` on Linux Qt) with zero Bootstrap CSS styling.
-2. **`BootstrapType != BootstrapType.NONE` — Empty-Text Offscreen Sprite + `DesktopControlTintRenderUtil` + Text Overlay**:
-   - When `type != BootstrapType.NONE` (`PRIMARY`, `SECONDARY`, `SUCCESS`, `DANGER`, `WARNING`, `INFO`, `LIGHT`, `DARK`), each native desktop backend renders the native OS control **with NO text** into an offscreen ARGB pixel buffer, calls `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer(...)` to color-tint the native control pixels using the resolved `ThemeConfig` / `BootstrapColorPalette` color while preserving native 3D bevels, borders, specular highlights, and hover/pressed/disabled states (`outline = true/false`), blits the tinted sprite, and renders contrasting text and icons on top afterward.
-3. **System Backend Typography vs. Aesthetic Style Restraints**:
-   - **Text / Typography Elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`)**: Honor typography and text-color properties (`color` / `textColor`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`, `lineHeight`, `letterSpacing`, `textAlign`, `textDecoration`, `textTransform`, `textOverflow`, `whiteSpace`, `wordBreak`).
-   - **Buttons, Inputs, Controls, & Standard Containers**: Aesthetic skinning and typography overrides on `ComponentStyle` (`backgroundColor`, `background`, `color`, `accentColor`, `borderColor`, `borderWidth`, `borderStyle`, `borderRadius`, `boxShadow`, `fontFamily`, `fontSize`, `fontWeight`, `fontStyle`) are **silently ignored**. Standard components can **ONLY** be tinted via `BootstrapType`.
-   - **`StyledContainer` & `StyledButton` (and `:extensions:alien`)**: Honor full `ComponentStyle` aesthetic and typography properties.
+   - `BootstrapStyleSnapshot` defaults to `type = BootstrapType.NONE`. Standard controls render the 100% unmodified genuine OS widget (`UxTheme` on Windows, AppKit on macOS, GTK4 Adwaita on Linux GTK, Qt6 `QStyle` on Linux Qt).
+2. **`BootstrapType != BootstrapType.NONE` — Empty-Text Offscreen Sprite + `DesktopControlTintRenderUtil`**:
+   - Standard controls render **with NO text** into an offscreen ARGB pixel buffer, call `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer(...)` using `ThemeConfig` / `BootstrapColorPalette` while preserving native bevels and hover/pressed/disabled states (`outline = true/false`), blit the tinted sprite, and overlay contrasting text and icons.
+3. **Typography vs. Aesthetic Style Restraints**:
+   - **Text elements (`Label`, `Text`, `Heading`, `Badge`, `Blockquote`, `CodeBlock`, `MarkdownView`)** honor `ComponentStyle` typography and text color.
+   - **Standard controls & containers** ignore aesthetic skinning overrides on `ComponentStyle`; tint exclusively via `BootstrapType`.
+   - **`StyledContainer` & `StyledButton` (and [`:extensions:ui:alien`](../../extensions/docs/alien.md))**: Honor full `ComponentStyle`, including `backdropFilter` routed via `DesktopStyledContainerNativeImpl` / `DesktopStyledButtonNativeImpl` to each backend's 60+Hz blur path (`Win32Direct2dBackdropBlurEngine`, `MacosMetalBackdropBlurEngine`, `Gtk4DynamicBindings` / `cairoApplyBackdropFilterRegion`, `Qt6DynamicBindings` / `QtControlRenderUtil.applyBackdropFilterRegion`), while [`TextBubble`](../../extensions/docs/aichat.md) strips `backdropFilter` via `withoutBackdropFilter()`.
 4. **Strict User CSS Class Isolation (`customClasses`)**:
-   - `setClass`, `getClass()`, `getClasses()`, `addClass`, `removeClass`, and `hasClass` operate strictly on `styleSnapshot.customClasses`.
-   - `applyComponentBootstrap(bootstrap: ComponentBootstrap)` updates `styleSnapshot` directly so enum utilities (`BootstrapWidth`, `SpacingScale`, `FlexDirection`, `FlexWrap`, etc.) drive native layout without appearing in `getClasses()`.
+   - `setClass`, `getClass()`, `getClasses()`, `addClass`, `removeClass`, and `hasClass` operate strictly on `styleSnapshot.customClasses`. `ComponentBootstrap` enums drive layout and tinting without polluting `getClasses()`.
 5. **`CssCustomCursor` Translation**:
-   - `setCustomCursor(cursor: CssCursorValue?)` stores `CssCustomCursor` (PNG `ResourceID`, SVG `ResourceID`/markup, or `ImageBuffer` + `hotspotX`/`hotspotY` + `fallback`) for translation by `WindowsCurCodec` (`.cur` / `HCURSOR`), `MacosCursorTranslator` (`NSImage` / `NSCursor`), `GdkCursor`, or `QCursor`.
+   - `setCustomCursor(cursor: CssCursorValue?)` stores `CssCustomCursor` (`ResourceID`, SVG, or `ImageBuffer` + `hotspotX`/`hotspotY`) for translation by `WindowsCurCodec`, `MacosCursorTranslator`, GTK4 `GdkCursor`, or Qt6 `QCursor`.
 
 ---
 
@@ -32,17 +33,16 @@
 | Class | Package | Description |
 |-------|---------|-------------|
 | `DesktopBaseNativeImpl` | `com.nexustools.genericui.desktop.core` | Base native widget implementation managing `ComponentStyle`, `ComponentBootstrap`, `customClasses` isolation, `CssCustomCursor`, semantic `BootstrapType` tinting, bounds, visibility, focus, and events |
-| `DesktopRenderableNativeImpl` | `com.nexustools.genericui.desktop.nativecommon` | Per-component rendering contract (`renderNativeComponent(...)`) implemented by `Windows*NativeImpl`, `Macos*NativeImpl`, `Gtk*NativeImpl`, and `Qt*NativeImpl` classes |
-| `DesktopControlTintRenderUtil` | `com.nexustools.genericui.desktop.nativecommon` | Luminance-preserving ARGB offscreen native control pixel tinter (`tintNativeControlArgbBuffer`) used whenever `BootstrapType != BootstrapType.NONE` |
-| `DesktopBaseContainerNativeImpl` | `com.nexustools.genericui.desktop` | Base native container implementation with child widget list management and layout invalidation |
-| `DesktopNativeWidget` | `com.nexustools.genericui.desktop` | Common contract for native desktop widgets with pointer/handle access |
-| `DesktopWindowNativeImpl` | `com.nexustools.genericui.desktop` | Base desktop window managing `TitleBar`, `MenuBar`, `StatusBar`, `TitleCapabilities`, window state, and single-placement custom titlebar filtering (`mountedInTitleBar`) |
-| `DesktopApplicationNativeImpl` | `com.nexustools.genericui.desktop` | Desktop application lifecycle manager, `PrecompiledStyleSheet` registry (`addStyleSheet` / `removeStyleSheet`), and `ThemeMode` (`AUTO`, `DARK`, `LIGHT`) coordination |
+| `DesktopRenderableNativeImpl` | `com.nexustools.genericui.desktop.render` | Per-component rendering contract implemented by backend `Windows*NativeImpl`, `Macos*NativeImpl`, `Gtk*NativeImpl`, and `Qt*NativeImpl` classes |
+| `DesktopControlTintRenderUtil` | `com.nexustools.genericui.desktop.render` | Luminance-preserving ARGB offscreen native control pixel tinter (`tintNativeControlArgbBuffer`) used when `BootstrapType != BootstrapType.NONE` |
+| `DesktopStyledContainerNativeImpl` | `com.nexustools.genericui.desktop.widget` | Custom-styled container bridge honoring full `ComponentStyle` including `backdropFilter` |
+| `DesktopStyledButtonNativeImpl` | `com.nexustools.genericui.desktop.widget` | Custom-styled button bridge honoring full `ComponentStyle` and stateful hover/active/focus/disabled specs including `backdropFilter` |
+| `DesktopBaseContainerNativeImpl` | `com.nexustools.genericui.desktop.core` | Base native container implementation with child widget list management and layout invalidation |
+| `DesktopNativeWidget` | `com.nexustools.genericui.desktop.core` | Common contract for native desktop widgets with pointer/handle access |
+| `DesktopWindowNativeImpl` | `com.nexustools.genericui.desktop.shell` | Base desktop window managing `TitleBar`, `MenuBar`, `StatusBar`, `TitleCapabilities`, window state, and single-placement custom titlebar filtering (`mountedInTitleBar`) |
+| `DesktopApplicationNativeImpl` | `com.nexustools.genericui.desktop.shell` | Desktop application lifecycle manager, `PrecompiledStyleSheet` registry (`addStyleSheet` / `removeStyleSheet`), and `ThemeMode` (`AUTO`, `DARK`, `LIGHT`) coordination |
 | `DesktopMultiWindowDockCoordinator` | `com.nexustools.genericui.desktop.dock` | Coordinates cross-window tear-off, floating dock windows, and dock target drop zones |
-| `DesktopDockWorkspaceNativeImpl` | `com.nexustools.genericui.desktop.container` | Split/tabbed docking workspace implementation for native desktop targets |
-| `DesktopLazyListNativeImpl` | `com.nexustools.genericui.desktop.container` | Virtualized `LazyList` implementation powered by `DesktopLazyViewportEngine` |
-| `DesktopLazyGridNativeImpl` | `com.nexustools.genericui.desktop.container` | Virtualized `LazyGrid` implementation powered by `DesktopLazyViewportEngine` |
-| `DesktopTreeViewNativeImpl` | `com.nexustools.genericui.desktop.container` | Hierarchical expandable tree widget implementation |
-| `DesktopConfigDirectoryHelper` | `com.nexustools.genericui.desktop.system` | Resolves OS-specific application configuration, cache, and data directories |
-| `DesktopUserDirectoryNativeImpl` | `com.nexustools.genericui.desktop.system` | Native `UserDirectory` provider for home, documents, downloads, pictures, music, and videos paths |
-| `DesktopLibJpegImageCodecImpl` | `com.nexustools.genericui.desktop.image` | Hardware-accelerated `libjpeg` (`cinterop/libjpeg.def`) JPEG encoder/decoder for `mingwX64`, `linuxX64`, `macosX64`, and `macosArm64` |
+| `DesktopDockWorkspaceNativeImpl` | `com.nexustools.genericui.desktop.dock` | Split/tabbed docking workspace implementation for native desktop targets |
+| `DesktopLazyListNativeImpl` / `DesktopTreeViewNativeImpl` | `com.nexustools.genericui.desktop.lazy` | Virtualized `LazyList` and hierarchical `TreeView` implementations powered by `DesktopLazyViewportEngine` |
+| `DesktopConfigDirectoryHelper` & `DesktopUserDirectoryNativeImpl` | `com.nexustools.genericui.desktop.system` | OS configuration/cache/user directory resolution |
+| `DesktopLibJpegImageCodecImpl` | `com.nexustools.genericui.desktop.image` | Hardware-accelerated `libjpeg` (`cinterop/libjpeg.def`) JPEG encoder/decoder for `mingwX64`, `macosArm64`, `linuxX64`, and `linuxArm64` |

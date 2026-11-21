@@ -4,12 +4,14 @@ package com.nexustools.genericui.desktop.system
 
 import com.nexustools.genericui.system.SystemStorageKeyHelper
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.pointed
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.usePinned
 import platform.posix.SEEK_END
 import platform.posix.SEEK_SET
 import platform.posix.closedir
 import platform.posix.fclose
+import platform.posix.fflush
 import platform.posix.fopen
 import platform.posix.fread
 import platform.posix.fseek
@@ -17,6 +19,7 @@ import platform.posix.ftell
 import platform.posix.fwrite
 import platform.posix.getenv
 import platform.posix.opendir
+import platform.posix.readdir
 import platform.posix.remove
 
 /**
@@ -26,14 +29,16 @@ import platform.posix.remove
  */
 object DesktopConfigDirectoryHelper {
 
-    private const val KEYS_INDEX_FILE = ".preference_keys"
     private val ensuredDirectories = HashSet<String>()
 
     fun sanitizeAppDirectoryName(appName: String): String =
         SystemStorageKeyHelper.sanitizeAppDirectoryName(appName)
 
     fun sanitizeKeyFileName(key: String): String =
-        SystemStorageKeyHelper.sanitizeKey(key, fallback = "default")
+        SystemStorageKeyHelper.encodePreferenceKeyToFileName(key)
+
+    fun decodeKeyFileName(encodedStem: String): String =
+        SystemStorageKeyHelper.decodePreferenceKeyFromFileName(encodedStem)
 
     fun appendSubdirectory(baseDir: String, subdirectory: String, separator: Char): String =
         SystemStorageKeyHelper.joinPath(baseDir, subdirectory, separator)
@@ -126,12 +131,15 @@ object DesktopConfigDirectoryHelper {
     fun writeBytesToFile(filePath: String, bytes: ByteArray): Boolean {
         val file = fopen(filePath, "wb") ?: return false
         return try {
+            var writtenAll = true
             if (bytes.isNotEmpty()) {
-                bytes.usePinned { pinned ->
+                val written = bytes.usePinned { pinned ->
                     fwrite(pinned.addressOf(0), 1u, bytes.size.toULong(), file)
                 }
+                writtenAll = written == bytes.size.toULong()
             }
-            true
+            val flushed = fflush(file) == 0
+            writtenAll && flushed
         } finally {
             fclose(file)
         }
@@ -146,10 +154,10 @@ object DesktopConfigDirectoryHelper {
             if (length < 0) return null
             if (length == 0) return ByteArray(0)
             val buffer = ByteArray(length)
-            buffer.usePinned { pinned ->
+            val readCount = buffer.usePinned { pinned ->
                 fread(pinned.addressOf(0), 1u, length.toULong(), file)
-            }
-            buffer
+            }.toInt()
+            if (readCount < length) buffer.copyOf(readCount) else buffer
         } finally {
             fclose(file)
         }
@@ -175,35 +183,118 @@ object DesktopConfigDirectoryHelper {
     fun deleteFile(filePath: String): Boolean =
         remove(filePath) == 0
 
+    fun renameFile(fromPath: String, toPath: String): Boolean {
+        if (!fileExists(fromPath)) return false
+        if (fromPath == toPath) return true
+        if (fileExists(toPath)) {
+            deleteFile(toPath)
+        }
+        if (platform.posix.rename(fromPath, toPath) == 0) {
+            return true
+        }
+        val bytes = readBytesFromFile(fromPath) ?: return false
+        if (!writeBytesToFile(toPath, bytes)) return false
+        deleteFile(fromPath)
+        return true
+    }
+
+    fun writeBytesWithOldBackup(
+        filePath: String,
+        bytes: ByteArray,
+        validator: (ByteArray) -> Boolean
+    ): Boolean {
+        val backupPath = "$filePath.old"
+        if (fileExists(filePath)) {
+            val existingPrimaryValid = readBytesFromFile(filePath)?.let(validator) == true
+            val existingBackupValid = fileExists(backupPath) && (readBytesFromFile(backupPath)?.let(validator) == true)
+            if (!existingPrimaryValid && existingBackupValid) {
+                deleteFile(filePath)
+            } else {
+                renameFile(filePath, backupPath)
+            }
+        }
+        if (!writeBytesToFile(filePath, bytes)) {
+            return false
+        }
+        val written = readBytesFromFile(filePath)
+        val verified = written != null && written.size == bytes.size && validator(written)
+        if (!verified) {
+            return false
+        }
+        if (fileExists(backupPath)) {
+            deleteFile(backupPath)
+        }
+        return true
+    }
+
+    fun readBytesWithOldRecovery(
+        filePath: String,
+        validator: (ByteArray) -> Boolean
+    ): ByteArray? {
+        val backupPath = "$filePath.old"
+        val primaryBytes = readBytesFromFile(filePath)
+        if (primaryBytes != null && primaryBytes.isNotEmpty() && validator(primaryBytes)) {
+            if (fileExists(backupPath)) {
+                deleteFile(backupPath)
+            }
+            return primaryBytes
+        }
+
+        val backupBytes = readBytesFromFile(backupPath)
+        if (backupBytes != null && backupBytes.isNotEmpty() && validator(backupBytes)) {
+            if (writeBytesToFile(filePath, backupBytes)) {
+                val restored = readBytesFromFile(filePath)
+                if (restored != null && restored.size == backupBytes.size && validator(restored)) {
+                    deleteFile(backupPath)
+                }
+            }
+            return backupBytes
+        }
+
+        return null
+    }
+
+    fun listDirectoryFiles(dirPath: String): List<String> {
+        val clean = dirPath.trimEnd('\\', '/')
+        if (clean.isEmpty()) return emptyList()
+        val dir = opendir(clean) ?: return emptyList()
+        return try {
+            val out = ArrayList<String>()
+            while (true) {
+                val entry = readdir(dir) ?: break
+                val name = entry.pointed.d_name.toKString()
+                if (name != "." && name != "..") {
+                    out.add(name)
+                }
+            }
+            out.sorted()
+        } finally {
+            closedir(dir)
+        }
+    }
+
     fun ensureDirectoryExists(path: String): Boolean {
         val clean = path.replace("\"", "").trim()
         if (clean.isEmpty()) return false
-        if (clean in ensuredDirectories) return true
         val existingDir = opendir(clean)
         if (existingDir != null) {
             closedir(existingDir)
             ensuredDirectories.add(clean)
             return true
         }
+        ensuredDirectories.remove(clean)
         if (clean.contains('\\') || (clean.length >= 2 && clean[1] == ':')) {
             platform.posix.system("mkdir \"${clean.replace('/', '\\')}\" >nul 2>nul")
         } else {
             platform.posix.system("mkdir -p \"$clean\" >/dev/null 2>&1")
         }
-        ensuredDirectories.add(clean)
-        return true
-    }
-
-    fun loadPersistedKeySet(configDir: String, separator: Char): LinkedHashSet<String> {
-        val indexFile = SystemStorageKeyHelper.joinPath(configDir, KEYS_INDEX_FILE, separator)
-        val bytes = readBytesFromFile(indexFile) ?: return LinkedHashSet()
-        return SystemStorageKeyHelper.decodeKeySet(bytes)
-    }
-
-    fun savePersistedKeySet(configDir: String, separator: Char, keys: Set<String>) {
-        val indexFile = SystemStorageKeyHelper.joinPath(configDir, KEYS_INDEX_FILE, separator)
-        val content = SystemStorageKeyHelper.encodeKeySet(keys)
-        writeBytesToFile(indexFile, content)
+        val createdDir = opendir(clean)
+        if (createdDir != null) {
+            closedir(createdDir)
+            ensuredDirectories.add(clean)
+            return true
+        }
+        return false
     }
 
     /**

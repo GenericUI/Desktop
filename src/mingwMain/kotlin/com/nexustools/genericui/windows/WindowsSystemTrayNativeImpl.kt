@@ -20,10 +20,13 @@ import platform.windows.CreatePopupMenu
 import platform.windows.DestroyIcon
 import platform.windows.DestroyMenu
 import platform.windows.GetCursorPos
+import platform.windows.GetFileAttributesW
 import platform.windows.HICON
 import platform.windows.HWND
 import platform.windows.IDI_APPLICATION
 import platform.windows.IMAGE_ICON
+import platform.windows.INVALID_FILE_ATTRIBUTES
+import platform.windows.IsWindow
 import platform.windows.LR_DEFAULTSIZE
 import platform.windows.LR_LOADFROMFILE
 import platform.windows.LoadIconW
@@ -90,11 +93,31 @@ class WindowsSystemTrayNativeImpl : DesktopSystemTrayNativeImpl(
             activeTrayInstance = null
         }
         super.dispose()
+        if (!hasActiveTray()) {
+            WindowsHeadlessTrayLoop.destroyTrayMessageHwnd()
+        }
     }
 
-    internal fun syncNativeTrayIcon() {
+    internal fun syncNativeTrayIcon(preferredHwnd: HWND? = null) {
         if (!WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || isDisposed) return
-        val hwnd = Win32NativeWindowHost.activeHwnd ?: return
+        val hwnd = preferredHwnd
+            ?: Win32NativeWindowHost.activeHwnd
+            ?: WindowsHeadlessTrayLoop.ensureTrayMessageHwnd()
+            ?: return
+        val previousHwnd = registeredHwnd
+        if (installedIconAdded && previousHwnd != null && previousHwnd != hwnd) {
+            if (IsWindow(previousHwnd) != 0) {
+                memScoped {
+                    val del = alloc<NOTIFYICONDATAW>()
+                    del.cbSize = sizeOf<NOTIFYICONDATAW>().toUInt()
+                    del.hWnd = previousHwnd
+                    del.uID = TRAY_ICON_UID
+                    Shell_NotifyIconW(NIM_DELETE.toUInt(), del.ptr)
+                }
+            }
+            installedIconAdded = false
+            registeredHwnd = null
+        }
         val resolvedIcon = resolveTrayHIcon(iconPath)
         val tipText = buildString {
             val base = tooltipText?.trim().orEmpty()
@@ -162,11 +185,18 @@ class WindowsSystemTrayNativeImpl : DesktopSystemTrayNativeImpl(
         }
         val raw = pathOrUrl?.trim().orEmpty()
         if (raw.isNotEmpty()) {
-            if (raw.endsWith(".ico", ignoreCase = true)) {
+            val normalizedPath = WindowsIoHelper.normalizeWin32Path(raw)
+            val hasDiskFile = !raw.startsWith("http://", ignoreCase = true) &&
+                !raw.startsWith("https://", ignoreCase = true) &&
+                !raw.startsWith("file://", ignoreCase = true) &&
+                memScoped {
+                    GetFileAttributesW(normalizedPath.wcstr.ptr) != INVALID_FILE_ATTRIBUTES
+                }
+            if (raw.endsWith(".ico", ignoreCase = true) && hasDiskFile) {
                 val hIcon: HICON? = memScoped {
                     LoadImageW(
                         null,
-                        WindowsIoHelper.normalizeWin32Path(raw).wcstr.ptr,
+                        normalizedPath.wcstr.ptr,
                         IMAGE_ICON.toUInt(),
                         16,
                         16,
@@ -183,8 +213,11 @@ class WindowsSystemTrayNativeImpl : DesktopSystemTrayNativeImpl(
                     raw.startsWith("https://", ignoreCase = true) ||
                     raw.startsWith("file://", ignoreCase = true) -> ImageSource.fromUrl(raw)
                 raw.startsWith("res/", ignoreCase = true) ||
-                    raw.startsWith("drawable/", ignoreCase = true) -> ImageSource.fromResource(raw)
-                else -> ImageSource.fromFile(raw)
+                    raw.startsWith("drawable/", ignoreCase = true) ||
+                    raw.startsWith("app/", ignoreCase = true) ||
+                    raw.startsWith("gui/", ignoreCase = true) -> ImageSource.fromResource(raw)
+                hasDiskFile -> ImageSource.fromFile(raw)
+                else -> ImageSource.fromResource(raw)
             }
             val buffer = ImageLoader.activeNativeCodec?.decode(
                 source,
@@ -249,8 +282,22 @@ class WindowsSystemTrayNativeImpl : DesktopSystemTrayNativeImpl(
         private const val TRAY_ICON_UID = 1001u
         private var activeTrayInstance: WindowsSystemTrayNativeImpl? = null
 
+        internal fun hasActiveTray(): Boolean =
+            activeTrayInstance?.let { !it.isDisposed } == true
+
         internal fun syncActiveTrayIcon() {
             activeTrayInstance?.syncNativeTrayIcon()
+        }
+
+        internal fun migrateTrayToHeadlessHwnd() {
+            val instance = activeTrayInstance ?: return
+            if (instance.isDisposed) return
+            val headlessHwnd = WindowsHeadlessTrayLoop.ensureTrayMessageHwnd() ?: return
+            instance.syncNativeTrayIcon(preferredHwnd = headlessHwnd)
+        }
+
+        internal fun disposeAll() {
+            activeTrayInstance?.dispose()
         }
 
         internal fun handleTrayCallback(hwnd: HWND, eventMsg: Int) {

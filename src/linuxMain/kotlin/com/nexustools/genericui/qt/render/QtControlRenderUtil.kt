@@ -31,6 +31,8 @@ import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.qt.QtWidgetHandle
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssFilter
+import com.nexustools.genericui.style.css.FastBackdropBlurKernel
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.threading.GenericUiThreading
 import kotlin.math.max
@@ -480,11 +482,22 @@ internal object QtControlRenderUtil {
         val qtCtx = renderContext as? QtRenderContext ?: return true
         val spec = impl.resolveCurrentVisuals()
         val radius = spec.borderRadiusPx ?: 6f
+        if (spec.hasBackdropFilter) {
+            applyBackdropFilterRegion(
+                ctx = qtCtx,
+                bounds = bounds,
+                radiusPx = radius,
+                backdropBlurPx = spec.backdropBlurPx,
+                backdropFilter = spec.backdropFilter
+            )
+        }
         if (spec.backgroundGradient != null) {
             QtGraphicsDrawUtil.fillGradientRoundedRect(qtCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, spec.backgroundGradient!!)
         } else {
-            val fill = spec.backgroundColor ?: qtCtx.palette.bgControl
-            QtGraphicsDrawUtil.fillRoundedRect(qtCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, fill)
+            val fill = spec.backgroundColor ?: if (spec.hasBackdropFilter) RgbaColor.TRANSPARENT else qtCtx.palette.bgControl
+            if (fill.a > 0) {
+                QtGraphicsDrawUtil.fillRoundedRect(qtCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, fill)
+            }
         }
         val borderCol = spec.borderColor
         val borderW = spec.borderWidthPx ?: if (borderCol != null) 1f else 0f
@@ -993,6 +1006,40 @@ internal object QtControlRenderUtil {
         return true
     }
 
+    fun applyBackdropFilterRegion(
+        ctx: QtRenderContext,
+        bounds: Rect,
+        radiusPx: Float,
+        backdropBlurPx: Float?,
+        backdropFilter: CssFilter?
+    ) {
+        val effFilter = CssFilter.backdropBlurOrFilter(backdropBlurPx, backdropFilter) ?: return
+        if (ctx.bufferWidth <= 0 || ctx.bufferHeight <= 0 || bounds.width <= 0 || bounds.height <= 0) return
+        val clipL = max(bounds.x, ctx.clipLeft)
+        val clipT = max(bounds.y, ctx.clipTop)
+        val clipR = min(bounds.x + bounds.width, ctx.clipRight)
+        val clipB = min(bounds.y + bounds.height, ctx.clipBottom)
+        val w = clipR - clipL
+        val h = clipB - clipT
+        if (w <= 0 || h <= 0) return
+        val effectiveRadius = if (clipL == bounds.x && clipT == bounds.y && clipR == bounds.x + bounds.width && clipB == bounds.y + bounds.height) {
+            radiusPx.coerceAtLeast(0f)
+        } else {
+            0f
+        }
+        FastBackdropBlurKernel.applyBackdropToArgbRegion(
+            filter = effFilter,
+            argbPixels = ctx.argbPixels,
+            bufferWidth = ctx.bufferWidth,
+            bufferHeight = ctx.bufferHeight,
+            regionX = clipL,
+            regionY = clipT,
+            regionWidth = w,
+            regionHeight = h,
+            cornerRadiusPx = effectiveRadius
+        )
+    }
+
     fun renderStyledContainer(
         impl: DesktopStyledContainerNativeImpl<QtWidgetHandle>,
         renderContext: Any?,
@@ -1004,6 +1051,31 @@ internal object QtControlRenderUtil {
         widget.attributes["qStyleControlElement"] = "QWidget_QPainter_StyledContainer"
         widget.attributes["lastRenderedWidth"] = bounds.width.coerceAtLeast(1)
         widget.attributes["lastRenderedHeight"] = bounds.height.coerceAtLeast(1)
+        val qtCtx = renderContext as? QtRenderContext
+        val visuals = impl.getStyledVisuals()
+        if (qtCtx != null) {
+            val radius = visuals.borderRadiusPx ?: 0f
+            if (visuals.hasBackdropFilter) {
+                applyBackdropFilterRegion(
+                    ctx = qtCtx,
+                    bounds = bounds,
+                    radiusPx = radius,
+                    backdropBlurPx = visuals.backdropBlurPx,
+                    backdropFilter = visuals.backdropFilter
+                )
+            }
+            if (visuals.backgroundGradient != null) {
+                QtGraphicsDrawUtil.fillGradientRoundedRect(qtCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, visuals.backgroundGradient!!)
+            } else {
+                visuals.backgroundColor?.takeIf { it.a > 0 }?.let { bg ->
+                    QtGraphicsDrawUtil.fillRoundedRect(qtCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
+                }
+            }
+            val bw = visuals.borderWidthPx ?: if (visuals.borderColor != null) 1f else 0f
+            visuals.borderColor?.takeIf { it.a > 0 && bw > 0f }?.let { bc ->
+                QtGraphicsDrawUtil.strokeRoundedRect(qtCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bw, bc)
+            }
+        }
         return true
     }
 

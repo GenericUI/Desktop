@@ -52,6 +52,10 @@ class WindowsApplicationNativeImpl :
     override fun exitApplication(exitCode: Int) {
         nativeApplication.attributes["messageLoopRunning"] = false
         nativeApplication.attributes["postQuitMessageCode"] = exitCode
+        WindowsSystemTrayNativeImpl.disposeAll()
+        if (interactiveWin32GuiEnabled) {
+            WindowsHeadlessTrayLoop.requestQuit()
+        }
         super.exitApplication(exitCode)
     }
 

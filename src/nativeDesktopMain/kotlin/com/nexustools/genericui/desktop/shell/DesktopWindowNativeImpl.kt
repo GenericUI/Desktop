@@ -12,7 +12,6 @@ import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
-import com.nexustools.genericui.window.PipConfig
 import com.nexustools.genericui.window.TitleBar
 import com.nexustools.genericui.window.TitleCapabilities
 import com.nexustools.genericui.window.WindowAspectRatioHelper
@@ -66,9 +65,9 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     protected var attachedMenuBar: MenuBarNativeImpl<*>? = null
     protected var attachedNavBar: NativeImpl<*>? = null
     protected var attachedBottomNav: NativeImpl<*>? = null
-    protected var inPipMode: Boolean = false
-    protected var activePipConfig: PipConfig? = null
+    protected var undecoratedFlag: Boolean = false
     protected var onWindowResizeListener: ((WindowConfiguration) -> Unit)? = null
+    protected var onWindowStateChangedListener: ((WindowState) -> Unit)? = null
     protected var onWindowMovedListener: ((Int, Int) -> Unit)? = null
     protected var onWindowFocusChangedListener: ((Boolean) -> Unit)? = null
     protected var onWindowCloseRequestedListener: ((() -> Boolean))? = null
@@ -221,8 +220,7 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
                 widthPx = clamped.width,
                 heightPx = clamped.height,
                 windowState = currentWindowState,
-                isFullscreen = fullscreenFlag,
-                isInPictureInPicture = inPipMode
+                isFullscreen = fullscreenFlag
             )
         )
     }
@@ -254,6 +252,7 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun setWindowState(state: WindowState) {
+        val prevState = currentWindowState
         currentWindowState = state
         fullscreenFlag = (state == WindowState.FULLSCREEN)
         if (!fullscreenFlag) {
@@ -261,6 +260,9 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes.remove("fullscreenElement")
         }
         nativeWidget.attributes["windowState"] = state
+        if (prevState != state) {
+            onWindowStateChangedListener?.invoke(state)
+        }
     }
 
     override fun getWindowState(): WindowState = currentWindowState
@@ -358,22 +360,16 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["bottomNav"] = bottomNavImpl
     }
 
-    override fun enterPictureInPicture(config: PipConfig): Boolean {
-        inPipMode = true
-        activePipConfig = config
-        currentWindowState = WindowState.PICTURE_IN_PICTURE
-        return true
+    override fun isUndecorated(): Boolean = undecoratedFlag
+
+    override fun setUndecorated(undecorated: Boolean) {
+        undecoratedFlag = undecorated
+        nativeWidget.attributes["undecorated"] = undecorated
     }
 
-    override fun exitPictureInPicture() {
-        inPipMode = false
-        activePipConfig = null
-        if (currentWindowState == WindowState.PICTURE_IN_PICTURE) {
-            currentWindowState = WindowState.NORMAL
-        }
+    override fun setOnWindowStateChanged(listener: ((WindowState) -> Unit)?) {
+        onWindowStateChangedListener = listener
     }
-
-    override fun isInPictureInPicture(): Boolean = inPipMode
 
     override fun showWindow() {
         if (!isVisible()) {

@@ -323,7 +323,7 @@ class MacosNativeFactory : NativeFactory {
         )
 
     override fun createResourceResolver(): com.nexustools.genericui.resources.ResourceResolverNativeImpl =
-        AppleResourceResolverNativeImpl()
+        MacosResourceResolverImpl()
 
     override fun createTcpSocket(): TcpSocketNativeImpl =
         AppleTcpSocketNativeImpl()

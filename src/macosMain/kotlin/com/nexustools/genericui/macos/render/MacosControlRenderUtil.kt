@@ -147,8 +147,13 @@ object MacosControlRenderUtil {
         val isDark = effectiveTheme == ThemeMode.DARK
         widget.attributes["effectiveThemeMode"] = effectiveTheme
         widget.attributes["nsAppearance"] = if (isDark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua"
-        widget.attributes.remove("backdropBlurPx")
-        widget.attributes.remove("backdropFilter")
+        val nativeImpl = widget.attributes["nativeImpl"]
+        if (nativeImpl !is com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl<*> &&
+            nativeImpl !is com.nexustools.genericui.desktop.widget.DesktopStyledButtonNativeImpl<*>
+        ) {
+            widget.attributes.remove("backdropBlurPx")
+            widget.attributes.remove("backdropFilter")
+        }
         return isDark
     }
 
@@ -903,7 +908,9 @@ object MacosControlRenderUtil {
                         }
                     }
                 }
-                else -> {
+                else -> if (visuals.hasBackdropFilter) {
+                    RgbaColor.TRANSPARENT
+                } else {
                     val defBg = renderContext.palette.bgElevated
                     when {
                         !widget.enabled -> defBg.withAlpha(0.5f)
@@ -914,6 +921,18 @@ object MacosControlRenderUtil {
                 }
             }
 
+            if (visuals.hasBackdropFilter) {
+                MacosGraphicsDrawUtil.applyBackdropFilterRoundedRect(
+                    ctx = renderContext,
+                    x = bounds.x,
+                    y = bounds.y,
+                    w = bounds.width,
+                    h = bounds.height,
+                    radiusPx = radius,
+                    backdropBlurPx = visuals.backdropBlurPx,
+                    backdropFilter = visuals.backdropFilter
+                )
+            }
             if (bg.a > 0) {
                 MacosGraphicsDrawUtil.fillRoundedRect(renderContext, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
             }
@@ -1892,6 +1911,29 @@ object MacosControlRenderUtil {
         widget.attributes["nativeControlCell"] = "NSView_CALayer_StyledContainer"
         widget.attributes["lastRenderedWidth"] = bounds.width.coerceAtLeast(1)
         widget.attributes["lastRenderedHeight"] = bounds.height.coerceAtLeast(1)
+        if (renderContext is MacosRenderContext) {
+            val visuals = impl.getStyledVisuals()
+            val radius = visuals.borderRadiusPx ?: 0f
+            if (visuals.hasBackdropFilter) {
+                MacosGraphicsDrawUtil.applyBackdropFilterRoundedRect(
+                    ctx = renderContext,
+                    x = bounds.x,
+                    y = bounds.y,
+                    w = bounds.width,
+                    h = bounds.height,
+                    radiusPx = radius,
+                    backdropBlurPx = visuals.backdropBlurPx,
+                    backdropFilter = visuals.backdropFilter
+                )
+            }
+            visuals.backgroundColor?.takeIf { it.a > 0 }?.let { bg ->
+                MacosGraphicsDrawUtil.fillRoundedRect(renderContext, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
+            }
+            visuals.borderColor?.takeIf { it.a > 0 }?.let { bc ->
+                val bw = (visuals.borderWidthPx ?: 1f).coerceAtLeast(1f)
+                MacosGraphicsDrawUtil.strokeRoundedRect(renderContext, bounds.x, bounds.y, bounds.width, bounds.height, radius, bc, bw)
+            }
+        }
         return true
     }
 

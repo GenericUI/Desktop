@@ -830,8 +830,20 @@ object MacosStageOverlayRenderUtil {
         val border = visuals?.borderColor?.takeIf { it.a > 0 }
             ?: (widget.attributes["borderColor"] as? RgbaColor)?.takeIf { it.a > 0 }
             ?: DEFAULT_HUD_PILL_BORDER
-        val radius = bounds.height / 2f
+        val radius = visuals?.borderRadiusPx ?: (bounds.height / 2f)
 
+        if (visuals?.hasBackdropFilter == true) {
+            MacosGraphicsDrawUtil.applyBackdropFilterRoundedRect(
+                ctx = ctx,
+                x = bounds.x,
+                y = bounds.y,
+                w = bounds.width,
+                h = bounds.height,
+                radiusPx = radius,
+                backdropBlurPx = visuals.backdropBlurPx,
+                backdropFilter = visuals.backdropFilter
+            )
+        }
         MacosGraphicsDrawUtil.fillRoundedRect(ctx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
         MacosGraphicsDrawUtil.strokeRoundedRect(ctx, bounds.x, bounds.y, bounds.width, bounds.height, radius, border, 1f)
 
@@ -865,6 +877,9 @@ object MacosStageOverlayRenderUtil {
             )
             muteBtn.bounds = bRect
             renderHudControl(ctx, muteBtn, bRect)
+            if (widget.attributes["data-custom-volume-icons"] != "true") {
+                renderExpandingVolumeIconStack(ctx, widget, bRect)
+            }
             xCur = bRect.right + 4
         }
 
@@ -882,6 +897,49 @@ object MacosStageOverlayRenderUtil {
         }
     }
 
+    private fun resolveVolumeLayerAlpha(pillWidget: DesktopNativeWidget, layerWidget: DesktopNativeWidget): Float {
+        val attrKey = when (layerWidget.attributes["data-volume-layer"] as? String) {
+            "speaker" -> return 1f
+            "wave-1" -> "data-wave-1-opacity"
+            "wave-2" -> "data-wave-2-opacity"
+            "wave-3" -> "data-wave-3-opacity"
+            "mute-cross" -> "data-mute-cross-opacity"
+            else -> null
+        }
+        val fromAttr = attrKey?.let { (pillWidget.attributes[it] as? String)?.toFloatOrNull() }
+        return (fromAttr ?: layerWidget.opacity).coerceIn(0f, 1f)
+    }
+
+    private fun renderExpandingVolumeIconStack(
+        ctx: MacosRenderContext,
+        pillWidget: DesktopNativeWidget,
+        buttonRect: Rect
+    ) {
+        val stackWidget = pillWidget.children.getOrNull(2)?.takeIf { it.visible && !it.disposed } ?: return
+        val iconSide = 18
+        val savedOpacity = ctx.currentOpacity
+        for (layerWidget in stackWidget.children) {
+            if (!layerWidget.visible || layerWidget.disposed) continue
+            val imgImpl = layerWidget.attributes["nativeImpl"] as? DesktopImageNativeImpl<*> ?: continue
+            val url = imgImpl.getSourceUrl()?.trim().orEmpty()
+            if (url.isEmpty()) continue
+            val layerAlpha = resolveVolumeLayerAlpha(pillWidget, layerWidget)
+            if (layerAlpha <= 0.005f) continue
+            ctx.currentOpacity = (savedOpacity * layerAlpha).coerceIn(0f, 1f)
+            try {
+                drawHudIconOrGlyph(
+                    ctx = ctx,
+                    iconSpec = url,
+                    bounds = buttonRect,
+                    iconSide = iconSide,
+                    fg = RgbaColor(242, 245, 250, 255)
+                )
+            } finally {
+                ctx.currentOpacity = savedOpacity
+            }
+        }
+    }
+
     private fun renderHudPillContainer(
         ctx: MacosRenderContext,
         widget: DesktopNativeWidget,
@@ -895,8 +953,20 @@ object MacosStageOverlayRenderUtil {
         val border = visuals.borderColor?.takeIf { it.a > 0 }
             ?: (widget.attributes["borderColor"] as? RgbaColor)?.takeIf { it.a > 0 }
             ?: DEFAULT_HUD_PILL_BORDER
-        val radius = bounds.height / 2f
+        val radius = visuals?.borderRadiusPx ?: (bounds.height / 2f)
 
+        if (visuals?.hasBackdropFilter == true) {
+            MacosGraphicsDrawUtil.applyBackdropFilterRoundedRect(
+                ctx = ctx,
+                x = bounds.x,
+                y = bounds.y,
+                w = bounds.width,
+                h = bounds.height,
+                radiusPx = radius,
+                backdropBlurPx = visuals.backdropBlurPx,
+                backdropFilter = visuals.backdropFilter
+            )
+        }
         MacosGraphicsDrawUtil.fillRoundedRect(ctx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
         if (visuals.borderStyle != CssBorderStyle.NONE) {
             MacosGraphicsDrawUtil.strokeRoundedRect(ctx, bounds.x, bounds.y, bounds.width, bounds.height, radius, border, 1f)
@@ -985,6 +1055,18 @@ object MacosStageOverlayRenderUtil {
             }
         }
 
+        if (visuals.hasBackdropFilter) {
+            MacosGraphicsDrawUtil.applyBackdropFilterRoundedRect(
+                ctx = ctx,
+                x = bounds.x,
+                y = bounds.y,
+                w = bounds.width,
+                h = bounds.height,
+                radiusPx = radius,
+                backdropBlurPx = visuals.backdropBlurPx,
+                backdropFilter = visuals.backdropFilter
+            )
+        }
         if (bg.a > 0) {
             MacosGraphicsDrawUtil.fillRoundedRect(ctx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
         }

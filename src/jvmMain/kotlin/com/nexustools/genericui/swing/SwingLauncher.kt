@@ -32,6 +32,7 @@ object SwingLauncher {
         args: Array<String> = emptyArray(),
         descriptor: GenericUiAppDescriptor
     ): IApplication {
+        SwingApplicationImpl.interactiveSwingGuiEnabled = true
         SwingApplicationImpl.installSwingThemeDetector()
         return GenericUiLaunchSequence.launch(
             factory = SwingNativeFactory(),

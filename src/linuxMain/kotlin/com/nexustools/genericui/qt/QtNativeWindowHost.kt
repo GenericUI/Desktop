@@ -30,6 +30,8 @@ import kotlin.time.TimeSource
  */
 object QtNativeWindowHost {
     private val sessions = LinkedHashMap<Long, QtWindowSession>(8)
+    private val lastAppliedUndecoratedByKey = HashMap<Long, Boolean>()
+    private val lastObservedMinimizedByKey = HashMap<Long, Boolean>()
     private var appInitialized = false
     private var eventLoopRunning = false
     private var stopRequested = false
@@ -123,15 +125,21 @@ object QtNativeWindowHost {
             return
         }
 
+        val undecorated = windowImpl.isUndecorated()
         val size = windowImpl.getWindowSize()
-        val initW = size.width.coerceAtLeast(320)
-        val initH = size.height.coerceAtLeast(240)
+        val initW = size.width.coerceAtLeast(if (undecorated) 64 else 320)
+        val initH = size.height.coerceAtLeast(if (undecorated) 64 else 240)
         val effectiveTop = windowImpl.isAlwaysOnTop() || (windowImpl.isToolModalWindow && windowImpl.alwaysOnTopOfOwner)
         val baseFlags = windowImpl.nativeWidget.qtWindowFlags or QtWidgetHandle.Qt_Window
-        val flags = if (effectiveTop) {
+        val flagsWithTop = if (effectiveTop) {
             baseFlags or QtWidgetHandle.Qt_WindowStaysOnTopHint
         } else {
             baseFlags and QtWidgetHandle.Qt_WindowStaysOnTopHint.inv()
+        }
+        val flags = if (undecorated) {
+            flagsWithTop or QtWidgetHandle.Qt_FramelessWindowHint
+        } else {
+            flagsWithTop and QtWidgetHandle.Qt_FramelessWindowHint.inv()
         }
         val qWidget = Qt6DynamicBindings.createWidget(parent = null, flags = flags) ?: return
         val qLabel = Qt6DynamicBindings.createLabel(parent = qWidget, flags = 0) ?: run {
@@ -152,6 +160,8 @@ object QtNativeWindowHost {
             lastAppliedAlwaysOnTop = effectiveTop
         }
         sessions[key] = session
+        lastAppliedUndecoratedByKey[key] = undecorated
+        lastObservedMinimizedByKey[key] = false
         syncWindowProperties(windowImpl)
         if (!windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL && windowImpl.hasExplicitWindowPosition()) {
             val pos = windowImpl.getWindowPosition()
@@ -293,6 +303,8 @@ object QtNativeWindowHost {
         if (eventLoopRunning) return
         eventLoopRunning = true
         stopRequested = false
+        QtSystemTrayNativeImpl.ensureAllActiveIfInteractive()
+        Qt6DynamicBindings.setQuitOnLastWindowClosed(!QtSystemTrayNativeImpl.hasActiveTray())
 
         try {
             if (visualTestMode) {
@@ -303,10 +315,14 @@ object QtNativeWindowHost {
             while (
                 eventLoopRunning &&
                 !stopRequested &&
-                (sessions.values.any { !it.closed } || QtWindowNativeImpl.activeWindows.any { !it.isDisposed })
+                (sessions.values.any { !it.closed } ||
+                    QtWindowNativeImpl.activeWindows.any { !it.isDisposed } ||
+                    QtSystemTrayNativeImpl.hasActiveTray())
             ) {
                 Qt6DynamicBindings.processEvents(16)
+                QtSystemTrayNativeImpl.pollActiveTrays()
                 onLoopTickHook?.invoke()
+                pollWindowStateTransitions()
                 syncAndRenderSessions()
                 pollPointerEvents()
                 usleep(8000u)
@@ -322,6 +338,7 @@ object QtNativeWindowHost {
         for (i in 0 until maxIterations) {
             Qt6DynamicBindings.processEvents(12)
             onLoopTickHook?.invoke()
+            pollWindowStateTransitions()
             syncAndRenderSessions()
             steps++
             if (sleepMsPerStep > 0) {
@@ -331,11 +348,29 @@ object QtNativeWindowHost {
         return steps
     }
 
+    private fun pollWindowStateTransitions() {
+        for (session in sessions.values.toList()) {
+            if (session.closed) continue
+            val winImpl = session.windowImpl ?: continue
+            val key = session.windowKey
+            val minNow = Qt6DynamicBindings.isWidgetMinimized(session.qWidget)
+            val prevMin = lastObservedMinimizedByKey[key]
+            if (prevMin != null && prevMin != minNow) {
+                val maxNow = Qt6DynamicBindings.isWidgetMaximized(session.qWidget)
+                val fsNow = Qt6DynamicBindings.isWidgetFullScreen(session.qWidget)
+                winImpl.notifyHostMinimizedFromOs(minNow, maxNow, fsNow)
+            }
+            lastObservedMinimizedByKey[key] = minNow
+        }
+    }
+
     fun terminateEventLoop() {
         stopRequested = true
         eventLoopRunning = false
         val toClose = sessions.values.toList()
         sessions.clear()
+        lastAppliedUndecoratedByKey.clear()
+        lastObservedMinimizedByKey.clear()
         for (session in toClose) {
             destroySession(session)
         }
@@ -414,11 +449,23 @@ object QtNativeWindowHost {
     }
 
     fun syncWindowProperties(windowImpl: QtWindowNativeImpl) {
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        val key = windowImpl.nativeWidget.nativePointer
+        val session = sessions[key] ?: return
+        val undecorated = windowImpl.isUndecorated()
         Qt6DynamicBindings.setWindowTitle(session.qWidget, windowImpl.getTitle().ifBlank { "GenericUI" })
+        if (lastAppliedUndecoratedByKey[key] != undecorated) {
+            lastAppliedUndecoratedByKey[key] = undecorated
+            val wasVisible = Qt6DynamicBindings.readPropertyBool(session.qWidget, "visible") == true
+            Qt6DynamicBindings.setWidgetWindowFlag(session.qWidget, QtWidgetHandle.Qt_FramelessWindowHint, undecorated)
+            if (wasVisible) {
+                Qt6DynamicBindings.showWidget(session.qWidget)
+            }
+        }
         val minSize = windowImpl.getMinWindowSize()
         if (minSize != null) {
-            Qt6DynamicBindings.setMinimumSize(session.qWidget, minSize.width.coerceAtLeast(160), minSize.height.coerceAtLeast(120))
+            val minW = minSize.width.coerceAtLeast(if (undecorated) 64 else 160)
+            val minH = minSize.height.coerceAtLeast(if (undecorated) 64 else 120)
+            Qt6DynamicBindings.setMinimumSize(session.qWidget, minW, minH)
         }
         val isFixedSize = (windowImpl.nativeWidget.attributes["resizable"] as? Boolean) == false
         if (isFixedSize) {
@@ -427,6 +474,15 @@ object QtNativeWindowHost {
             Qt6DynamicBindings.setMaximumSize(session.qWidget, s.width, s.height)
         }
         syncSessionX11Hints(session)
+    }
+
+    fun startSystemMove(windowImpl: QtWindowNativeImpl) {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        if (session.closed) return
+        if (Qt6DynamicBindings.startSystemMove(session.qWidget)) {
+            session.pressedRegion = null
+            session.pressedWidget = null
+        }
     }
 
     fun syncWindowTitle(windowImpl: QtWindowNativeImpl, title: String) {
@@ -466,7 +522,7 @@ object QtNativeWindowHost {
                 session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
                 Qt6DynamicBindings.showFullScreen(session.qWidget)
             }
-            WindowState.NORMAL, WindowState.PICTURE_IN_PICTURE -> {
+            WindowState.NORMAL -> {
                 if (Qt6DynamicBindings.isWidgetFullScreen(session.qWidget) || session.pendingTargetFullscreen == true) {
                     session.pendingTargetFullscreen = false
                     session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
@@ -533,6 +589,8 @@ object QtNativeWindowHost {
     }
 
     private fun destroySession(session: QtWindowSession) {
+        lastAppliedUndecoratedByKey.remove(session.windowKey)
+        lastObservedMinimizedByKey.remove(session.windowKey)
         if (session.closed) return
         session.closed = true
         Qt6DynamicBindings.closeWidget(session.qWidget)
@@ -702,6 +760,8 @@ object QtNativeWindowHost {
                     val impl = region?.widget?.attributes?.get("nativeImpl") as? DesktopBaseNativeImpl<*>
                     if (region != null && impl != null) {
                         impl.dispatchPointerDown(PointerEvent(x = localX - region.left, y = localY - region.top, screenX = localX, screenY = localY, button = 0))
+                    } else if (region == null && session.windowImpl?.isUndecorated() == true) {
+                        startSystemMove(session.windowImpl)
                     }
                     session.needsRepaint = true
                 } else if (leftDown && session.wasMouseDown) {

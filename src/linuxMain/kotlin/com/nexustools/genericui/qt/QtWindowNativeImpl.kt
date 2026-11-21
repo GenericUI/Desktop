@@ -147,6 +147,31 @@ class QtWindowNativeImpl : DesktopWindowNativeImpl<QtWidgetHandle>(
         }
     }
 
+    override fun isUndecorated(): Boolean = super.isUndecorated()
+
+    override fun setUndecorated(undecorated: Boolean) {
+        val changed = super.isUndecorated() != undecorated
+        super.setUndecorated(undecorated)
+        if (undecorated) {
+            nativeWidget.qtWindowFlags = nativeWidget.qtWindowFlags or QtWidgetHandle.Qt_FramelessWindowHint
+        } else {
+            nativeWidget.qtWindowFlags = nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_FramelessWindowHint.inv()
+        }
+        if (changed && QtApplicationNativeImpl.interactiveQtGuiEnabled && !suppressHostSync) {
+            QtNativeWindowHost.syncWindowProperties(this)
+        }
+    }
+
+    override fun setOnWindowStateChanged(listener: ((WindowState) -> Unit)?) {
+        super.setOnWindowStateChanged(listener)
+    }
+
+    override fun startSystemMove() {
+        if (QtApplicationNativeImpl.interactiveQtGuiEnabled && !isDisposed) {
+            QtNativeWindowHost.startSystemMove(this)
+        }
+    }
+
     override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
         super.setFullscreen(fullscreen, cutoutMode)
         if (QtApplicationNativeImpl.interactiveQtGuiEnabled && !suppressHostSync) {
@@ -247,13 +272,49 @@ class QtWindowNativeImpl : DesktopWindowNativeImpl<QtWidgetHandle>(
             }
         }
         if (changed) {
+            if (prevState != currentWindowState) {
+                onWindowStateChangedListener?.invoke(currentWindowState)
+            }
             onWindowResizeListener?.invoke(
                 WindowConfiguration(
                     widthPx = resolvedSize.width,
                     heightPx = resolvedSize.height,
                     windowState = currentWindowState,
-                    isFullscreen = fullscreenFlag,
-                    isInPictureInPicture = inPipMode
+                    isFullscreen = fullscreenFlag
+                )
+            )
+        }
+    }
+
+    internal fun notifyHostMinimizedFromOs(
+        minimized: Boolean,
+        maximizedNow: Boolean,
+        fullscreenNow: Boolean
+    ) {
+        val prevState = currentWindowState
+        val nextState = when {
+            minimized -> WindowState.MINIMIZED
+            fullscreenNow -> WindowState.FULLSCREEN
+            maximizedNow -> WindowState.MAXIMIZED
+            else -> WindowState.NORMAL
+        }
+        suppressHostSync = true
+        try {
+            fullscreenFlag = fullscreenNow
+            currentWindowState = nextState
+            nativeWidget.attributes["fullscreen"] = fullscreenNow
+            nativeWidget.attributes["windowState"] = currentWindowState
+        } finally {
+            suppressHostSync = false
+        }
+        if (prevState != currentWindowState) {
+            onWindowStateChangedListener?.invoke(currentWindowState)
+            onWindowResizeListener?.invoke(
+                WindowConfiguration(
+                    widthPx = currentWindowSize.width,
+                    heightPx = currentWindowSize.height,
+                    windowState = currentWindowState,
+                    isFullscreen = fullscreenFlag
                 )
             )
         }

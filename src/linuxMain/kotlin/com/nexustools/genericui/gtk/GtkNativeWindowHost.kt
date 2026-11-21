@@ -32,6 +32,7 @@ import kotlin.time.TimeSource
 
 object GtkNativeWindowHost {
     private val sessions = LinkedHashMap<Long, GtkWindowSession>(8)
+    private val lastObservedMinimizedByKey = HashMap<Long, Boolean>()
     private var appInitialized = false
     private var eventLoopRunning = false
     private var stopRequested = false
@@ -135,9 +136,11 @@ object GtkNativeWindowHost {
             return
         }
 
+        val isSecondaryWindow = sessions.values.any { !it.closed && it.windowImpl != null }
+        val undecorated = windowImpl.isUndecorated()
         val winSize = windowImpl.getWindowSize()
-        val initW = winSize.width.coerceAtLeast(320)
-        val initH = winSize.height.coerceAtLeast(240)
+        val initW = winSize.width.coerceAtLeast(if (undecorated) 64 else 320)
+        val initH = winSize.height.coerceAtLeast(if (undecorated) 64 else 240)
 
         val gtkWin = Gtk4DynamicBindings.gtkWindowNew() ?: return
         val drawingArea = Gtk4DynamicBindings.gtkDrawingAreaNew() ?: run {
@@ -145,7 +148,7 @@ object GtkNativeWindowHost {
             return
         }
 
-        val headerBar = if (windowImpl.getTitleBarInstructions()?.customTitleBar != false) {
+        val headerBar = if (!undecorated && windowImpl.getTitleBarInstructions()?.customTitleBar != false) {
             Gtk4DynamicBindings.gtkHeaderBarNew()?.also { hb ->
                 Gtk4DynamicBindings.gtkWindowSetTitlebar(gtkWin, hb)
             }
@@ -153,6 +156,10 @@ object GtkNativeWindowHost {
             null
         }
 
+        Gtk4DynamicBindings.gtkWindowSetDecorated(gtkWin, !undecorated)
+        if (isSecondaryWindow || undecorated) {
+            Gtk4DynamicBindings.gtkWindowSetHideOnClose(gtkWin, true)
+        }
         Gtk4DynamicBindings.gtkWindowSetDefaultSize(gtkWin, initW, initH)
         Gtk4DynamicBindings.gtkWindowSetTitle(gtkWin, windowImpl.getTitle().ifBlank { "GenericUI" })
         Gtk4DynamicBindings.gtkWidgetSetFocusable(drawingArea, true)
@@ -166,11 +173,12 @@ object GtkNativeWindowHost {
             windowImpl = windowImpl
         )
         sessions[key] = session
+        lastObservedMinimizedByKey[key] = false
         attachSessionControllers(session)
         syncWindowProperties(windowImpl)
 
         val ownerImpl = windowImpl.ownerWindow as? GtkWindowNativeImpl
-        if (ownerImpl != null) {
+        if (ownerImpl != null && !undecorated) {
             sessions[ownerImpl.nativeWidget.nativePointer]?.let { ownerSession ->
                 Gtk4DynamicBindings.gtkWindowSetTransientFor(gtkWin, ownerSession.gtkWindow)
             }
@@ -440,6 +448,7 @@ object GtkNativeWindowHost {
         if (eventLoopRunning) return
         eventLoopRunning = true
         stopRequested = false
+        GtkSystemTrayNativeImpl.ensureAllRegisteredIfInteractive()
         val ctx = LinuxGlibGioBindings.mainContextDefault()
 
         try {
@@ -451,7 +460,9 @@ object GtkNativeWindowHost {
             while (
                 eventLoopRunning &&
                 !stopRequested &&
-                (sessions.values.any { !it.closed } || GtkWindowNativeImpl.activeWindows.any { !it.isDisposed })
+                (sessions.values.any { !it.closed } ||
+                    GtkWindowNativeImpl.activeWindows.any { !it.isDisposed } ||
+                    GtkSystemTrayNativeImpl.hasActiveTray())
             ) {
                 var didWork = false
                 if (ctx != null) {
@@ -461,6 +472,7 @@ object GtkNativeWindowHost {
                         spins++
                     }
                 }
+                pollWindowStateTransitions()
                 if (!didWork) {
                     usleep(8000u)
                 }
@@ -483,6 +495,7 @@ object GtkNativeWindowHost {
                     spins++
                 }
             }
+            pollWindowStateTransitions()
             steps++
             if (sleepMsPerStep > 0) {
                 usleep((sleepMsPerStep * 1000).toUInt())
@@ -491,11 +504,30 @@ object GtkNativeWindowHost {
         return steps
     }
 
+    private fun pollWindowStateTransitions() {
+        for (session in sessions.values.toList()) {
+            if (session.closed) continue
+            val winImpl = session.windowImpl ?: continue
+            val key = session.windowKey
+            val minNow = Gtk4DynamicBindings.gtkWindowIsMinimized(session.gtkWindow)
+            val prevMin = lastObservedMinimizedByKey[key]
+            if (prevMin != null && prevMin != minNow) {
+                val maxNow = Gtk4DynamicBindings.gtkWindowIsMaximized(session.gtkWindow)
+                val fsNow = Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow)
+                GenericUiThreading.runOnLogic {
+                    winImpl.notifyHostMinimizedFromOs(minNow, maxNow, fsNow)
+                }
+            }
+            lastObservedMinimizedByKey[key] = minNow
+        }
+    }
+
     fun terminateEventLoop() {
         stopRequested = true
         eventLoopRunning = false
         val toClose = sessions.values.toList()
         sessions.clear()
+        lastObservedMinimizedByKey.clear()
         for (session in toClose) {
             destroySession(session)
         }
@@ -590,17 +622,36 @@ object GtkNativeWindowHost {
 
     fun syncWindowProperties(windowImpl: GtkWindowNativeImpl) {
         val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        val undecorated = windowImpl.isUndecorated()
         Gtk4DynamicBindings.gtkWindowSetTitle(session.gtkWindow, windowImpl.getTitle().ifBlank { "GenericUI" })
-        session.headerBar?.let { hb ->
-            val layout = (windowImpl.nativeWidget.attributes["gtkButtonsLayout"] as? String) ?: ":minimize,maximize,close"
-            Gtk4DynamicBindings.gtkHeaderBarSetDecorationLayout(hb, layout)
-            Gtk4DynamicBindings.gtkHeaderBarSetShowTitleButtons(hb, true)
+        Gtk4DynamicBindings.gtkWindowSetDecorated(session.gtkWindow, !undecorated)
+        if (undecorated) {
+            Gtk4DynamicBindings.gtkWindowSetTitlebar(session.gtkWindow, null)
+        } else {
+            session.headerBar?.let { hb ->
+                Gtk4DynamicBindings.gtkWindowSetTitlebar(session.gtkWindow, hb)
+                val layout = (windowImpl.nativeWidget.attributes["gtkButtonsLayout"] as? String) ?: ":minimize,maximize,close"
+                Gtk4DynamicBindings.gtkHeaderBarSetDecorationLayout(hb, layout)
+                Gtk4DynamicBindings.gtkHeaderBarSetShowTitleButtons(hb, true)
+            }
         }
         val minSize = windowImpl.getMinWindowSize()
         if (minSize != null) {
-            Gtk4DynamicBindings.gtkWidgetSetSizeRequest(session.drawingArea, minSize.width.coerceAtLeast(160), minSize.height.coerceAtLeast(120))
+            val minW = minSize.width.coerceAtLeast(if (undecorated) 64 else 160)
+            val minH = minSize.height.coerceAtLeast(if (undecorated) 64 else 120)
+            Gtk4DynamicBindings.gtkWidgetSetSizeRequest(session.drawingArea, minW, minH)
         }
         syncSessionX11Hints(session)
+    }
+
+    fun startSystemMove(windowImpl: GtkWindowNativeImpl) {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
+        if (session.closed) return
+        Gtk4DynamicBindings.gtkWindowBeginMove(
+            win = session.gtkWindow,
+            fallbackX = session.lastMouseX.toDouble(),
+            fallbackY = session.lastMouseY.toDouble()
+        )
     }
 
     fun syncWindowTitle(windowImpl: GtkWindowNativeImpl, title: String) {
@@ -636,7 +687,7 @@ object GtkNativeWindowHost {
                 session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
                 Gtk4DynamicBindings.gtkWindowFullscreen(session.gtkWindow)
             }
-            WindowState.NORMAL, WindowState.PICTURE_IN_PICTURE -> {
+            WindowState.NORMAL -> {
                 if (Gtk4DynamicBindings.gtkWindowIsFullscreen(session.gtkWindow) || session.pendingTargetFullscreen == true) {
                     session.pendingTargetFullscreen = false
                     session.fullscreenTransitionMark = TimeSource.Monotonic.markNow()
@@ -701,6 +752,7 @@ object GtkNativeWindowHost {
     }
 
     private fun destroySession(session: GtkWindowSession) {
+        lastObservedMinimizedByKey.remove(session.windowKey)
         if (session.closed) return
         session.closed = true
         Gtk4DynamicBindings.gtkWindowDestroy(session.gtkWindow)
@@ -746,6 +798,9 @@ object GtkNativeWindowHost {
             impl?.dispatchPointerDown(PointerEvent(x = lx, y = ly, screenX = x, screenY = y, button = button, clickCount = clickCount))
         } else {
             session.focusedWidget = null
+            if (button == 0 && session.windowImpl?.isUndecorated() == true) {
+                startSystemMove(session.windowImpl)
+            }
         }
         Gtk4DynamicBindings.gtkWidgetQueueDraw(session.drawingArea)
     }

@@ -31,23 +31,28 @@ open class DesktopSystemTrayNativeImpl(
     protected var onClickedListener: (() -> Unit)? = null
 
     override fun setIcon(iconPathOrUrl: String?) {
-        throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        if (!isSupported) throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        iconPath = iconPathOrUrl
     }
 
     override fun setTooltip(tooltip: String?) {
-        throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        if (!isSupported) throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        tooltipText = tooltip
     }
 
     override fun setBadgeText(badge: String?) {
-        throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        if (!isSupported) throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        badgeText = badge
     }
 
     override fun setContextMenu(menuImpl: ContextMenuNativeImpl<*>?) {
-        throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        if (!isSupported) throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        contextMenu = menuImpl
     }
 
     override fun setOnTrayIconClicked(listener: (() -> Unit)?) {
-        throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        if (!isSupported) throw UnsupportedOperationException("Desktop system tray requires a platform tray backend implementation.")
+        onClickedListener = listener
     }
 
     override fun dispose() {

@@ -46,6 +46,10 @@ class SwingSystemTrayImpl : SystemTrayNativeImpl {
     private var contextMenuImpl: ContextMenuNativeImpl<*>? = null
     private var clickedListener: (() -> Unit)? = null
 
+    init {
+        activeImpls.add(this)
+    }
+
     private fun requireTray(): TrayIcon {
         check(!isDisposed) { "SwingSystemTrayImpl has been disposed." }
         if (!isSupported) {
@@ -104,6 +108,7 @@ class SwingSystemTrayImpl : SystemTrayNativeImpl {
 
     override fun dispose() {
         isDisposed = true
+        activeImpls.remove(this)
         val icon = trayIcon
         trayIcon = null
         contextMenuImpl = null
@@ -112,10 +117,21 @@ class SwingSystemTrayImpl : SystemTrayNativeImpl {
             activeTrayIcons.remove(icon)
             runCatching { SystemTray.getSystemTray().remove(icon) }
         }
+        SwingApplicationImpl.wakeHeadlessWaiters()
     }
 
     companion object {
         private val activeTrayIcons = mutableListOf<TrayIcon>()
+        private val activeImpls = mutableListOf<SwingSystemTrayImpl>()
+
+        internal fun hasActiveTray(): Boolean =
+            activeTrayIcons.isNotEmpty() || activeImpls.any { !it.isDisposed }
+
+        internal fun disposeAll() {
+            for (impl in activeImpls.toList()) {
+                impl.dispose()
+            }
+        }
 
         internal fun checkSystemTraySupported(): Boolean {
             if (GraphicsEnvironment.isHeadless()) return false
@@ -176,18 +192,27 @@ class SwingSystemTrayImpl : SystemTrayNativeImpl {
                     return runCatching { Toolkit.getDefaultToolkit().getImage(directFile.absolutePath) }.getOrNull()
                 }
             }
-            val resourceUrl = SwingSystemTrayImpl::class.java.classLoader?.getResource(trimmed.trimStart('/'))
-            if (resourceUrl != null) {
+            val clean = trimmed.trimStart('/')
+            val cl = SwingSystemTrayImpl::class.java.classLoader
+            val candidateResources = listOf(
+                clean,
+                "app/$clean",
+                "gui/$clean",
+                "app/drawable/$clean",
+                "gui/drawable/$clean"
+            ).distinct()
+            for (candidate in candidateResources) {
+                val resourceUrl = cl?.getResource(candidate) ?: continue
                 runCatching { ImageIO.read(resourceUrl) }.getOrNull()?.let { return it }
                 if (!GraphicsEnvironment.isHeadless()) {
-                    return runCatching { Toolkit.getDefaultToolkit().getImage(resourceUrl) }.getOrNull()
+                    runCatching { Toolkit.getDefaultToolkit().getImage(resourceUrl) }.getOrNull()?.let { return it }
                 }
             }
             return null
         }
 
         internal fun createDefaultTrayImage(): BufferedImage {
-            loadTrayImage("icon.png")?.let { loaded ->
+            (loadTrayImage("tray_icon.png") ?: loadTrayImage("icon.png"))?.let { loaded ->
                 val img = BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB)
                 val g = img.createGraphics()
                 try {

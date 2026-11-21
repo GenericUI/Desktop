@@ -34,6 +34,7 @@ import com.nexustools.genericui.gtk.Gtk4DynamicBindings
 import com.nexustools.genericui.gtk.GtkWidgetHandle
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.threading.GenericUiThreading
 import kotlin.math.PI
@@ -88,8 +89,13 @@ object GtkControlRenderUtil {
         widget.attributes["effectiveThemeMode"] = effectiveTheme
         widget.attributes["gtkPreferDarkTheme"] = isDark
         widget.attributes["adwColorScheme"] = if (isDark) "ADW_COLOR_SCHEME_FORCE_DARK" else "ADW_COLOR_SCHEME_FORCE_LIGHT"
-        widget.attributes.remove("backdropBlurPx")
-        widget.attributes.remove("backdropFilter")
+        val nativeImpl = widget.attributes["nativeImpl"]
+        if (nativeImpl !is DesktopStyledContainerNativeImpl<*> &&
+            nativeImpl !is DesktopStyledButtonNativeImpl<*>
+        ) {
+            widget.attributes.remove("backdropBlurPx")
+            widget.attributes.remove("backdropFilter")
+        }
         return isDark
     }
 
@@ -564,21 +570,50 @@ object GtkControlRenderUtil {
         widget.attributes["lastRenderedHeight"] = bounds.height.coerceAtLeast(1)
 
         if (cairoCtx != null) {
+            val visuals = impl.resolveCurrentVisuals()
             val style = impl.getComponentStyle()
             val snapshot = impl.getStyleSnapshot()
-            val radius = style?.borderRadius?.topLeft?.resolvePx() ?: 6f
+            val radius = visuals.borderRadiusPx ?: style?.borderRadius?.topLeft?.resolvePx() ?: 6f
+            if (visuals.hasBackdropFilter) {
+                val effFilter = CssFilter.backdropBlurOrFilter(visuals.backdropBlurPx, visuals.backdropFilter)
+                val cr = cairoCtx.cairoContext
+                if (effFilter != null && cr != null) {
+                    Gtk4DynamicBindings.cairoApplyBackdropFilterRegion(
+                        cr = cr,
+                        x = bounds.x,
+                        y = bounds.y,
+                        w = bounds.width,
+                        h = bounds.height,
+                        radiusPx = radius,
+                        filter = effFilter
+                    )
+                }
+            }
             val activeType = snapshot.type?.takeIf { it != BootstrapType.NONE }
                 ?: snapshot.backgroundType?.takeIf { it != BootstrapType.NONE }
-            val bg = style?.backgroundColor
+            val explicitBg = visuals.backgroundColor ?: style?.backgroundColor
+            val bg = explicitBg
                 ?: activeType?.let { BootstrapColorPalette.resolveColor(it, isDark, cairoCtx.themeConfig) }
-                ?: cairoCtx.palette.accentPrimary
-            val fg = style?.color
+                ?: if (visuals.hasBackdropFilter) RgbaColor.TRANSPARENT else cairoCtx.palette.accentPrimary
+            val fg = visuals.textColor ?: style?.color
                 ?: activeType?.let { BootstrapColorPalette.resolveForegroundOn(it, isDark, cairoCtx.themeConfig) }
                 ?: RgbaColor.WHITE
-            val effectiveBg = if (cairoCtx.pressedWidget === widget) darken(bg, 0.85f) else if (cairoCtx.hoveredWidget === widget) brighten(bg, 1.08f) else bg
-            GtkGraphicsDrawUtil.fillRoundedRect(cairoCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, effectiveBg)
-            style?.borderColor?.let { bc ->
-                GtkGraphicsDrawUtil.strokeRoundedRect(cairoCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, style.borderWidth?.top?.resolvePx() ?: 1f, bc)
+            val effectiveBg = if (bg.a <= 0) {
+                RgbaColor.TRANSPARENT
+            } else if (cairoCtx.pressedWidget === widget) {
+                darken(bg, 0.85f)
+            } else if (cairoCtx.hoveredWidget === widget) {
+                brighten(bg, 1.08f)
+            } else {
+                bg
+            }
+            if (effectiveBg.a > 0) {
+                GtkGraphicsDrawUtil.fillRoundedRect(cairoCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, effectiveBg)
+            }
+            val borderColor = visuals.borderColor ?: style?.borderColor
+            val borderW = visuals.borderWidthPx ?: style?.borderWidth?.top?.resolvePx() ?: 1f
+            if (borderColor != null && borderColor.a > 0 && borderW > 0f) {
+                GtkGraphicsDrawUtil.strokeRoundedRect(cairoCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, borderW, borderColor)
             }
             val label = impl.getText()
             if (label.isNotEmpty()) {
@@ -1147,6 +1182,33 @@ object GtkControlRenderUtil {
         widget.attributes["gtkRenderNode"] = "GtkDrawingArea_Cairo_StyledContainer"
         widget.attributes["lastRenderedWidth"] = bounds.width.coerceAtLeast(1)
         widget.attributes["lastRenderedHeight"] = bounds.height.coerceAtLeast(1)
+        val cairoCtx = renderContext as? GtkCairoRenderContext
+        val visuals = impl.getStyledVisuals()
+        if (cairoCtx != null && visuals.hasBackdropFilter) {
+            val effFilter = CssFilter.backdropBlurOrFilter(visuals.backdropBlurPx, visuals.backdropFilter)
+            val cr = cairoCtx.cairoContext
+            if (effFilter != null && cr != null) {
+                Gtk4DynamicBindings.cairoApplyBackdropFilterRegion(
+                    cr = cr,
+                    x = bounds.x,
+                    y = bounds.y,
+                    w = bounds.width,
+                    h = bounds.height,
+                    radiusPx = visuals.borderRadiusPx ?: 0f,
+                    filter = effFilter
+                )
+            }
+        }
+        if (cairoCtx != null) {
+            val radius = visuals.borderRadiusPx ?: 0f
+            visuals.backgroundColor?.takeIf { it.a > 0 }?.let { bg ->
+                GtkGraphicsDrawUtil.fillRoundedRect(cairoCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bg)
+            }
+            val bw = visuals.borderWidthPx ?: if (visuals.borderColor != null) 1f else 0f
+            visuals.borderColor?.takeIf { it.a > 0 && bw > 0f }?.let { bc ->
+                GtkGraphicsDrawUtil.strokeRoundedRect(cairoCtx, bounds.x, bounds.y, bounds.width, bounds.height, radius, bw, bc)
+            }
+        }
         return true
     }
 

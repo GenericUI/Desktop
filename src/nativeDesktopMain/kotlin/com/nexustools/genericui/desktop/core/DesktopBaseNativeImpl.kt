@@ -117,7 +117,9 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun setAttribute(name: String, value: String?) {
-        if (name.equals("backdrop-filter", ignoreCase = true) || name.equals("-webkit-backdrop-filter", ignoreCase = true)) {
+        if ((name.equals("backdrop-filter", ignoreCase = true) || name.equals("-webkit-backdrop-filter", ignoreCase = true)) &&
+            !acceptsAestheticSkinStyles()
+        ) {
             return
         }
         if (value == null) {
@@ -442,8 +444,10 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes["aspectRatio"] = ratio.toString()
         }
 
-        // Ensure backdrop-filter is never active on Desktop
-        nativeWidget.attributes.remove("backdropFilter")
+        if (!acceptsAestheticSkinStyles()) {
+            nativeWidget.attributes.remove("backdropFilter")
+            nativeWidget.attributes.remove("backdropBlurPx")
+        }
     }
 
     protected open fun onStyleChanged() {
@@ -1039,7 +1043,10 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         if (nativeWidget.attributes["cursor"] != prevCursorAttr) {
             DesktopNativeWidget.onCursorUpdated?.invoke()
         }
-        nativeWidget.attributes.remove("backdropFilter")
+        if (!acceptsAestheticSkinStyles()) {
+            nativeWidget.attributes.remove("backdropFilter")
+            nativeWidget.attributes.remove("backdropBlurPx")
+        }
         nativeWidget.attributes["computedStyle"] = style
     }
 

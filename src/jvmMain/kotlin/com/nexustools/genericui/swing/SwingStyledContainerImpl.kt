@@ -8,6 +8,7 @@ import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.StyledVisualSpec
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.style.gradient.Gradient.LinearGradient
@@ -26,10 +27,13 @@ import java.awt.RenderingHints
 import java.awt.geom.Path2D
 import java.awt.geom.Point2D
 import java.awt.geom.RoundRectangle2D
+import java.awt.image.BufferedImage
 import javax.swing.BorderFactory
 import javax.swing.JComponent
 import javax.swing.JPanel
+import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.min
 import kotlin.math.sin
 
 /**
@@ -54,6 +58,14 @@ class SwingStyledContainerImpl(
             val pointerOffset = (getClientProperty("pointerOffset") as? String)?.toFloatOrNull() ?: 0.5f
             val pointerWidthPx = (getClientProperty("pointerWidthPx") as? String)?.toFloatOrNull() ?: 12f
             val pointerHeightPx = (getClientProperty("pointerHeightPx") as? String)?.toFloatOrNull() ?: 8f
+            val effBackdrop = if (getClientProperty("isTextBubble") == true) {
+                null
+            } else {
+                CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
+            }
+            if (effBackdrop != null && width > 0 && height > 0) {
+                SwingHardwareBackdropBlurRenderer.paintBackdrop(g, this, effBackdrop, spec.borderRadiusPx ?: 0f)
+            }
             paintStyledSurface(
                 g = g,
                 width = width,
@@ -86,7 +98,17 @@ class SwingStyledContainerImpl(
         nativeWidget.isOpaque = false
         nativeWidget.putClientProperty("antialiasing", true)
         nativeWidget.putClientProperty("tagName", tagName)
+        nativeWidget.putClientProperty("isTextBubble", isTextBubbleComponent())
         nativeWidget.putClientProperty("styledVisualsProvider", { getStyledVisuals() })
+    }
+
+    private fun isTextBubbleComponent(): Boolean {
+        val raw = "$tagName $componentClassPrefix".trim().lowercase()
+        val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        return tokens.any {
+            val norm = it.removePrefix("genericui:")
+            norm == "text-bubble" || norm == "textbubble" || norm == "gui-text-bubble"
+        }
     }
 
     override fun setAttribute(name: String, value: String?) {
@@ -95,18 +117,24 @@ class SwingStyledContainerImpl(
     }
 
     protected fun applyStyledVisuals(visuals: StyledVisualSpec) {
-        nativeWidget.putClientProperty("backdropBlurPx", null)
-        nativeWidget.putClientProperty("backdrop-filter", null)
-        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
-        nativeWidget.putClientProperty("styledVisuals", visuals)
-        nativeWidget.putClientProperty("backgroundColor", visuals.backgroundColor)
-        nativeWidget.putClientProperty("backgroundGradient", visuals.backgroundGradient)
-        nativeWidget.putClientProperty("textColor", visuals.textColor)
-        nativeWidget.putClientProperty("borderColor", visuals.borderColor)
-        nativeWidget.putClientProperty("borderWidthPx", visuals.borderWidthPx)
-        nativeWidget.putClientProperty("borderStyle", visuals.borderStyle)
-        nativeWidget.putClientProperty("borderRadiusPx", visuals.borderRadiusPx)
-        val bg = visuals.backgroundColor
+        val effVisuals = if (isTextBubbleComponent()) visuals.withoutBackdropFilter() else visuals
+        nativeWidget.putClientProperty("isTextBubble", isTextBubbleComponent())
+        nativeWidget.putClientProperty("backdropBlurPx", effVisuals.backdropBlurPx)
+        nativeWidget.putClientProperty("backdropFilter", effVisuals.backdropFilter)
+        nativeWidget.putClientProperty(
+            "-webkit-backdrop-filter",
+            effVisuals.backdropFilter?.toCssString()
+                ?: effVisuals.backdropBlurPx?.takeIf { it > 0f }?.let { "blur(${it}px)" }
+        )
+        nativeWidget.putClientProperty("styledVisuals", effVisuals)
+        nativeWidget.putClientProperty("backgroundColor", effVisuals.backgroundColor)
+        nativeWidget.putClientProperty("backgroundGradient", effVisuals.backgroundGradient)
+        nativeWidget.putClientProperty("textColor", effVisuals.textColor)
+        nativeWidget.putClientProperty("borderColor", effVisuals.borderColor)
+        nativeWidget.putClientProperty("borderWidthPx", effVisuals.borderWidthPx)
+        nativeWidget.putClientProperty("borderStyle", effVisuals.borderStyle)
+        nativeWidget.putClientProperty("borderRadiusPx", effVisuals.borderRadiusPx)
+        val bg = effVisuals.backgroundColor
         if (bg != null) {
             nativeWidget.background = Color(
                 bg.r.coerceIn(0, 255),
@@ -115,11 +143,12 @@ class SwingStyledContainerImpl(
                 bg.a.coerceIn(0, 255)
             )
         }
-        nativeWidget.isOpaque = bg != null &&
+        nativeWidget.isOpaque = !effVisuals.hasBackdropFilter &&
+            bg != null &&
             bg.a >= 255 &&
-            visuals.backgroundGradient == null &&
-            (visuals.borderRadiusPx ?: 0f) <= 0f
-        visuals.textColor?.let { c ->
+            effVisuals.backgroundGradient == null &&
+            (effVisuals.borderRadiusPx ?: 0f) <= 0f
+        effVisuals.textColor?.let { c ->
             nativeWidget.foreground = Color(
                 c.r.coerceIn(0, 255),
                 c.g.coerceIn(0, 255),
@@ -127,14 +156,14 @@ class SwingStyledContainerImpl(
                 c.a.coerceIn(0, 255)
             )
         }
-        visuals.opacity?.let { setOpacity(it) }
-        visuals.padding?.let { p ->
+        effVisuals.opacity?.let { setOpacity(it) }
+        effVisuals.padding?.let { p ->
             nativeWidget.border = BorderFactory.createEmptyBorder(p.top, p.left, p.bottom, p.right)
         }
-        if (visuals.widthPx != null || visuals.heightPx != null) {
+        if (effVisuals.widthPx != null || effVisuals.heightPx != null) {
             val currentPref = if (nativeWidget.isPreferredSizeSet) nativeWidget.preferredSize else null
-            val w = visuals.widthPx ?: currentPref?.width ?: nativeWidget.width.takeIf { it > 0 } ?: 0
-            val h = visuals.heightPx ?: currentPref?.height ?: nativeWidget.height.takeIf { it > 0 } ?: 0
+            val w = effVisuals.widthPx ?: currentPref?.width ?: nativeWidget.width.takeIf { it > 0 } ?: 0
+            val h = effVisuals.heightPx ?: currentPref?.height ?: nativeWidget.height.takeIf { it > 0 } ?: 0
             nativeWidget.preferredSize = Dimension(w, h)
         }
         nativeWidget.revalidate()
@@ -158,7 +187,8 @@ class SwingStyledContainerImpl(
             snapshot = styleSnapshot,
             darkTheme = isDark
         )
-        return computedBase.mergeWith(styledVisuals)
+        val merged = computedBase.mergeWith(styledVisuals)
+        return if (isTextBubbleComponent()) merged.withoutBackdropFilter() else merged
     }
 
     override fun applyComputedStyle(style: ComputedStyle) {
@@ -177,6 +207,53 @@ class SwingStyledContainerImpl(
     }
 
     companion object {
+        internal fun applyBackdropToBufferedImage(
+            backing: BufferedImage,
+            x: Int,
+            y: Int,
+            width: Int,
+            height: Int,
+            spec: StyledVisualSpec
+        ): Boolean {
+            val effFilter = CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter) ?: return false
+            val bufW = backing.width
+            val bufH = backing.height
+            if (bufW <= 0 || bufH <= 0 || width <= 0 || height <= 0) return false
+            val x0 = x.coerceIn(0, bufW)
+            val y0 = y.coerceIn(0, bufH)
+            val x1 = (x + width).coerceIn(0, bufW)
+            val y1 = (y + height).coerceIn(0, bufH)
+            val copyW = x1 - x0
+            val copyH = y1 - y0
+            if (copyW <= 0 || copyH <= 0) return false
+
+            val blurPx = (effFilter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
+            val pad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 32) else 0
+            val capX0 = (x0 - pad).coerceAtLeast(0)
+            val capY0 = (y0 - pad).coerceAtLeast(0)
+            val capX1 = (x1 + pad).coerceAtMost(bufW)
+            val capY1 = (y1 + pad).coerceAtMost(bufH)
+            val capW = capX1 - capX0
+            val capH = capY1 - capY0
+            if (capW <= 0 || capH <= 0) return false
+
+            val pixels = IntArray(capW * capH)
+            backing.getRGB(capX0, capY0, capW, capH, pixels, 0, capW)
+            val applied = effFilter.applyBackdropToArgbRegion(
+                argbPixels = pixels,
+                bufferWidth = capW,
+                bufferHeight = capH,
+                regionX = x0 - capX0,
+                regionY = y0 - capY0,
+                regionWidth = copyW,
+                regionHeight = copyH,
+                cornerRadiusPx = (spec.borderRadiusPx ?: 0f).coerceAtLeast(0f)
+            )
+            if (!applied) return false
+            backing.setRGB(capX0, capY0, capW, capH, pixels, 0, capW)
+            return true
+        }
+
         internal fun paintStyledSurface(
             g: Graphics,
             width: Int,

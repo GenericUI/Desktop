@@ -66,6 +66,31 @@ object Win32NativeWindowHost {
 
     internal var activeWindowAspectRatio: Double? = null
 
+    val secondaryWindowHwnds: MutableMap<WindowsWindowNativeImpl, HWND> = mutableMapOf()
+    private val hwndToSecondaryWindow: MutableMap<Long, WindowsWindowNativeImpl> = mutableMapOf()
+    private val secondaryWindowAspectRatios: MutableMap<Long, Double?> = mutableMapOf()
+    private val secondaryWindowIconicState: MutableMap<Long, Boolean> = mutableMapOf()
+    private var activeWindowLastIconic: Boolean = false
+    private var currentlyPaintingHwnd: HWND? = null
+    private var systemMoveTriggeredInMouseDown: Boolean = false
+
+    fun getSecondaryWindowForHwnd(hwnd: HWND?): WindowsWindowNativeImpl? =
+        if (hwnd != null) hwndToSecondaryWindow[hwnd.toLong()] else null
+
+    fun hasWindow(windowImpl: WindowsWindowNativeImpl): Boolean =
+        activeWindowImpl === windowImpl || secondaryWindowHwnds.containsKey(windowImpl)
+
+    fun resolveHwndForWindow(windowImpl: WindowsWindowNativeImpl): HWND? = when {
+        activeWindowImpl === windowImpl -> activeHwnd
+        else -> secondaryWindowHwnds[windowImpl]
+    }
+
+    fun resolveWindowForHwnd(hwnd: HWND?): WindowsWindowNativeImpl? = when {
+        hwnd == null -> null
+        hwnd == activeHwnd -> activeWindowImpl
+        else -> hwndToSecondaryWindow[hwnd.toLong()]
+    }
+
     val panelHwnds: MutableMap<DesktopDockPanelNativeImpl<*>, HWND> = mutableMapOf()
     private val hwndToPanel: MutableMap<Long, DesktopDockPanelNativeImpl<*>> = mutableMapOf()
 
@@ -84,8 +109,23 @@ object Win32NativeWindowHost {
                 (hwnd == activeHwnd && activeWindowImpl?.isToolModalWindow == true)
             )
 
+    fun hasCustomTitleBarForWindow(winImpl: WindowsWindowNativeImpl?, hwnd: HWND? = null): Boolean {
+        if (winImpl == null || winImpl.isUndecorated()) return false
+        if (hwnd != null && hwnd == activeHwnd) {
+            return hasCustomMainWindowTitleBar()
+        }
+        if (winImpl.isFullscreen()) return false
+        if (winImpl.isToolModalWindow) return true
+        val tb = winImpl.getTitleBarInstructions() ?: return false
+        return tb.customTitleBar ||
+            tb.leadingComponents.isNotEmpty() ||
+            tb.centerComponents.isNotEmpty() ||
+            tb.trailingComponents.isNotEmpty()
+    }
+
     fun hasCustomMainWindowTitleBar(): Boolean {
         val winImpl = activeWindowImpl ?: return false
+        if (winImpl.isUndecorated()) return false
         if (activeFullscreenElementWidget != null || winImpl.isFullscreen()) return false
         if (winImpl.isToolModalWindow) return true
         val tb = winImpl.getTitleBarInstructions() ?: return false
@@ -95,11 +135,44 @@ object Win32NativeWindowHost {
             tb.trailingComponents.isNotEmpty()
     }
 
-    fun getMainWindowTitleBarHeight(): Int {
-        val winImpl = activeWindowImpl ?: return 0
-        if (!hasCustomMainWindowTitleBar()) return 0
-        val tb = winImpl.getTitleBarInstructions()
-        val kind = winImpl.titleBarKind
+    fun hitTestUndecoratedWindow(
+        hwnd: HWND,
+        winImpl: WindowsWindowNativeImpl,
+        screenX: Int,
+        screenY: Int
+    ): LRESULT = memScoped {
+        val resizable = (winImpl.nativeWidget.attributes["resizable"] as? Boolean) != false
+        if (!resizable || isFullscreenForWindow(hwnd, winImpl) || IsZoomed(hwnd) != 0) {
+            return@memScoped HTCLIENT.toLong()
+        }
+        val winRect = alloc<RECT>()
+        if (GetWindowRect(hwnd, winRect.ptr) == 0) {
+            return@memScoped HTCLIENT.toLong()
+        }
+        val border = 6
+        val onLeft = screenX in winRect.left until (winRect.left + border)
+        val onRight = screenX in (winRect.right - border)..winRect.right
+        val onTop = screenY in winRect.top until (winRect.top + border)
+        val onBottom = screenY in (winRect.bottom - border)..winRect.bottom
+        val hitCode = when {
+            onTop && onLeft -> HTTOPLEFT
+            onTop && onRight -> HTTOPRIGHT
+            onBottom && onLeft -> HTBOTTOMLEFT
+            onBottom && onRight -> HTBOTTOMRIGHT
+            onLeft -> HTLEFT
+            onRight -> HTRIGHT
+            onTop -> HTTOP
+            onBottom -> HTBOTTOM
+            else -> HTCLIENT
+        }
+        hitCode.toLong()
+    }
+
+    fun getMainWindowTitleBarHeight(winImpl: WindowsWindowNativeImpl? = activeWindowImpl): Int {
+        val targetWin = winImpl ?: return 0
+        if (!hasCustomTitleBarForWindow(targetWin)) return 0
+        val tb = targetWin.getTitleBarInstructions()
+        val kind = targetWin.titleBarKind
         return Win32NativeTitleBarRenderer.getDefaultTitleBarHeightPx(
             isToolWindow = kind.usesSmallCaptionMetrics,
             titleBar = tb,
@@ -313,6 +386,11 @@ object Win32NativeWindowHost {
             activeHwnd?.let { hwnd ->
                 if (IsWindow(hwnd) != 0) {
                     updateCursorForWindow(hwnd, forceSet = true)
+                }
+            }
+            for (secHwnd in secondaryWindowHwnds.values) {
+                if (IsWindow(secHwnd) != 0 && IsWindowVisible(secHwnd) != 0) {
+                    updateCursorForWindow(secHwnd, forceSet = true)
                 }
             }
         }
@@ -565,8 +643,21 @@ object Win32NativeWindowHost {
     private var savedWindowExStyle: Int = 0
     private var savedWindowRect: IntArray = intArrayOf(80, 50, 1280, 800)
 
-    internal fun isFullscreenActiveForMainWindow(): Boolean =
-        activeFullscreenElementWidget != null || isWindowFullscreenActive || activeWindowImpl?.isFullscreen() == true
+    internal fun isFullscreenForWindow(hwnd: HWND?, winImpl: WindowsWindowNativeImpl?): Boolean {
+        if (hwnd != null && hwnd != activeHwnd) {
+            return winImpl?.isFullscreen() == true
+        }
+        return activeFullscreenElementWidget != null || isWindowFullscreenActive || activeWindowImpl?.isFullscreen() == true
+    }
+
+    internal fun isFullscreenActiveForMainWindow(): Boolean {
+        val painting = currentlyPaintingHwnd
+        if (painting != null && painting != activeHwnd) {
+            val secWin = hwndToSecondaryWindow[painting.toLong()]
+            return secWin?.isFullscreen() == true
+        }
+        return activeFullscreenElementWidget != null || isWindowFullscreenActive || activeWindowImpl?.isFullscreen() == true
+    }
 
     internal class NativeEditControlEntry(
         val parentHwnd: HWND,
@@ -618,6 +709,11 @@ object Win32NativeWindowHost {
             activeHwnd?.let { hwnd ->
                 if (IsWindow(hwnd) != 0) {
                     updateCursorForWindow(hwnd, forceSet = true)
+                }
+            }
+            for (secHwnd in secondaryWindowHwnds.values) {
+                if (IsWindow(secHwnd) != 0 && IsWindowVisible(secHwnd) != 0) {
+                    updateCursorForWindow(secHwnd, forceSet = true)
                 }
             }
         }
@@ -703,6 +799,49 @@ object Win32NativeWindowHost {
     private var cachedCardPageFrameDark: Boolean = false
     private var cachedCardPageFramePage: DesktopNativeWidget? = null
     private var cachedCardPageFrameHeaderBottom: Int = 0
+    private var currentPaintRcLeft: Int = 0
+    private var currentPaintRcTop: Int = 0
+    private var currentPaintRcRight: Int = 0
+    private var currentPaintRcBottom: Int = 0
+    private var lastCardGridBlitHwnd: Long = 0L
+    private var lastCardGridBlitMutVer: Long = -1L
+    private var lastCardGridBlitScrollY: Int = Int.MIN_VALUE
+    private var lastCardScrollbarVisualKey: Long = Long.MIN_VALUE
+
+    private fun invalidateCachedCardPageFrame() {
+        cachedCardPageFrameHwnd = 0L
+        cachedCardPageFrameRootVer = -1L
+        cachedCardPageFramePage = null
+        lastCardGridBlitHwnd = 0L
+        lastCardGridBlitMutVer = -1L
+        lastCardGridBlitScrollY = Int.MIN_VALUE
+        lastCardScrollbarVisualKey = Long.MIN_VALUE
+    }
+
+    private fun hasHoverSensitiveAncestor(chain: List<DesktopNativeWidget>, leaf: DesktopNativeWidget?): Boolean {
+        for (w in chain) {
+            if (w === leaf) continue
+            if (w.attributes.containsKey("styledContainerVisuals") ||
+                w.attributes.containsKey("styledButtonVisuals") ||
+                (w.attributes["computedStyle"] as? com.nexustools.genericui.style.css.ComputedStyle)?.hoverStyle != null
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun invalidateHitRegionBounds(hwnd: HWND, region: HitRegion?) {
+        if (region == null || region.right <= region.left || region.bottom <= region.top) return
+        memScoped {
+            val rc = alloc<RECT>()
+            rc.left = (region.left - 8).coerceAtLeast(0)
+            rc.top = (region.top - 8).coerceAtLeast(0)
+            rc.right = region.right + 8
+            rc.bottom = region.bottom + 8
+            InvalidateRect(hwnd, rc.ptr, 0)
+        }
+    }
 
     internal fun markVideoStageDirty(hwnd: HWND?) {
         val targetHwnd = hwnd ?: activeHwnd ?: return
@@ -730,8 +869,12 @@ object Win32NativeWindowHost {
     }
 
     internal fun markAllVideoStagesDirty() {
-        val hwnd = activeHwnd ?: return
-        markVideoStageDirty(hwnd)
+        activeHwnd?.let { markVideoStageDirty(it) }
+        for (secHwnd in secondaryWindowHwnds.values) {
+            if (IsWindow(secHwnd) != 0 && IsWindowVisible(secHwnd) != 0) {
+                InvalidateRect(secHwnd, null, 0)
+            }
+        }
     }
 
     internal fun markNonOverlayUiDirty(hwnd: HWND?) {
@@ -1187,6 +1330,11 @@ object Win32NativeWindowHost {
 
     fun invalidateAllWindows() {
         activeHwnd?.let { InvalidateRect(it, null, 0) }
+        for (secHwnd in secondaryWindowHwnds.values) {
+            if (IsWindow(secHwnd) != 0 && IsWindowVisible(secHwnd) != 0) {
+                InvalidateRect(secHwnd, null, 0)
+            }
+        }
         for (panelHwnd in panelHwnds.values) {
             if (IsWindowVisible(panelHwnd) != 0) {
                 InvalidateRect(panelHwnd, null, 0)
@@ -1410,8 +1558,8 @@ object Win32NativeWindowHost {
     }
 
     fun updateMainWindowTitle(windowImpl: WindowsWindowNativeImpl, title: String) {
-        if (activeWindowImpl === windowImpl) {
-            activeHwnd?.let { hwnd ->
+        resolveHwndForWindow(windowImpl)?.let { hwnd ->
+            if (IsWindow(hwnd) != 0) {
                 SetWindowTextW(hwnd, title.ifBlank { "GenericUI" })
                 InvalidateRect(hwnd, null, 0)
             }
@@ -1419,8 +1567,8 @@ object Win32NativeWindowHost {
     }
 
     fun onMainWindowTitleBarChanged(windowImpl: WindowsWindowNativeImpl) {
-        if (activeWindowImpl === windowImpl) {
-            activeHwnd?.let { hwnd ->
+        resolveHwndForWindow(windowImpl)?.let { hwnd ->
+            if (IsWindow(hwnd) != 0) {
                 SetWindowPos(
                     hwnd,
                     null,
@@ -1432,6 +1580,90 @@ object Win32NativeWindowHost {
                 )
                 InvalidateRect(hwnd, null, 0)
             }
+        }
+    }
+
+    fun syncWindowUndecorated(windowImpl: WindowsWindowNativeImpl, undecorated: Boolean) {
+        GenericUiThreading.runOnUi {
+            val hwnd = resolveHwndForWindow(windowImpl) ?: return@runOnUi
+            if (IsWindow(hwnd) == 0 || isFullscreenForWindow(hwnd, windowImpl)) return@runOnUi
+            val isVisibleNow = IsWindowVisible(hwnd) != 0
+            val baseStyle = if (undecorated) {
+                WS_POPUP.toLong() or WS_THICKFRAME.toLong() or WS_CLIPCHILDREN.toLong()
+            } else {
+                WS_OVERLAPPEDWINDOW.toLong() or WS_CLIPCHILDREN.toLong()
+            }
+            val newStyle = (baseStyle or (if (isVisibleNow) WS_VISIBLE.toLong() else 0L)).toInt()
+            SetWindowLongW(hwnd, GWL_STYLE, newStyle)
+            val exTool = if (!windowImpl.showInTaskbar) Win32HwndHandle.WS_EX_TOOLWINDOW else WS_EX_APPWINDOW.toLong()
+            val exTop = if (windowImpl.isAlwaysOnTop()) Win32HwndHandle.WS_EX_TOPMOST else 0L
+            SetWindowLongW(hwnd, GWL_EXSTYLE, (exTool or exTop).toInt())
+            SetWindowPos(
+                hwnd,
+                if (windowImpl.isAlwaysOnTop()) HWND_TOPMOST else HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                (SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_FRAMECHANGED).toUInt()
+            )
+            InvalidateRect(hwnd, null, 1)
+        }
+    }
+
+    fun startSystemMove(windowImpl: WindowsWindowNativeImpl) {
+        systemMoveTriggeredInMouseDown = true
+        activeDragRegion = null
+        pressedWidget = null
+        isDraggingCanvas = false
+        GenericUiThreading.runOnUi {
+            val hwnd = resolveHwndForWindow(windowImpl) ?: return@runOnUi
+            if (IsWindow(hwnd) == 0 || isFullscreenForWindow(hwnd, windowImpl) || IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0) {
+                return@runOnUi
+            }
+            ReleaseCapture()
+            SendMessageW(hwnd, WM_NCLBUTTONDOWN.convert(), HTCAPTION.convert(), 0)
+        }
+    }
+
+    fun closeSecondaryOrPrimaryWindow(windowImpl: WindowsWindowNativeImpl) {
+        val secHwnd = secondaryWindowHwnds.remove(windowImpl)
+        if (secHwnd != null) {
+            val hwndKey = secHwnd.toLong()
+            hwndToSecondaryWindow.remove(hwndKey)
+            secondaryWindowAspectRatios.remove(hwndKey)
+            secondaryWindowIconicState.remove(hwndKey)
+            hitRegionsByHwnd.remove(hwndKey)
+            val editKeys = nativeEditEntriesByWidget.keys.filter { it.first == hwndKey }
+            for (k in editKeys) {
+                val entry = nativeEditEntriesByWidget.remove(k)
+                entry?.childHwnd?.let { ch ->
+                    nativeEditEntriesByChildHwnd.remove(ch.toLong())
+                    origEditWndProcByChildHwnd.remove(ch.toLong())
+                }
+            }
+            if (IsWindow(secHwnd) != 0) {
+                ShowWindow(secHwnd, SW_HIDE)
+                DestroyWindow(secHwnd)
+            }
+            return
+        }
+        if (activeWindowImpl === windowImpl && !visualTestMode) {
+            val hwnd = activeHwnd
+            if (hwnd != null && IsWindow(hwnd) != 0) {
+                DestroyWindow(hwnd)
+            }
+        }
+    }
+
+    internal fun onSecondaryHwndDestroyed(hwnd: HWND?, windowImpl: WindowsWindowNativeImpl) {
+        secondaryWindowHwnds.remove(windowImpl)
+        if (hwnd != null) {
+            val hwndKey = hwnd.toLong()
+            hwndToSecondaryWindow.remove(hwndKey)
+            secondaryWindowAspectRatios.remove(hwndKey)
+            secondaryWindowIconicState.remove(hwndKey)
+            hitRegionsByHwnd.remove(hwndKey)
         }
     }
 
@@ -1463,20 +1695,22 @@ object Win32NativeWindowHost {
     }
 
     fun setWindowPosition(windowImpl: WindowsWindowNativeImpl, x: Int, y: Int) {
-        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
+        if (!hasWindow(windowImpl)) return
         GenericUiThreading.runOnUi {
-            val hwnd = activeHwnd ?: return@runOnUi
-            if (activeWindowImpl !== windowImpl || IsWindow(hwnd) == 0) return@runOnUi
-            if (isFullscreenActiveForMainWindow() || IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0) return@runOnUi
-            memScoped {
-                val r = alloc<RECT>()
-                if (GetWindowRect(hwnd, r.ptr) != 0) {
-                    savedWindowRect = intArrayOf(
-                        x,
-                        y,
-                        (r.right - r.left).coerceAtLeast(320),
-                        (r.bottom - r.top).coerceAtLeast(240)
-                    )
+            val hwnd = resolveHwndForWindow(windowImpl) ?: return@runOnUi
+            if (IsWindow(hwnd) == 0) return@runOnUi
+            if (isFullscreenForWindow(hwnd, windowImpl) || IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0) return@runOnUi
+            if (hwnd == activeHwnd) {
+                memScoped {
+                    val r = alloc<RECT>()
+                    if (GetWindowRect(hwnd, r.ptr) != 0) {
+                        savedWindowRect = intArrayOf(
+                            x,
+                            y,
+                            (r.right - r.left).coerceAtLeast(320),
+                            (r.bottom - r.top).coerceAtLeast(240)
+                        )
+                    }
                 }
             }
             SetWindowPos(
@@ -1492,16 +1726,22 @@ object Win32NativeWindowHost {
     }
 
     fun setWindowVisible(windowImpl: WindowsWindowNativeImpl, visible: Boolean) {
-        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
-        val existingHwnd = activeHwnd
+        if (!hasWindow(windowImpl) && activeWindowImpl != null) {
+            if (visible && WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
+                createAndShowWin32Window(windowImpl, startHidden = false)
+            }
+            return
+        }
+        val existingHwnd = resolveHwndForWindow(windowImpl)
         if (existingHwnd == null || IsWindow(existingHwnd) == 0) {
             if (visible && WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
                 createAndShowWin32Window(windowImpl, startHidden = false)
             }
             return
         }
+        val isPrimary = existingHwnd == activeHwnd
         if (visible) {
-            if (!windowImpl.isFullscreen() && isWindowFullscreenActive) {
+            if (isPrimary && !windowImpl.isFullscreen() && isWindowFullscreenActive) {
                 setWindowFullscreen(windowImpl = windowImpl, fullscreen = false, targetElementWidget = null)
             }
             if (!windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL) {
@@ -1511,7 +1751,7 @@ object Win32NativeWindowHost {
                 }
                 setWindowClientSize(windowImpl, windowImpl.getWindowSize())
             }
-            if (windowImpl.isFullscreen() && !isWindowFullscreenActive) {
+            if (isPrimary && windowImpl.isFullscreen() && !isWindowFullscreenActive) {
                 if (windowImpl.hasExplicitWindowPosition()) {
                     val pos = windowImpl.getWindowPosition()
                     SetWindowPos(
@@ -1531,7 +1771,7 @@ object Win32NativeWindowHost {
                     targetElementWidget = windowImpl.getFullscreenElement()?.nativeWidget as? DesktopNativeWidget
                 )
             }
-            if (visualTestMode) {
+            if (visualTestMode || !windowImpl.showInTaskbar) {
                 ShowWindow(existingHwnd, SW_SHOWNOACTIVATE)
             } else {
                 ShowWindow(existingHwnd, SW_SHOW)
@@ -1547,10 +1787,10 @@ object Win32NativeWindowHost {
     }
 
     fun setWindowAlwaysOnTop(windowImpl: WindowsWindowNativeImpl, alwaysOnTop: Boolean) {
-        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
+        if (!hasWindow(windowImpl)) return
         GenericUiThreading.runOnUi {
-            val hwnd = activeHwnd ?: return@runOnUi
-            if (activeWindowImpl !== windowImpl || IsWindow(hwnd) == 0) return@runOnUi
+            val hwnd = resolveHwndForWindow(windowImpl) ?: return@runOnUi
+            if (IsWindow(hwnd) == 0) return@runOnUi
             SetWindowPos(
                 hwnd,
                 if (alwaysOnTop) HWND_TOPMOST else HWND_NOTOPMOST,
@@ -1564,16 +1804,21 @@ object Win32NativeWindowHost {
     }
 
     fun setWindowAspectRatio(windowImpl: WindowsWindowNativeImpl, aspectRatio: Double?) {
-        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
-        activeWindowAspectRatio = aspectRatio
+        if (activeWindowImpl === windowImpl) {
+            activeWindowAspectRatio = aspectRatio
+        } else {
+            secondaryWindowHwnds[windowImpl]?.let { secHwnd ->
+                secondaryWindowAspectRatios[secHwnd.toLong()] = aspectRatio
+            }
+        }
     }
 
     fun setWindowClientSize(windowImpl: WindowsWindowNativeImpl, clientSize: Size) {
-        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
+        if (!hasWindow(windowImpl)) return
         GenericUiThreading.runOnUi {
-            val hwnd = activeHwnd ?: return@runOnUi
-            if (activeWindowImpl !== windowImpl || IsWindow(hwnd) == 0) return@runOnUi
-            if (isFullscreenActiveForMainWindow() || IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0) return@runOnUi
+            val hwnd = resolveHwndForWindow(windowImpl) ?: return@runOnUi
+            if (IsWindow(hwnd) == 0) return@runOnUi
+            if (isFullscreenForWindow(hwnd, windowImpl) || IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0) return@runOnUi
             memScoped {
                 val winRect = alloc<RECT>()
                 val clientRect = alloc<RECT>()
@@ -1585,8 +1830,8 @@ object Win32NativeWindowHost {
                 if (curClientW == clientSize.width && curClientH == clientSize.height) {
                     return@runOnUi
                 }
-                val frameW = ((winRect.right - winRect.left) - curClientW).coerceAtLeast(0)
-                val frameH = ((winRect.bottom - winRect.top) - curClientH).coerceAtLeast(0)
+                val frameW = if (windowImpl.isUndecorated()) 0 else ((winRect.right - winRect.left) - curClientW).coerceAtLeast(0)
+                val frameH = if (windowImpl.isUndecorated()) 0 else ((winRect.bottom - winRect.top) - curClientH).coerceAtLeast(0)
                 val (minTrackW, minTrackH) = resolveMinWindowTrackSize(hwnd)
                 val targetWinW = maxOf(clientSize.width + frameW, minTrackW)
                 val targetWinH = maxOf(clientSize.height + frameH, minTrackH)
@@ -1604,19 +1849,24 @@ object Win32NativeWindowHost {
     }
 
     fun setWindowState(windowImpl: WindowsWindowNativeImpl, state: WindowState) {
-        if (activeWindowImpl !== windowImpl && activeWindowImpl != null) return
+        if (!hasWindow(windowImpl)) return
         GenericUiThreading.runOnUi {
-            val hwnd = activeHwnd ?: return@runOnUi
-            if (activeWindowImpl !== windowImpl || IsWindow(hwnd) == 0) return@runOnUi
+            val hwnd = resolveHwndForWindow(windowImpl) ?: return@runOnUi
+            if (IsWindow(hwnd) == 0) return@runOnUi
+            val isPrimary = hwnd == activeHwnd
             when (state) {
                 WindowState.MINIMIZED -> ShowWindow(hwnd, SW_MINIMIZE)
                 WindowState.MAXIMIZED -> ShowWindow(hwnd, SW_MAXIMIZE)
                 WindowState.FULLSCREEN -> {
                     val targetWidget = windowImpl.getFullscreenElement()?.nativeWidget as? DesktopNativeWidget
-                    setWindowFullscreen(windowImpl, true, targetWidget)
+                    if (isPrimary) {
+                        setWindowFullscreen(windowImpl, true, targetWidget)
+                    } else {
+                        ShowWindow(hwnd, SW_MAXIMIZE)
+                    }
                 }
-                WindowState.NORMAL, WindowState.PICTURE_IN_PICTURE -> {
-                    if (isWindowFullscreenActive) {
+                WindowState.NORMAL -> {
+                    if (isPrimary && isWindowFullscreenActive) {
                         setWindowFullscreen(windowImpl, false, null)
                     }
                     if (IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0) {
@@ -1631,19 +1881,25 @@ object Win32NativeWindowHost {
         windowImpl: WindowsWindowNativeImpl,
         startHidden: Boolean = !windowImpl.isVisible()
     ) {
-        val existingHwnd = activeHwnd
-        if (existingHwnd != null && activeWindowImpl === windowImpl && IsWindow(existingHwnd) != 0) {
+        val existingHwnd = resolveHwndForWindow(windowImpl)
+        if (existingHwnd != null && IsWindow(existingHwnd) != 0) {
             SetWindowTextW(existingHwnd, windowImpl.getTitle().ifBlank { "GenericUI" })
             setWindowAlwaysOnTop(windowImpl, windowImpl.isAlwaysOnTop())
-            activeWindowAspectRatio = windowImpl.getAspectRatio()
+            setWindowAspectRatio(windowImpl, windowImpl.getAspectRatio())
+            syncWindowUndecorated(windowImpl, windowImpl.isUndecorated())
             setWindowVisible(windowImpl, !startHidden)
             return
         }
         Win32WinMain.initializeFromProcessStartup()
-        activeWindowImpl = windowImpl
-        activeWindowAspectRatio = windowImpl.getAspectRatio()
-        monitorRefreshRateHz = queryMonitorRefreshRateHz()
-        lastMultiWindowVisibilityState = null
+        val isPrimary = activeWindowImpl == null || activeWindowImpl === windowImpl ||
+            activeHwnd == null || IsWindow(activeHwnd) == 0
+        if (isPrimary) {
+            activeWindowImpl = windowImpl
+            activeWindowAspectRatio = windowImpl.getAspectRatio()
+            activeWindowLastIconic = false
+            monitorRefreshRateHz = queryMonitorRefreshRateHz()
+            lastMultiWindowVisibilityState = null
+        }
 
         memScoped {
             val hInstance = Win32WinMain.hInstance ?: GetModuleHandleW(null)
@@ -1667,33 +1923,46 @@ object Win32NativeWindowHost {
                 windowClassRegistered = true
             }
 
+            val isUndecorated = windowImpl.isUndecorated()
+            val showInTaskbar = windowImpl.showInTaskbar
             val minSize = windowImpl.getMinWindowSize()
             val attrMinW = (windowImpl.nativeWidget.attributes["minWidthPx"] as? Number)?.toInt() ?: 0
             val attrMinH = (windowImpl.nativeWidget.attributes["minHeightPx"] as? Number)?.toInt() ?: 0
             val minWidthPx = maxOf(minSize?.width ?: 0, attrMinW)
             val minHeightPx = maxOf(minSize?.height ?: 0, attrMinH)
             val size = windowImpl.getWindowSize()
-            val hasAspect = activeWindowAspectRatio != null
-            val clientW = maxOf(size.width, minWidthPx, 320)
-            val clientH = maxOf(size.height, minHeightPx, 240)
+            val hasAspect = windowImpl.getAspectRatio() != null
+            val fallbackMinW = if (isUndecorated) 120 else 320
+            val fallbackMinH = if (isUndecorated) 80 else 240
+            val clientW = maxOf(size.width, minWidthPx, fallbackMinW)
+            val clientH = maxOf(size.height, minHeightPx, fallbackMinH)
             val title = windowImpl.getTitle().ifBlank { "GenericUI" }
 
-            val initialStyle = if (visualTestMode || startHidden) {
-                (WS_OVERLAPPEDWINDOW or WS_CLIPCHILDREN).toUInt()
+            val baseStyle = if (isUndecorated) {
+                WS_POPUP.toLong() or WS_THICKFRAME.toLong() or WS_CLIPCHILDREN.toLong()
             } else {
-                (WS_OVERLAPPEDWINDOW or WS_VISIBLE or WS_CLIPCHILDREN).toUInt()
+                WS_OVERLAPPEDWINDOW.toLong() or WS_CLIPCHILDREN.toLong()
             }
-            val initialExStyle = WS_EX_APPWINDOW.toUInt() or
+            val initialStyle = if (visualTestMode || startHidden) {
+                baseStyle.toUInt()
+            } else {
+                (baseStyle or WS_VISIBLE.toLong()).toUInt()
+            }
+            val initialExStyle = (if (!showInTaskbar) Win32HwndHandle.WS_EX_TOOLWINDOW else WS_EX_APPWINDOW.toLong()).toUInt() or
                 (if (windowImpl.isAlwaysOnTop()) WS_EX_TOPMOST.toUInt() else 0u)
-            val outerAdjust = alloc<RECT>().apply {
-                left = 0
-                top = 0
-                right = clientW
-                bottom = clientH
+            val (width, height) = if (isUndecorated) {
+                clientW to clientH
+            } else {
+                val outerAdjust = alloc<RECT>().apply {
+                    left = 0
+                    top = 0
+                    right = clientW
+                    bottom = clientH
+                }
+                AdjustWindowRectEx(outerAdjust.ptr, initialStyle, 0, initialExStyle)
+                (outerAdjust.right - outerAdjust.left).coerceAtLeast(clientW) to
+                    (outerAdjust.bottom - outerAdjust.top).coerceAtLeast(clientH)
             }
-            AdjustWindowRectEx(outerAdjust.ptr, initialStyle, 0, initialExStyle)
-            val width = (outerAdjust.right - outerAdjust.left).coerceAtLeast(clientW)
-            val height = (outerAdjust.bottom - outerAdjust.top).coerceAtLeast(clientH)
             val hasExplicitPos = windowImpl.hasExplicitWindowPosition()
             val explicitPos = windowImpl.getWindowPosition()
             val initialX = if (hasExplicitPos) explicitPos.x.toInt() else CW_USEDEFAULT
@@ -1712,10 +1981,19 @@ object Win32NativeWindowHost {
                 hInstance = hInstance,
                 lpParam = null
             )
-            activeHwnd = hwnd
+            if (isPrimary) {
+                activeHwnd = hwnd
+            } else if (hwnd != null) {
+                secondaryWindowHwnds[windowImpl] = hwnd
+                hwndToSecondaryWindow[hwnd.toLong()] = windowImpl
+                secondaryWindowAspectRatios[hwnd.toLong()] = windowImpl.getAspectRatio()
+                secondaryWindowIconicState[hwnd.toLong()] = false
+            }
             if (hwnd != null) {
                 WindowsUiThreadDispatcherNativeImpl.attachCurrentThreadAsUiThread()
-                WindowsSystemTrayNativeImpl.syncActiveTrayIcon()
+                if (isPrimary) {
+                    WindowsSystemTrayNativeImpl.syncActiveTrayIcon()
+                }
                 applyWindowsImmersiveTitleBarTheme(hwnd, isWindowsSystemDarkTheme())
                 appIconBig?.let { icon ->
                     SendMessageW(hwnd, WM_SETICON.toUInt(), ICON_BIG.toULong(), icon.toLong())
@@ -1723,10 +2001,12 @@ object Win32NativeWindowHost {
                 appIconSmall?.let { icon ->
                     SendMessageW(hwnd, WM_SETICON.toUInt(), ICON_SMALL.toULong(), icon.toLong())
                 }
-                val hMenuBar = buildWin32MenuBar(windowImpl)
-                if (hMenuBar != null) {
-                    SetMenu(hwnd, hMenuBar)
-                    DrawMenuBar(hwnd)
+                if (isPrimary && !isUndecorated) {
+                    val hMenuBar = buildWin32MenuBar(windowImpl)
+                    if (hMenuBar != null) {
+                        SetMenu(hwnd, hMenuBar)
+                        DrawMenuBar(hwnd)
+                    }
                 }
                 val zInsertAfter = if (windowImpl.isAlwaysOnTop()) HWND_TOPMOST else HWND_TOP
                 if (startHidden) {
@@ -1737,9 +2017,9 @@ object Win32NativeWindowHost {
                         0,
                         0,
                         0,
-                        (SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE).toUInt()
+                        (SWP_NOMOVE or SWP_NOSIZE or SWP_NOACTIVATE or SWP_FRAMECHANGED).toUInt()
                     )
-                    run {
+                    if (isPrimary) {
                         val wr = alloc<RECT>()
                         if (GetWindowRect(hwnd, wr.ptr) != 0) {
                             savedWindowRect = intArrayOf(
@@ -1753,9 +2033,11 @@ object Win32NativeWindowHost {
                     ShowWindow(hwnd, SW_HIDE)
                 } else if (visualTestMode) {
                     ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-                    syncMultiWindowDocks()
-                    syncActiveDialogWindows()
-                    if (lastMultiWindowVisibilityState != true) {
+                    if (isPrimary) {
+                        syncMultiWindowDocks()
+                        syncActiveDialogWindows()
+                    }
+                    if (!isPrimary || lastMultiWindowVisibilityState != true) {
                         val posFlags = (if (hasExplicitPos) 0 else SWP_NOMOVE) or
                             SWP_SHOWWINDOW or SWP_FRAMECHANGED or SWP_NOACTIVATE
                         SetWindowPos(
@@ -1768,7 +2050,7 @@ object Win32NativeWindowHost {
                             posFlags.toUInt()
                         )
                     }
-                    run {
+                    if (isPrimary) {
                         val wr = alloc<RECT>()
                         if (GetWindowRect(hwnd, wr.ptr) != 0) {
                             savedWindowRect = intArrayOf(
@@ -1782,7 +2064,7 @@ object Win32NativeWindowHost {
                     if (hasAspect && !windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL) {
                         setWindowClientSize(windowImpl, windowImpl.getWindowSize())
                     }
-                    if (windowImpl.isFullscreen() && !isWindowFullscreenActive) {
+                    if (isPrimary && windowImpl.isFullscreen() && !isWindowFullscreenActive) {
                         setWindowFullscreen(
                             windowImpl = windowImpl,
                             fullscreen = true,
@@ -1792,13 +2074,18 @@ object Win32NativeWindowHost {
                     InvalidateRect(hwnd, null, 1)
                     UpdateWindow(hwnd)
                 } else {
-                    ShowWindow(hwnd, Win32WinMain.nCmdShow)
-                    ShowWindow(hwnd, SW_SHOWNORMAL)
-                    syncMultiWindowDocks()
-                    syncActiveDialogWindows()
-                    if (lastMultiWindowVisibilityState != true) {
+                    if (isPrimary) {
+                        ShowWindow(hwnd, Win32WinMain.nCmdShow)
+                        ShowWindow(hwnd, SW_SHOWNORMAL)
+                        syncMultiWindowDocks()
+                        syncActiveDialogWindows()
+                    } else {
+                        ShowWindow(hwnd, if (!showInTaskbar || isUndecorated) SW_SHOWNOACTIVATE else SW_SHOWNORMAL)
+                    }
+                    if (!isPrimary || lastMultiWindowVisibilityState != true) {
+                        val noActivateFlag = if (!showInTaskbar || isUndecorated) SWP_NOACTIVATE else 0
                         val posFlags = (if (hasExplicitPos) 0 else SWP_NOMOVE) or
-                            SWP_SHOWWINDOW or SWP_FRAMECHANGED
+                            SWP_SHOWWINDOW or SWP_FRAMECHANGED or noActivateFlag
                         SetWindowPos(
                             hwnd,
                             zInsertAfter,
@@ -1809,7 +2096,7 @@ object Win32NativeWindowHost {
                             posFlags.toUInt()
                         )
                     }
-                    run {
+                    if (isPrimary) {
                         val wr = alloc<RECT>()
                         if (GetWindowRect(hwnd, wr.ptr) != 0) {
                             savedWindowRect = intArrayOf(
@@ -1823,16 +2110,18 @@ object Win32NativeWindowHost {
                     if (hasAspect && !windowImpl.isFullscreen() && windowImpl.getWindowState() == WindowState.NORMAL) {
                         setWindowClientSize(windowImpl, windowImpl.getWindowSize())
                     }
-                    if (windowImpl.isFullscreen() && !isWindowFullscreenActive) {
+                    if (isPrimary && windowImpl.isFullscreen() && !isWindowFullscreenActive) {
                         setWindowFullscreen(
                             windowImpl = windowImpl,
                             fullscreen = true,
                             targetElementWidget = windowImpl.getFullscreenElement()?.nativeWidget as? DesktopNativeWidget
                         )
                     }
-                    BringWindowToTop(hwnd)
-                    SetForegroundWindow(hwnd)
-                    SetFocus(hwnd)
+                    if (isPrimary) {
+                        BringWindowToTop(hwnd)
+                        SetForegroundWindow(hwnd)
+                        SetFocus(hwnd)
+                    }
                     InvalidateRect(hwnd, null, 1)
                     UpdateWindow(hwnd)
                 }
@@ -1951,8 +2240,32 @@ object Win32NativeWindowHost {
     var visualTestMode: Boolean = false
     var visualTestBannerText: String? = null
 
+    private fun pollWindowIconicStateTransitions() {
+        val mainHwnd = activeHwnd
+        val mainWin = activeWindowImpl
+        if (mainHwnd != null && mainWin != null && IsWindow(mainHwnd) != 0) {
+            val iconicNow = IsIconic(mainHwnd) != 0
+            if (iconicNow != activeWindowLastIconic) {
+                activeWindowLastIconic = iconicNow
+                handleWindowResize(mainHwnd, sizeType = if (iconicNow) 1 else -1)
+            }
+        }
+        for ((secWin, secHwnd) in secondaryWindowHwnds.entries.toList()) {
+            if (IsWindow(secHwnd) == 0) continue
+            val hwndKey = secHwnd.toLong()
+            val iconicNow = IsIconic(secHwnd) != 0
+            val prevIconic = secondaryWindowIconicState[hwndKey] ?: false
+            if (iconicNow != prevIconic) {
+                secondaryWindowIconicState[hwndKey] = iconicNow
+                handleWindowResize(secHwnd, sizeType = if (iconicNow) 1 else -1)
+            } else if (iconicNow && secWin.getWindowState() != WindowState.MINIMIZED) {
+                handleWindowResize(secHwnd, sizeType = 1)
+            }
+        }
+    }
+
     fun stepLiveVBlankFrame(nowMsOverride: Double? = null): Boolean = memScoped {
-        val hwnd = activeHwnd ?: return@memScoped false
+        val hwnd = activeHwnd ?: if (secondaryWindowHwnds.isEmpty()) return@memScoped false else null
         val nowMs = nowMsOverride ?: run {
             val qpcFreq = alloc<LARGE_INTEGER>()
             val qpcCounter = alloc<LARGE_INTEGER>()
@@ -1961,29 +2274,49 @@ object Win32NativeWindowHost {
             QueryPerformanceCounter(qpcCounter.ptr)
             qpcCounter.QuadPart.toDouble() / ticksPerMs
         }
-        isDispatchingVBlank = true
-        vblankTreeInvalidated = false
-        overlayMutatedDuringVBlank = false
-        val anyVBlank = try {
-            dispatchActiveVBlankWidgets(activeWindowImpl?.nativeWidget, nowMs)
-        } finally {
-            isDispatchingVBlank = false
-        }
-        if (anyVBlank || vblankTreeInvalidated || overlayMutatedDuringVBlank) {
-            val vr = lastRenderedVideoStageRect
-            if (vr[2] > vr[0] && vr[3] > vr[1]) {
-                markVideoStageDirty(hwnd)
-            } else {
-                isVBlankVideoStageOnlyRepaint = false
-                InvalidateRect(hwnd, null, 0)
+        var anyOverall = false
+        if (hwnd != null) {
+            isDispatchingVBlank = true
+            vblankTreeInvalidated = false
+            overlayMutatedDuringVBlank = false
+            val anyVBlank = try {
+                dispatchActiveVBlankWidgets(activeWindowImpl?.nativeWidget, nowMs)
+            } finally {
+                isDispatchingVBlank = false
             }
-            UpdateWindow(hwnd)
+            if (anyVBlank || vblankTreeInvalidated || overlayMutatedDuringVBlank) {
+                anyOverall = true
+                val vr = lastRenderedVideoStageRect
+                if (vr[2] > vr[0] && vr[3] > vr[1]) {
+                    markVideoStageDirty(hwnd)
+                } else {
+                    isVBlankVideoStageOnlyRepaint = false
+                    InvalidateRect(hwnd, null, 0)
+                }
+                UpdateWindow(hwnd)
+            }
         }
-        anyVBlank
+        for ((secWin, secHwnd) in secondaryWindowHwnds.entries.toList()) {
+            if (IsWindow(secHwnd) == 0 || IsWindowVisible(secHwnd) == 0) continue
+            isDispatchingVBlank = true
+            vblankTreeInvalidated = false
+            overlayMutatedDuringVBlank = false
+            val secVBlank = try {
+                dispatchActiveVBlankWidgets(secWin.nativeWidget, nowMs)
+            } finally {
+                isDispatchingVBlank = false
+            }
+            if (secVBlank || vblankTreeInvalidated || overlayMutatedDuringVBlank) {
+                anyOverall = true
+                InvalidateRect(secHwnd, null, 0)
+                UpdateWindow(secHwnd)
+            }
+        }
+        anyOverall
     }
 
     fun pumpVisualWindowEvents(durationMs: Long = 32L) = memScoped {
-        val hwnd = activeHwnd ?: return@memScoped
+        if (activeHwnd == null && secondaryWindowHwnds.isEmpty()) return@memScoped
         val qpcFreq = alloc<LARGE_INTEGER>()
         val qpcCounter = alloc<LARGE_INTEGER>()
         QueryPerformanceFrequency(qpcFreq.ptr)
@@ -2005,6 +2338,7 @@ object Win32NativeWindowHost {
                 TranslateMessage(msg.ptr)
                 DispatchMessageW(msg.ptr)
             }
+            pollWindowIconicStateTransitions()
             QueryPerformanceCounter(qpcCounter.ptr)
             val nowMs = qpcCounter.QuadPart.toDouble() / ticksPerMs
             isDispatchingVBlank = true
@@ -2035,6 +2369,21 @@ object Win32NativeWindowHost {
                 activeHwnd?.let { markVideoStageDirty(it) }
             }
             activeHwnd?.let { UpdateWindow(it) }
+            for ((secWin, secHwnd) in secondaryWindowHwnds.entries.toList()) {
+                if (IsWindow(secHwnd) == 0 || IsWindowVisible(secHwnd) == 0) continue
+                isDispatchingVBlank = true
+                vblankTreeInvalidated = false
+                overlayMutatedDuringVBlank = false
+                val secVBlank = try {
+                    dispatchActiveVBlankWidgets(secWin.nativeWidget, nowMs)
+                } finally {
+                    isDispatchingVBlank = false
+                }
+                if (secVBlank || vblankTreeInvalidated || overlayMutatedDuringVBlank) {
+                    InvalidateRect(secHwnd, null, 0)
+                }
+                UpdateWindow(secHwnd)
+            }
             for (panelHwnd in panelHwnds.values) {
                 if (IsWindowVisible(panelHwnd) != 0) {
                     UpdateWindow(panelHwnd)
@@ -2048,10 +2397,19 @@ object Win32NativeWindowHost {
             if (nowMs - startMs < durationMs) {
                 Sleep(4u)
             }
-        } while (nowMs - startMs < durationMs && activeHwnd != null)
+        } while (nowMs - startMs < durationMs && (activeHwnd != null || secondaryWindowHwnds.isNotEmpty()))
     }
 
     fun closeAllVisualWindows() {
+        for (secHwnd in secondaryWindowHwnds.values.toList()) {
+            if (IsWindow(secHwnd) != 0) {
+                DestroyWindow(secHwnd)
+            }
+        }
+        secondaryWindowHwnds.clear()
+        hwndToSecondaryWindow.clear()
+        secondaryWindowAspectRatios.clear()
+        secondaryWindowIconicState.clear()
         for (dialogHwnd in dialogHwnds.values.toList()) {
             if (IsWindow(dialogHwnd) != 0) {
                 DestroyWindow(dialogHwnd)
@@ -2079,8 +2437,7 @@ object Win32NativeWindowHost {
             pumpVisualWindowEvents(64L)
             return@memScoped
         }
-        val hwnd = activeHwnd ?: return@memScoped
-        WindowsUiThreadDispatcherNativeImpl.attachCurrentThreadAsUiThread()
+        WindowsHeadlessTrayLoop.resetQuitFlag()
         monitorRefreshRateHz = queryMonitorRefreshRateHz()
         val targetFrameIntervalMs = 1000.0 / monitorRefreshRateHz.toDouble()
 
@@ -2096,12 +2453,29 @@ object Win32NativeWindowHost {
         val nextMoveMsg = alloc<MSG>()
         var running = true
 
-        ensureOverlayInvalidationListenerInstalled()
+        while (running && !WindowsHeadlessTrayLoop.isQuitRequested) {
+            val hwnd = activeHwnd
+            if (hwnd == null) {
+                if (!WindowsSystemTrayNativeImpl.hasActiveTray()) {
+                    return@memScoped
+                }
+                val quitFromHeadless = WindowsHeadlessTrayLoop.runHeadlessPumpIfActive()
+                if (quitFromHeadless || activeHwnd == null) {
+                    return@memScoped
+                }
+                QueryPerformanceCounter(qpcCounter.ptr)
+                lastFrameTimeMs = qpcCounter.QuadPart.toDouble() / ticksPerMs
+                continue
+            }
+            WindowsUiThreadDispatcherNativeImpl.attachCurrentThreadAsUiThread()
+            WindowsSystemTrayNativeImpl.syncActiveTrayIcon()
+            ensureOverlayInvalidationListenerInstalled()
 
-        while (running) {
+            while (running && !WindowsHeadlessTrayLoop.isQuitRequested) {
             var drainedMessages = 0
             while (PeekMessageW(msg.ptr, null, 0u, 0u, PM_REMOVE.toUInt()) != 0) {
                 if (msg.message == WM_QUIT.toUInt()) {
+                    WindowsHeadlessTrayLoop.requestQuit()
                     running = false
                     break
                 }
@@ -2164,7 +2538,9 @@ object Win32NativeWindowHost {
                     break
                 }
             }
-            if (!running || activeHwnd == null) break
+            if (!running || WindowsHeadlessTrayLoop.isQuitRequested || (activeHwnd == null && secondaryWindowHwnds.isEmpty())) break
+
+            pollWindowIconicStateTransitions()
 
             QueryPerformanceCounter(qpcCounter.ptr)
             val nowMs = qpcCounter.QuadPart.toDouble() / ticksPerMs
@@ -2209,14 +2585,32 @@ object Win32NativeWindowHost {
                     hudAlphaAnimating = true
                 }
                 if (anyVBlankDispatched || vblankTreeInvalidated || overlayMutatedDuringVBlank || hudTimedOut || hudAlphaAnimating) {
-                    val vr = lastRenderedVideoStageRect
-                    if (vr[2] > vr[0] && vr[3] > vr[1]) {
-                        markVideoStageDirty(hwnd)
-                    } else {
-                        isVBlankVideoStageOnlyRepaint = false
-                        InvalidateRect(hwnd, null, 0)
+                    val mainHwndNow = activeHwnd
+                    if (mainHwndNow != null && IsWindow(mainHwndNow) != 0) {
+                        val vr = lastRenderedVideoStageRect
+                        if (vr[2] > vr[0] && vr[3] > vr[1]) {
+                            markVideoStageDirty(mainHwndNow)
+                        } else {
+                            isVBlankVideoStageOnlyRepaint = false
+                            InvalidateRect(mainHwndNow, null, 0)
+                        }
+                        UpdateWindow(mainHwndNow)
                     }
-                    UpdateWindow(hwnd)
+                }
+                for ((secWin, secHwnd) in secondaryWindowHwnds.entries.toList()) {
+                    if (IsWindow(secHwnd) == 0 || IsWindowVisible(secHwnd) == 0) continue
+                    isDispatchingVBlank = true
+                    vblankTreeInvalidated = false
+                    overlayMutatedDuringVBlank = false
+                    val secVBlank = try {
+                        dispatchActiveVBlankWidgets(secWin.nativeWidget, nowMs)
+                    } finally {
+                        isDispatchingVBlank = false
+                    }
+                    if (secVBlank || vblankTreeInvalidated || overlayMutatedDuringVBlank) {
+                        InvalidateRect(secHwnd, null, 0)
+                        UpdateWindow(secHwnd)
+                    }
                 }
             } else {
                 val remainingMs = targetFrameIntervalMs - elapsedMs
@@ -2231,6 +2625,10 @@ object Win32NativeWindowHost {
                 if (!hasActiveVBlank && waitRes == 0u && PeekMessageW(msg.ptr, null, 0u, 0u, PM_NOREMOVE.toUInt()) == 0) {
                     Sleep(1u)
                 }
+            }
+            }
+            if (!running || WindowsHeadlessTrayLoop.isQuitRequested || !WindowsSystemTrayNativeImpl.hasActiveTray()) {
+                break
             }
         }
     }
@@ -2941,12 +3339,14 @@ object Win32NativeWindowHost {
     private var cachedDpiScaleValue: Float = 1f
 
     fun resolveMinWindowTrackSize(hwnd: HWND? = activeHwnd): Pair<Int, Int> {
-        val winImpl = activeWindowImpl
+        val winImpl = resolveWindowForHwnd(hwnd) ?: activeWindowImpl
         val minSize = winImpl?.getMinWindowSize()
         val attrMinW = (winImpl?.nativeWidget?.attributes?.get("minWidthPx") as? Number)?.toInt() ?: 0
         val attrMinH = (winImpl?.nativeWidget?.attributes?.get("minHeightPx") as? Number)?.toInt() ?: 0
-        val rawMinW = maxOf(320, minSize?.width ?: 0, attrMinW)
-        val rawMinH = maxOf(240, minSize?.height ?: 0, attrMinH)
+        val defaultMinW = if (winImpl?.isUndecorated() == true) 120 else 320
+        val defaultMinH = if (winImpl?.isUndecorated() == true) 80 else 240
+        val rawMinW = maxOf(defaultMinW, minSize?.width ?: 0, attrMinW)
+        val rawMinH = maxOf(defaultMinH, minSize?.height ?: 0, attrMinH)
         val dpiScale = if (hwnd != null) {
             val hwndKey = hwnd.toLong()
             if (hwndKey == cachedDpiScaleHwndKey) {
@@ -2966,17 +3366,23 @@ object Win32NativeWindowHost {
         return (rawMinW * dpiScale).roundToInt() to (rawMinH * dpiScale).roundToInt()
     }
 
-    fun handleWindowResize(hwnd: HWND) = memScoped {
-        if (hwnd != activeHwnd) return@memScoped
+    fun handleWindowResize(hwnd: HWND, sizeType: Int = -1) = memScoped {
+        val winImpl = resolveWindowForHwnd(hwnd) ?: return@memScoped
+        val isFs = isFullscreenForWindow(hwnd, winImpl)
+        val iconic = (sizeType == 1 /* SIZE_MINIMIZED */) || (IsIconic(hwnd) != 0)
+        val zoomed = (sizeType == 2 /* SIZE_MAXIMIZED */) || (!iconic && IsZoomed(hwnd) != 0)
+        if (hwnd == activeHwnd) {
+            activeWindowLastIconic = iconic
+        } else {
+            secondaryWindowIconicState[hwnd.toLong()] = iconic
+        }
         val rect = alloc<RECT>()
-        if (GetClientRect(hwnd, rect.ptr) != 0) {
-            val w = (rect.right - rect.left).coerceAtLeast(1)
-            val h = (rect.bottom - rect.top).coerceAtLeast(1)
-            val isFs = isFullscreenActiveForMainWindow()
-            val zoomed = IsZoomed(hwnd) != 0
-            val iconic = IsIconic(hwnd) != 0
+        val hasClientRect = GetClientRect(hwnd, rect.ptr) != 0
+        val w = if (hasClientRect) (rect.right - rect.left).coerceAtLeast(1) else winImpl.getWindowSize().width
+        val h = if (hasClientRect) (rect.bottom - rect.top).coerceAtLeast(1) else winImpl.getWindowSize().height
+        if (hasClientRect || iconic) {
             runCatching {
-                activeWindowImpl?.syncHostWindowStateAndSize(
+                winImpl.syncHostWindowStateAndSize(
                     widthPx = w,
                     heightPx = h,
                     fullscreenNow = isFs,
@@ -2988,9 +3394,8 @@ object Win32NativeWindowHost {
     }
 
     fun handleWindowMove(hwnd: HWND) = memScoped {
-        if (hwnd != activeHwnd) return@memScoped
-        val winImpl = activeWindowImpl ?: return@memScoped
-        if (IsWindowVisible(hwnd) == 0 || isFullscreenActiveForMainWindow() || winImpl.isFullscreen() ||
+        val winImpl = resolveWindowForHwnd(hwnd) ?: return@memScoped
+        if (IsWindowVisible(hwnd) == 0 || isFullscreenForWindow(hwnd, winImpl) ||
             IsZoomed(hwnd) != 0 || IsIconic(hwnd) != 0 || winImpl.getWindowState() != WindowState.NORMAL
         ) {
             return@memScoped
@@ -2999,12 +3404,14 @@ object Win32NativeWindowHost {
         if (GetWindowRect(hwnd, r.ptr) != 0) {
             val x = r.left
             val y = r.top
-            savedWindowRect = intArrayOf(
-                x,
-                y,
-                (r.right - r.left).coerceAtLeast(320),
-                (r.bottom - r.top).coerceAtLeast(240)
-            )
+            if (hwnd == activeHwnd) {
+                savedWindowRect = intArrayOf(
+                    x,
+                    y,
+                    (r.right - r.left).coerceAtLeast(320),
+                    (r.bottom - r.top).coerceAtLeast(240)
+                )
+            }
             GenericUiThreading.runOnLogic {
                 winImpl.notifyHostPositionChanged(x, y)
             }
@@ -3068,10 +3475,12 @@ object Win32NativeWindowHost {
     }
 
     internal fun handleWindowSizing(hwnd: HWND, edge: Int, rectPtr: CPointer<RECT>): Boolean = memScoped {
-        if (!isMainHostWindow(hwnd)) return@memScoped false
-        val ratio = activeWindowAspectRatio ?: activeWindowImpl?.getAspectRatio() ?: return@memScoped false
+        val winImpl = resolveWindowForHwnd(hwnd) ?: return@memScoped false
+        val ratio = (if (hwnd == activeHwnd) activeWindowAspectRatio else secondaryWindowAspectRatios[hwnd.toLong()])
+            ?: winImpl.getAspectRatio()
+            ?: return@memScoped false
         if (!ratio.isFinite() || ratio <= 0.0) return@memScoped false
-        if (isFullscreenActiveForMainWindow() || IsZoomed(hwnd) != 0) return@memScoped false
+        if (isFullscreenForWindow(hwnd, winImpl) || IsZoomed(hwnd) != 0) return@memScoped false
 
         val winRect = alloc<RECT>()
         val clientRect = alloc<RECT>()
@@ -3080,8 +3489,8 @@ object Win32NativeWindowHost {
         }
         val curClientW = (clientRect.right - clientRect.left).coerceAtLeast(1)
         val curClientH = (clientRect.bottom - clientRect.top).coerceAtLeast(1)
-        val frameW = ((winRect.right - winRect.left) - curClientW).coerceAtLeast(0)
-        val frameH = ((winRect.bottom - winRect.top) - curClientH).coerceAtLeast(0)
+        val frameW = if (winImpl.isUndecorated()) 0 else ((winRect.right - winRect.left) - curClientW).coerceAtLeast(0)
+        val frameH = if (winImpl.isUndecorated()) 0 else ((winRect.bottom - winRect.top) - curClientH).coerceAtLeast(0)
         val (minTrackW, minTrackH) = resolveMinWindowTrackSize(hwnd)
 
         adjustRectForAspectRatio(
@@ -3316,6 +3725,7 @@ object Win32NativeWindowHost {
         mouseDownX = x
         mouseDownY = y
         dragMouseMovedSinceDown = false
+        systemMoveTriggeredInMouseDown = false
         if (hwnd == activeHwnd) {
             val activeModalDialog = DesktopDialogWindowNativeImpl.activeDialogs
                 .lastOrNull { it.isModal && it.nativeWidget.visible && !it.nativeWidget.disposed }
@@ -3404,7 +3814,21 @@ object Win32NativeWindowHost {
                 buttonsMask = 1
             )
             runCatching { baseImpl?.dispatchPointerDown(downEv) }
+            if (systemMoveTriggeredInMouseDown) {
+                systemMoveTriggeredInMouseDown = false
+                activeDragRegion = null
+                pressedWidget = null
+                baseImpl?.setActivePressedState(false)
+                return
+            }
             runCatching { hit.onClick?.invoke(x, y) }
+            if (systemMoveTriggeredInMouseDown) {
+                systemMoveTriggeredInMouseDown = false
+                activeDragRegion = null
+                pressedWidget = null
+                baseImpl?.setActivePressedState(false)
+                return
+            }
             if (hit.onClick == null) {
                 runCatching { hit.onDrag?.invoke(x, y) }
             }
@@ -3613,6 +4037,23 @@ object Win32NativeWindowHost {
             }
         }
 
+        if (hit != null && hwnd != activeHwnd && isOverlayOrStageSubtree(newWidget)) {
+            val moveEv = PointerEvent(
+                x = (x - hit.left).toFloat(),
+                y = (y - hit.top).toFloat(),
+                screenX = x.toFloat(),
+                screenY = y.toFloat(),
+                button = -1,
+                buttonsMask = 0
+            )
+            for (ancestor in buildAncestorWidgetChain(newWidget)) {
+                if (isOverlayOrStageSubtree(ancestor)) {
+                    val ancestorImpl = ancestor.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                    runCatching { ancestorImpl?.dispatchPointerMove(moveEv) }
+                }
+            }
+        }
+
         if (hit === prevHit && prevWidget === newWidget) {
             updateCursorForWindow(hwnd, forceSet = false)
             if (hitSliderImpl != null && hwnd == activeHwnd && (inVideoStageNow || isHitRegionInVideoStage(hit))) {
@@ -3621,9 +4062,11 @@ object Win32NativeWindowHost {
             return
         }
 
+        var prevChain: List<DesktopNativeWidget> = emptyList()
+        var newChain: List<DesktopNativeWidget> = emptyList()
         if (prevWidget !== newWidget) {
-            val prevChain = buildAncestorWidgetChain(prevWidget)
-            val newChain = buildAncestorWidgetChain(newWidget)
+            prevChain = buildAncestorWidgetChain(prevWidget)
+            newChain = buildAncestorWidgetChain(newWidget)
             val pointerEv = PointerEvent(x = x.toFloat(), y = y.toFloat())
             for (exited in prevChain) {
                 if (exited !in newChain) {
@@ -3662,7 +4105,19 @@ object Win32NativeWindowHost {
                     lastPaintedNonOverlayVersion = -1L
                     isVBlankVideoStageOnlyRepaint = false
                 }
-                InvalidateRect(hwnd, null, 0)
+                if (!tooltipChanged &&
+                    !lastFrameHadTooltipOverlay &&
+                    (prevHit != null || hit != null) &&
+                    !hasHoverSensitiveAncestor(prevChain, prevWidget) &&
+                    !hasHoverSensitiveAncestor(newChain, newWidget)
+                ) {
+                    invalidateHitRegionBounds(hwnd, prevHit)
+                    if (hit !== prevHit) {
+                        invalidateHitRegionBounds(hwnd, hit)
+                    }
+                } else {
+                    InvalidateRect(hwnd, null, 0)
+                }
             }
         }
 
@@ -3981,9 +4436,7 @@ object Win32NativeWindowHost {
         cachedCardGridMutVer = -1L
         cachedCardGridW = 0
         cachedCardGridH = 0
-        cachedCardPageFrameHwnd = 0L
-        cachedCardPageFrameRootVer = -1L
-        cachedCardPageFramePage = null
+        invalidateCachedCardPageFrame()
     }
 
     fun paintWindow(hwnd: HWND) = memScoped {
@@ -3991,10 +4444,15 @@ object Win32NativeWindowHost {
         val hdc = BeginPaint(hwnd, ps.ptr) ?: return@memScoped
         val clientRect = alloc<RECT>()
         GetClientRect(hwnd, clientRect.ptr)
-        val clientW = max(180, clientRect.right - clientRect.left)
-        val clientH = max(90, clientRect.bottom - clientRect.top)
+        val windowForPaint = resolveWindowForHwnd(hwnd)
+        val isUndecoratedPaint = windowForPaint?.isUndecorated() == true
+        val minPaintW = if (isUndecoratedPaint) 64 else 180
+        val minPaintH = if (isUndecoratedPaint) 64 else 90
+        val clientW = max(minPaintW, clientRect.right - clientRect.left)
+        val clientH = max(minPaintH, clientRect.bottom - clientRect.top)
 
         val isMainWin = hwnd == activeHwnd
+        currentlyPaintingHwnd = hwnd
         var tempMemDc: HDC? = null
         var tempMemBmp: HBITMAP? = null
         var tempOldBmp: HGDIOBJ? = null
@@ -4107,6 +4565,7 @@ object Win32NativeWindowHost {
             currentPaintStageBreakdown = "$currentPaintStageBreakdown,preBlt=${preBltUs}us,blt=${postBltUs - preBltUs}us(${actualBltW}x${actualBltH},pres=$preservedFlag),endPaint=${postEndPaintUs - postBltUs}us,ctrl=${elapsedUs - postEndPaintUs}us"
             recordPaintMetrics(elapsedUs, isVideoStageOnly = false)
             isPaintingWindow = false
+            currentlyPaintingHwnd = null
         }
 
         // Fast path for VBlank video-stage-only partial repaints (avoids redrawing TitleBar, Navbar, and Library LazyColumn)
@@ -4117,6 +4576,10 @@ object Win32NativeWindowHost {
         val rcT = ps.rcPaint.top
         val rcR = ps.rcPaint.right
         val rcB = ps.rcPaint.bottom
+        currentPaintRcLeft = rcL
+        currentPaintRcTop = rcT
+        currentPaintRcRight = rcR
+        currentPaintRcBottom = rcB
         val stageRectValid = vr[0] >= 0 && vr[1] >= 0 &&
             vr[2] > vr[0] && vr[3] > vr[1] &&
             vr[2] <= clientW && vr[3] <= clientH
@@ -4182,6 +4645,7 @@ object Win32NativeWindowHost {
                 currentPaintStageBreakdown = "vFast($currentPaintStageBreakdown,pre=${preStageUs}us,stage=${postStageUs - preStageUs}us,blt=${postBltUs - postStageUs}us[${bltW}x${bltH}],end=${elapsedUs - postBltUs}us)"
                 recordPaintMetrics(elapsedUs, isVideoStageOnly = true)
                 isPaintingWindow = false
+                currentlyPaintingHwnd = null
                 return@memScoped
             }
             activeMainBackBufferPreserved = false
@@ -4198,7 +4662,7 @@ object Win32NativeWindowHost {
             activeCanvasImpl = null
         }
 
-        val rootWidget = activeWindowImpl?.nativeWidget
+        val rootWidget = windowForPaint?.nativeWidget ?: activeWindowImpl?.nativeWidget
         val toolPalettes = mutableListOf<DesktopToolPaletteNativeImpl<*>>()
         val dockPanels = mutableListOf<DesktopDockPanelNativeImpl<*>>()
         val canvases = mutableListOf<DesktopNativeWidget>()
@@ -4344,9 +4808,10 @@ object Win32NativeWindowHost {
             return@memScoped
         }
 
-        if (toolPalettes.isEmpty() && dockPanels.isEmpty()) {
-            val isFullscreenActive = activeFullscreenElementWidget != null || isWindowFullscreenActive || activeWindowImpl?.isFullscreen() == true
-            val hasCustomTitleBar = hasCustomMainWindowTitleBar()
+        val secWin = hwndToSecondaryWindow[hwnd.toLong()]
+        if (secWin != null || (toolPalettes.isEmpty() && dockPanels.isEmpty())) {
+            val isFullscreenActive = isFullscreenForWindow(hwnd, windowForPaint)
+            val hasCustomTitleBar = hasCustomTitleBarForWindow(windowForPaint)
             val canPreserveMainBackBuffer = isMainWin &&
                 !isFullscreenActive &&
                 !lastFrameHadTooltipOverlay &&
@@ -4361,12 +4826,14 @@ object Win32NativeWindowHost {
                 lastFullPaintRootWidget === rootWidget
             activeMainBackBufferPreserved = canPreserveMainBackBuffer
             if (!canPreserveMainBackBuffer) {
-                cachedCardPageFrameRootVer = -1L
-                Win32WorkspaceWindowRenderUtil.clearBackBufferRegionKeys()
+                if (isMainWin) {
+                    invalidateCachedCardPageFrame()
+                    Win32WorkspaceWindowRenderUtil.clearBackBufferRegionKeys()
+                }
                 fillRectColor(memDc, 0, 0, clientW, clientH, theme.bgBase)
                 markFrameBufferDirty(0, 0, clientW, clientH)
             }
-            val mainTitleBarH = if (isFullscreenActive) {
+            val mainTitleBarH = if (isFullscreenActive || windowForPaint?.isUndecorated() == true) {
                 0
             } else {
                 renderMainWindowTitleBar(
@@ -4375,7 +4842,8 @@ object Win32NativeWindowHost {
                     theme = theme,
                     fontSmall = fontSmall,
                     fontBold = fontBold,
-                    clientW = clientW
+                    clientW = clientW,
+                    ownerWindowImpl = windowForPaint
                 )
             }
             renderGeneralApplicationLayout(
@@ -4392,10 +4860,13 @@ object Win32NativeWindowHost {
                 canvases = canvases,
                 clientW = clientW,
                 clientH = clientH,
-                bodyTop = mainTitleBarH
+                bodyTop = mainTitleBarH,
+                ownerWindowImpl = windowForPaint
             )
             if (hoverHwndKey == hwnd.toLong() && !hoveredTooltip.isNullOrBlank()) {
-                cachedCardPageFrameRootVer = -1L
+                if (isMainWin) {
+                    invalidateCachedCardPageFrame()
+                }
                 renderHoveredTooltipOverlay(memDc, fontSmall, theme, clientW, clientH)
             }
             if (isMainWin) {
@@ -4791,9 +5262,10 @@ object Win32NativeWindowHost {
         canvases: List<DesktopNativeWidget>,
         clientW: Int,
         clientH: Int,
-        bodyTop: Int = 0
+        bodyTop: Int = 0,
+        ownerWindowImpl: WindowsWindowNativeImpl? = activeWindowImpl
     ) {
-        val titleBarWidgets = collectTitleBarWidgetSet(activeWindowImpl?.getTitleBarInstructions())
+        val titleBarWidgets = collectTitleBarWidgetSet(ownerWindowImpl?.getTitleBarInstructions())
 
         val rootMutVer = if (rootWidget != null) {
             var structVer = rootWidget.nativePointer * 31L + rootWidget.children.size
@@ -5967,15 +6439,22 @@ object Win32NativeWindowHost {
                 cachedCardPageFramePage = currentPage
                 cachedCardPageFrameHeaderBottom = headerBottom
             } else {
-                cachedCardPageFrameRootVer = -1L
+                invalidateCachedCardPageFrame()
             }
         }
         val viewportTop = headerBottom + 10
         val viewportBottom = outerBottom - 12
         val viewportH = max(80, viewportBottom - viewportTop)
 
-        if (outerFrameValid) {
+        val deferScrollbarClear = outerFrameValid &&
+            activeMainBackBufferPreserved &&
+            lastCardScrollbarVisualKey != Long.MIN_VALUE &&
+            currentPaintRcRight > currentPaintRcLeft &&
+            currentPaintRcRight <= innerRight - 2 &&
+            !isDraggingCardScrollbarThumb
+        if (outerFrameValid && !deferScrollbarClear) {
             fillRectColor(hdc, innerRight, viewportTop, outerRight - 2, viewportBottom, theme.bgPanel)
+            lastCardScrollbarVisualKey = Long.MIN_VALUE
         }
 
         val useGdiViewportClip = innerCards.isEmpty()
@@ -6194,26 +6673,64 @@ object Win32NativeWindowHost {
                     val copyLeft = innerLeft.coerceIn(0, dstW)
                     val copyRight = (innerLeft + innerW).coerceIn(copyLeft, dstW)
                     val copyW = copyRight - copyLeft
+                    val canSliceRowsToRcPaint = outerFrameValid &&
+                        activeMainBackBufferPreserved &&
+                        lastCardGridBlitHwnd == hwnd.toLong() &&
+                        lastCardGridBlitMutVer == bodyMutVer &&
+                        lastCardGridBlitScrollY == cardPageScrollY &&
+                        currentPaintRcBottom > currentPaintRcTop
                     if (visBottom > visTop && copyW > 0) {
-                        if (gdiDirtySinceLastFlush) {
-                            GdiFlush()
-                            resetGdiDirtyRect()
-                        }
-                        val srcStartRow = (visTop - contentY).coerceIn(0, totalCardGridH)
-                        val rowCount = (visBottom - visTop).coerceAtMost(totalCardGridH - srcStartRow)
-                        val rowBytes = (copyW * 4).toULong()
-                        for (r in 0 until rowCount) {
-                            platform.posix.memcpy(
-                                dstPixels + (((visTop + r) * dstW + copyLeft) * 4),
-                                srcPixels + (((srcStartRow + r) * innerW) * 4),
-                                rowBytes
-                            )
-                        }
-                        if (visBottom < viewportBottom) {
-                            fillRectColor(hdc, copyLeft, visBottom, copyRight, viewportBottom, theme.bgPanel)
+                        if (canSliceRowsToRcPaint) {
+                            val dirtyVisTop = max(visTop, currentPaintRcTop - 4).coerceIn(visTop, visBottom)
+                            val dirtyVisBottom = min(visBottom, currentPaintRcBottom + 4).coerceIn(dirtyVisTop, visBottom)
+                            if (dirtyVisBottom > dirtyVisTop) {
+                                if (gdiDirtySinceLastFlush) {
+                                    GdiFlush()
+                                    resetGdiDirtyRect()
+                                }
+                                val srcStartRow = (dirtyVisTop - contentY).coerceIn(0, totalCardGridH)
+                                val rowCount = (dirtyVisBottom - dirtyVisTop).coerceAtMost(totalCardGridH - srcStartRow)
+                                val rowBytes = (copyW * 4).toULong()
+                                for (r in 0 until rowCount) {
+                                    platform.posix.memcpy(
+                                        dstPixels + (((dirtyVisTop + r) * dstW + copyLeft) * 4),
+                                        srcPixels + (((srcStartRow + r) * innerW) * 4),
+                                        rowBytes
+                                    )
+                                }
+                                markFrameBufferDirty(copyLeft, dirtyVisTop, copyRight, dirtyVisBottom)
+                            }
+                            if (visBottom < viewportBottom && currentPaintRcBottom > visBottom) {
+                                fillRectColor(hdc, copyLeft, visBottom, copyRight, viewportBottom, theme.bgPanel)
+                            }
+                        } else {
+                            if (gdiDirtySinceLastFlush) {
+                                GdiFlush()
+                                resetGdiDirtyRect()
+                            }
+                            val srcStartRow = (visTop - contentY).coerceIn(0, totalCardGridH)
+                            val rowCount = (visBottom - visTop).coerceAtMost(totalCardGridH - srcStartRow)
+                            val rowBytes = (copyW * 4).toULong()
+                            for (r in 0 until rowCount) {
+                                platform.posix.memcpy(
+                                    dstPixels + (((visTop + r) * dstW + copyLeft) * 4),
+                                    srcPixels + (((srcStartRow + r) * innerW) * 4),
+                                    rowBytes
+                                )
+                            }
+                            markFrameBufferDirty(copyLeft, visTop, copyRight, visBottom)
+                            if (visBottom < viewportBottom) {
+                                fillRectColor(hdc, copyLeft, visBottom, copyRight, viewportBottom, theme.bgPanel)
+                            }
+                            lastCardGridBlitHwnd = hwnd.toLong()
+                            lastCardGridBlitMutVer = bodyMutVer
+                            lastCardGridBlitScrollY = cardPageScrollY
                         }
                     } else if (outerFrameValid) {
                         fillRectColor(hdc, copyLeft, viewportTop, copyRight, viewportBottom, theme.bgPanel)
+                        lastCardGridBlitHwnd = hwnd.toLong()
+                        lastCardGridBlitMutVer = bodyMutVer
+                        lastCardGridBlitScrollY = cardPageScrollY
                     }
 
                     val firstVisRow = ((viewportTop - 20 - contentY) / rowStride).coerceAtLeast(0)
@@ -7122,77 +7639,10 @@ object Win32NativeWindowHost {
                 hoveredWidget === cardScrollbarThumbWidget ||
                 isRectHovered(hwnd, railLeft, viewportTop, railRight, viewportBottom)
 
-            drawRoundedRect(
-                hdc = hdc,
-                left = railLeft,
-                top = viewportTop,
-                right = railRight,
-                bottom = viewportBottom,
-                radius = 5,
-                fillColor = if (isRailHovered) theme.bgElevated else theme.bgBase,
-                borderColor = if (isRailHovered) theme.borderStrong else theme.borderSubtle
-            )
-
             val upBtnTop = viewportTop + 1
             val upBtnBottom = viewportTop + arrowBtnH
             val downBtnTop = viewportBottom - arrowBtnH
             val downBtnBottom = viewportBottom - 1
-
-            if (showArrowButtons) {
-                drawRoundedButtonBackground(
-                    hdc = hdc,
-                    left = railLeft + 1,
-                    top = upBtnTop,
-                    right = railRight - 1,
-                    bottom = upBtnBottom,
-                    bg = theme.bgCard,
-                    border = theme.borderSubtle,
-                    radius = 3,
-                    widget = cardScrollbarUpBtnWidget,
-                    hwndForHover = hwnd
-                )
-                hitRegions.add(
-                    HitRegion(
-                        left = railLeft,
-                        top = viewportTop,
-                        right = railRight,
-                        bottom = upBtnBottom,
-                        widget = cardScrollbarUpBtnWidget,
-                        onClick = { _, _ ->
-                            val next = (cardPageScrollY - 96).coerceIn(0, cardPageMaxScrollY)
-                            cardPageScrollY = next
-                            scrollViewImpl?.updateScrollPositionFromHost(0, next)
-                        }
-                    )
-                )
-
-                drawRoundedButtonBackground(
-                    hdc = hdc,
-                    left = railLeft + 1,
-                    top = downBtnTop,
-                    right = railRight - 1,
-                    bottom = downBtnBottom,
-                    bg = theme.bgCard,
-                    border = theme.borderSubtle,
-                    radius = 3,
-                    widget = cardScrollbarDownBtnWidget,
-                    hwndForHover = hwnd
-                )
-                hitRegions.add(
-                    HitRegion(
-                        left = railLeft,
-                        top = downBtnTop,
-                        right = railRight,
-                        bottom = viewportBottom,
-                        widget = cardScrollbarDownBtnWidget,
-                        onClick = { _, _ ->
-                            val next = (cardPageScrollY + 96).coerceIn(0, cardPageMaxScrollY)
-                            cardPageScrollY = next
-                            scrollViewImpl?.updateScrollPositionFromHost(0, next)
-                        }
-                    )
-                )
-            }
 
             val thumbH = max(
                 32,
@@ -7211,54 +7661,147 @@ object Win32NativeWindowHost {
                 hoveredWidget === cardScrollbarThumbWidget ||
                 isRectHovered(hwnd, railLeft - 1, thumbTop, railRight + 1, thumbBottom)
 
-            val thumbFill = when {
-                isThumbDragging -> lightenColorRef(theme.accentBlue, -18)
-                isThumbHovered -> lightenColorRef(theme.accentBlue, 28)
-                else -> theme.accentBlue
-            }
-            val thumbBorder = when {
-                isThumbDragging -> rgb(255, 255, 255)
-                isThumbHovered -> lightenColorRef(theme.accentBlueBorder, 40)
-                else -> theme.accentBlueBorder
-            }
-            val thumbInset = if (isThumbHovered || isThumbDragging) 1 else 2
-            drawRoundedRect(
-                hdc = hdc,
-                left = railLeft + thumbInset,
-                top = thumbTop,
-                right = railRight - thumbInset,
-                bottom = thumbBottom,
-                radius = 4,
-                fillColor = thumbFill,
-                borderColor = thumbBorder
-            )
-            if (thumbH >= 28) {
-                val gripMidY = (thumbTop + thumbBottom) / 2
-                val gripLeft = railLeft + 4
-                val gripRight = railRight - 4
-                val gripColor = if (isThumbHovered || isThumbDragging) {
-                    rgb(255, 255, 255)
-                } else {
-                    lightenColorRef(theme.accentBlue, 45)
+            var scrollbarVisualKey = hwnd.toLong()
+            scrollbarVisualKey = scrollbarVisualKey * 31L + cardPageScrollY
+            scrollbarVisualKey = scrollbarVisualKey * 31L + cardPageMaxScrollY
+            scrollbarVisualKey = scrollbarVisualKey * 31L + viewportTop
+            scrollbarVisualKey = scrollbarVisualKey * 31L + viewportBottom
+            scrollbarVisualKey = scrollbarVisualKey * 31L + innerRight
+            scrollbarVisualKey = scrollbarVisualKey * 31L + outerRight
+            var sbFlags = 0
+            if (theme.isDark) sbFlags = sbFlags or 1
+            if (isRailHovered) sbFlags = sbFlags or 2
+            if (isThumbHovered) sbFlags = sbFlags or 4
+            if (isThumbDragging) sbFlags = sbFlags or 8
+            if (hoveredWidget === cardScrollbarUpBtnWidget) sbFlags = sbFlags or 16
+            if (hoveredWidget === cardScrollbarDownBtnWidget) sbFlags = sbFlags or 32
+            if (pressedWidget === cardScrollbarUpBtnWidget) sbFlags = sbFlags or 64
+            if (pressedWidget === cardScrollbarDownBtnWidget) sbFlags = sbFlags or 128
+            scrollbarVisualKey = scrollbarVisualKey * 31L + sbFlags
+
+            if (!(deferScrollbarClear && scrollbarVisualKey == lastCardScrollbarVisualKey)) {
+                if (deferScrollbarClear) {
+                    fillRectColor(hdc, innerRight, viewportTop, outerRight - 2, viewportBottom, theme.bgPanel)
                 }
-                drawLineColor(hdc, gripLeft, gripMidY - 3, gripRight, gripMidY - 3, gripColor)
-                drawLineColor(hdc, gripLeft, gripMidY, gripRight, gripMidY, gripColor)
-                drawLineColor(hdc, gripLeft, gripMidY + 3, gripRight, gripMidY + 3, gripColor)
+                drawRoundedRect(
+                    hdc = hdc,
+                    left = railLeft,
+                    top = viewportTop,
+                    right = railRight,
+                    bottom = viewportBottom,
+                    radius = 5,
+                    fillColor = if (isRailHovered) theme.bgElevated else theme.bgBase,
+                    borderColor = if (isRailHovered) theme.borderStrong else theme.borderSubtle
+                )
+
+                if (showArrowButtons) {
+                    drawRoundedButtonBackground(
+                        hdc = hdc,
+                        left = railLeft + 1,
+                        top = upBtnTop,
+                        right = railRight - 1,
+                        bottom = upBtnBottom,
+                        bg = theme.bgCard,
+                        border = theme.borderSubtle,
+                        radius = 3,
+                        widget = cardScrollbarUpBtnWidget,
+                        hwndForHover = hwnd
+                    )
+                    drawRoundedButtonBackground(
+                        hdc = hdc,
+                        left = railLeft + 1,
+                        top = downBtnTop,
+                        right = railRight - 1,
+                        bottom = downBtnBottom,
+                        bg = theme.bgCard,
+                        border = theme.borderSubtle,
+                        radius = 3,
+                        widget = cardScrollbarDownBtnWidget,
+                        hwndForHover = hwnd
+                    )
+                }
+
+                val thumbFill = when {
+                    isThumbDragging -> lightenColorRef(theme.accentBlue, -18)
+                    isThumbHovered -> lightenColorRef(theme.accentBlue, 28)
+                    else -> theme.accentBlue
+                }
+                val thumbBorder = when {
+                    isThumbDragging -> rgb(255, 255, 255)
+                    isThumbHovered -> lightenColorRef(theme.accentBlueBorder, 40)
+                    else -> theme.accentBlueBorder
+                }
+                val thumbInset = if (isThumbHovered || isThumbDragging) 1 else 2
+                drawRoundedRect(
+                    hdc = hdc,
+                    left = railLeft + thumbInset,
+                    top = thumbTop,
+                    right = railRight - thumbInset,
+                    bottom = thumbBottom,
+                    radius = 4,
+                    fillColor = thumbFill,
+                    borderColor = thumbBorder
+                )
+                if (thumbH >= 28) {
+                    val gripMidY = (thumbTop + thumbBottom) / 2
+                    val gripLeft = railLeft + 4
+                    val gripRight = railRight - 4
+                    val gripColor = if (isThumbHovered || isThumbDragging) {
+                        rgb(255, 255, 255)
+                    } else {
+                        lightenColorRef(theme.accentBlue, 45)
+                    }
+                    drawLineColor(hdc, gripLeft, gripMidY - 3, gripRight, gripMidY - 3, gripColor)
+                    drawLineColor(hdc, gripLeft, gripMidY, gripRight, gripMidY, gripColor)
+                    drawLineColor(hdc, gripLeft, gripMidY + 3, gripRight, gripMidY + 3, gripColor)
+                }
+
+                if (showArrowButtons) {
+                    val arrowCx = (railLeft + railRight) / 2
+                    val upMidY = (upBtnTop + upBtnBottom) / 2
+                    for (row in 0..3) {
+                        val y = upMidY - 2 + row
+                        fillRectColor(hdc, arrowCx - row, y, arrowCx + row + 1, y + 1, theme.textPrimary)
+                    }
+                    val downMidY = (downBtnTop + downBtnBottom) / 2
+                    for (row in 0..3) {
+                        val halfSpan = 3 - row
+                        val y = downMidY - 1 + row
+                        fillRectColor(hdc, arrowCx - halfSpan, y, arrowCx + halfSpan + 1, y + 1, theme.textPrimary)
+                    }
+                }
             }
+            lastCardScrollbarVisualKey = scrollbarVisualKey
 
             if (showArrowButtons) {
-                val arrowCx = (railLeft + railRight) / 2
-                val upMidY = (upBtnTop + upBtnBottom) / 2
-                for (row in 0..3) {
-                    val y = upMidY - 2 + row
-                    fillRectColor(hdc, arrowCx - row, y, arrowCx + row + 1, y + 1, theme.textPrimary)
-                }
-                val downMidY = (downBtnTop + downBtnBottom) / 2
-                for (row in 0..3) {
-                    val halfSpan = 3 - row
-                    val y = downMidY - 1 + row
-                    fillRectColor(hdc, arrowCx - halfSpan, y, arrowCx + halfSpan + 1, y + 1, theme.textPrimary)
-                }
+                hitRegions.add(
+                    HitRegion(
+                        left = railLeft,
+                        top = viewportTop,
+                        right = railRight,
+                        bottom = upBtnBottom,
+                        widget = cardScrollbarUpBtnWidget,
+                        onClick = { _, _ ->
+                            val next = (cardPageScrollY - 96).coerceIn(0, cardPageMaxScrollY)
+                            cardPageScrollY = next
+                            scrollViewImpl?.updateScrollPositionFromHost(0, next)
+                        }
+                    )
+                )
+                hitRegions.add(
+                    HitRegion(
+                        left = railLeft,
+                        top = downBtnTop,
+                        right = railRight,
+                        bottom = viewportBottom,
+                        widget = cardScrollbarDownBtnWidget,
+                        onClick = { _, _ ->
+                            val next = (cardPageScrollY + 96).coerceIn(0, cardPageMaxScrollY)
+                            cardPageScrollY = next
+                            scrollViewImpl?.updateScrollPositionFromHost(0, next)
+                        }
+                    )
+                )
             }
 
             val maxScrollSnapshot = cardPageMaxScrollY
@@ -7319,7 +7862,7 @@ object Win32NativeWindowHost {
 
         // Modal Overlay
         if (alertModal != null) {
-            cachedCardPageFrameRootVer = -1L
+            invalidateCachedCardPageFrame()
             val modalW = min(460, clientW - 60)
             val modalH = 200
             val mLeft = (clientW - modalW) / 2
@@ -10682,13 +11225,14 @@ object Win32NativeWindowHost {
         theme: SystemThemePalette,
         fontSmall: HFONT?,
         fontBold: HFONT?,
-        clientW: Int
+        clientW: Int,
+        ownerWindowImpl: WindowsWindowNativeImpl? = activeWindowImpl
     ): Int {
-        val winImpl = activeWindowImpl ?: return 0
-        if (!hasCustomMainWindowTitleBar()) return 0
+        val winImpl = ownerWindowImpl ?: activeWindowImpl ?: return 0
+        if (!hasCustomTitleBarForWindow(winImpl)) return 0
         val tb = winImpl.getTitleBarInstructions()
         val kind = winImpl.titleBarKind
-        val titleBarH = getMainWindowTitleBarHeight()
+        val titleBarH = getMainWindowTitleBarHeight(winImpl)
         val winTitle = winImpl.getTitle().ifBlank { "GenericUI" }
 
         return Win32NativeTitleBarRenderer.renderWindowTitleBar(
@@ -11986,6 +12530,93 @@ object Win32NativeWindowHost {
     }
 
     /**
+     * Applies CSS `backdrop-filter` (blur and color/opacity effects) directly onto the framebuffer region
+     * behind a `StyledContainer` prior to drawing the container's own semi-transparent fill and border.
+     */
+    internal fun applyBackdropFilterRect(
+        hdc: HDC?,
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        radiusPx: Float = 0f,
+        backdropBlurPx: Float? = null,
+        backdropFilter: com.nexustools.genericui.style.css.CssFilter? = null
+    ) {
+        val effFilter = com.nexustools.genericui.style.css.CssFilter.backdropBlurOrFilter(
+            backdropBlurPx = backdropBlurPx,
+            backdropFilter = backdropFilter
+        ) ?: return
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0 || h <= 0) return
+
+        val isActiveDc = (hdc == null || hdc == activeBackBufferDc) && activeBackBufferPixels != null
+        val bufPixels = if (isActiveDc) activeBackBufferPixels else cachedMainBackBufferPixels
+        val bufW = if (isActiveDc) activeBackBufferWidth else cachedMainBackBufferWidth
+        val bufH = if (isActiveDc) activeBackBufferHeight else cachedMainBackBufferHeight
+        if (bufPixels == null || bufW <= 0 || bufH <= 0) return
+
+        val clipL: Int
+        val clipT: Int
+        val clipR: Int
+        val clipB: Int
+        if (softClipDepth > 0) {
+            clipL = softClipLeft.coerceIn(0, bufW)
+            clipT = softClipTop.coerceIn(0, bufH)
+            clipR = softClipRight.coerceIn(clipL, bufW)
+            clipB = softClipBottom.coerceIn(clipT, bufH)
+        } else {
+            clipL = 0
+            clipT = 0
+            clipR = bufW
+            clipB = bufH
+        }
+
+        val x0 = max(left, clipL)
+        val y0 = max(top, clipT)
+        val x1 = min(right, clipR)
+        val y1 = min(bottom, clipB)
+        val copyW = x1 - x0
+        val copyH = y1 - y0
+        if (copyW <= 0 || copyH <= 0) return
+
+        val blurPx = (effFilter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
+        val pad = if (blurPx > 0f) kotlin.math.ceil(blurPx * 1.5f).toInt().coerceIn(1, 32) else 0
+        val capX0 = (x0 - pad).coerceAtLeast(clipL)
+        val capY0 = (y0 - pad).coerceAtLeast(clipT)
+        val capX1 = (x1 + pad).coerceAtMost(clipR)
+        val capY1 = (y1 + pad).coerceAtMost(clipB)
+        val capW = capX1 - capX0
+        val capH = capY1 - capY0
+        if (capW <= 0 || capH <= 0) return
+
+        flushGdiIfOverlapping(x0, y0, x1, y1)
+        markFrameBufferDirty(x0, y0, x1, y1)
+
+        val wordsPtr = bufPixels.reinterpret<UIntVar>()
+        Win32Direct2dBackdropBlurEngine.applyBackdropToBackBufferRegion(
+            filter = effFilter,
+            wordsPtr = wordsPtr,
+            bufW = bufW,
+            bufH = bufH,
+            capX0 = capX0,
+            capY0 = capY0,
+            capX1 = capX1,
+            capY1 = capY1,
+            x0 = x0,
+            y0 = y0,
+            x1 = x1,
+            y1 = y1,
+            regionX = left,
+            regionY = top,
+            regionWidth = w,
+            regionHeight = h,
+            cornerRadiusPx = radiusPx.coerceAtLeast(0f)
+        )
+    }
+
+    /**
      * Analytical Signed Distance Field (SDF) sub-pixel antialiased rounded-rectangle and border
      * rasterizer with true 32-bit backbuffer alpha blending and active clip-box respect.
      */
@@ -12733,9 +13364,21 @@ object Win32NativeWindowHost {
             val baseOpacity = ((visuals.opacity ?: widget?.opacity ?: 1f) * opacity).coerceIn(0f, 1f)
             val effectiveOpacity = if (!isEnabled && visuals.opacity == null) (baseOpacity * 0.45f).coerceIn(0f, 1f) else baseOpacity
             if (drawBackground) {
+                if (visuals.hasBackdropFilter) {
+                    applyBackdropFilterRect(
+                        hdc = hdc,
+                        left = left,
+                        top = top,
+                        right = right,
+                        bottom = bottom,
+                        radiusPx = radius,
+                        backdropBlurPx = visuals.backdropBlurPx,
+                        backdropFilter = visuals.backdropFilter
+                    )
+                }
                 val grad = visuals.backgroundGradient ?: impl.getEffectiveBackgroundGradient()
                 val effectiveFillRgba: RgbaColor? = visuals.backgroundColor ?: when {
-                    grad != null -> null
+                    grad != null || visuals.hasBackdropFilter -> null
                     !isEnabled -> colorRefToRgba(theme.bgPanel, 180)
                     isPressed -> colorRefToRgba(lightenColorRef(theme.bgElevated, -14), 255)
                     isHovered -> colorRefToRgba(lightenColorRef(theme.bgElevated, 14), 255)
@@ -13841,6 +14484,18 @@ object Win32NativeWindowHost {
     }
 
     fun clearActiveWindow() {
+        val secondaryToDestroy = secondaryWindowHwnds.values.toList()
+        secondaryWindowHwnds.clear()
+        hwndToSecondaryWindow.clear()
+        secondaryWindowAspectRatios.clear()
+        secondaryWindowIconicState.clear()
+        activeWindowLastIconic = false
+        for (secHwnd in secondaryToDestroy) {
+            if (IsWindow(secHwnd) != 0) {
+                ShowWindow(secHwnd, SW_HIDE)
+                DestroyWindow(secHwnd)
+            }
+        }
         Win32NativeTitleBarRenderer.clearWindowState(null)
         releaseMainBackBufferDc()
         activeHwnd = null
@@ -13913,10 +14568,13 @@ object Win32NativeWindowHost {
 
 @OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPARAM): LRESULT {
+    val winForHwnd = Win32NativeWindowHost.resolveWindowForHwnd(hwnd)
+    val isUndecoratedWin = winForHwnd?.isUndecorated() == true
+    val isSecondaryWin = Win32NativeWindowHost.getSecondaryWindowForHwnd(hwnd) != null
     val isPanelTool = Win32NativeWindowHost.isPanelToolWindow(hwnd)
     val isMainCustom = Win32NativeWindowHost.isMainHostWindow(hwnd) &&
         Win32NativeWindowHost.hasCustomMainWindowTitleBar()
-    val hasCustomTitleBarFrame = isPanelTool || isMainCustom
+    val hasCustomTitleBarFrame = isPanelTool || (!isUndecoratedWin && isMainCustom)
 
     if (hasCustomTitleBarFrame && hwnd != null) {
         Win32DwmUxThemeBridge.dwmDefWindowProc(hwnd, msg, wParam, lParam)?.let { dwmRes ->
@@ -13926,7 +14584,7 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
 
     when (msg.toInt()) {
         WM_GETMINMAXINFO -> {
-            if (hwnd != null && lParam != 0L && Win32NativeWindowHost.isMainHostWindow(hwnd)) {
+            if (hwnd != null && lParam != 0L && (Win32NativeWindowHost.isMainHostWindow(hwnd) || isSecondaryWin)) {
                 val mmiPtr = lParam.toCPointer<MINMAXINFO>()
                 if (mmiPtr != null) {
                     val (minW, minH) = Win32NativeWindowHost.resolveMinWindowTrackSize(hwnd)
@@ -13937,11 +14595,19 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
             }
         }
         WM_NCCALCSIZE -> {
+            if (isUndecoratedWin && wParam != 0uL && hwnd != null) {
+                return 0L
+            }
             if (wParam != 0uL && hasCustomTitleBarFrame && hwnd != null) {
                 return Win32NativeTitleBarRenderer.handleNcCalcSize(hwnd, wParam, lParam)
             }
         }
         WM_NCHITTEST -> {
+            if (hwnd != null && isUndecoratedWin && winForHwnd != null) {
+                val screenX = (lParam and 0xFFFF).toShort().toInt()
+                val screenY = ((lParam ushr 16) and 0xFFFF).toShort().toInt()
+                return Win32NativeWindowHost.hitTestUndecoratedWindow(hwnd, winForHwnd, screenX, screenY)
+            }
             if (hwnd != null && hasCustomTitleBarFrame) {
                 val screenX = (lParam and 0xFFFF).toShort().toInt()
                 val screenY = ((lParam ushr 16) and 0xFFFF).toShort().toInt()
@@ -14036,7 +14702,7 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
         }
         WM_SIZE -> {
             if (hwnd != null) {
-                runCatching { Win32NativeWindowHost.handleWindowResize(hwnd) }
+                runCatching { Win32NativeWindowHost.handleWindowResize(hwnd, wParam.toInt()) }
                 InvalidateRect(hwnd, null, 0)
             }
             return 0L
@@ -14175,6 +14841,11 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
             if (Win32NativeWindowHost.visualTestMode) {
                 return 0L
             }
+            val secWin = Win32NativeWindowHost.getSecondaryWindowForHwnd(hwnd)
+            if (secWin != null) {
+                secWin.closeWindow()
+                return 0L
+            }
             if (hwnd != null && !Win32NativeWindowHost.isMainHostWindow(hwnd)) {
                 ShowWindow(hwnd, SW_HIDE)
                 return 0L
@@ -14201,11 +14872,21 @@ private fun win32HostWndProc(hwnd: HWND?, msg: UINT, wParam: WPARAM, lParam: LPA
         }
         WM_DESTROY -> {
             Win32NativeTitleBarRenderer.clearWindowState(hwnd)
+            val secWin = Win32NativeWindowHost.getSecondaryWindowForHwnd(hwnd)
+            if (secWin != null) {
+                Win32NativeWindowHost.onSecondaryHwndDestroyed(hwnd, secWin)
+                return 0L
+            }
             if (Win32NativeWindowHost.isMainHostWindow(hwnd)) {
-                WindowsUiThreadDispatcherNativeImpl.clearUiThreadBinding()
-                Win32NativeWindowHost.clearActiveWindow()
-                if (!Win32NativeWindowHost.visualTestMode) {
-                    PostQuitMessage(0)
+                if (WindowsSystemTrayNativeImpl.hasActiveTray() && !WindowsHeadlessTrayLoop.isQuitRequested) {
+                    WindowsSystemTrayNativeImpl.migrateTrayToHeadlessHwnd()
+                    Win32NativeWindowHost.clearActiveWindow()
+                } else {
+                    WindowsUiThreadDispatcherNativeImpl.clearUiThreadBinding()
+                    Win32NativeWindowHost.clearActiveWindow()
+                    if (!Win32NativeWindowHost.visualTestMode) {
+                        PostQuitMessage(0)
+                    }
                 }
             }
             return 0L

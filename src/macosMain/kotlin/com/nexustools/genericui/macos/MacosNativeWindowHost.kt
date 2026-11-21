@@ -88,6 +88,7 @@ import platform.AppKit.NSScreen
 import platform.AppKit.NSWindow
 import platform.AppKit.NSWindowAbove
 import platform.AppKit.NSWindowCollectionBehaviorFullScreenPrimary
+import platform.AppKit.NSWindowStyleMaskBorderless
 import platform.AppKit.NSWindowStyleMaskClosable
 import platform.AppKit.NSWindowStyleMaskFullScreen
 import platform.AppKit.NSWindowStyleMaskFullSizeContentView
@@ -97,6 +98,7 @@ import platform.AppKit.NSWindowStyleMaskTitled
 import platform.AppKit.NSWindowStyleMaskUtilityWindow
 import platform.AppKit.NSWindowTitleHidden
 import platform.AppKit.NSWindowTitleVisible
+import platform.AppKit.currentEvent
 import platform.CoreFoundation.CFRunLoopGetMain
 import platform.CoreFoundation.CFRunLoopRunInMode
 import platform.CoreFoundation.CFRunLoopWakeUp
@@ -150,6 +152,7 @@ object MacosNativeWindowHost {
     private const val STAGE_HUD_IDLE_HIDE_MS: Double = 5000.0
 
     private val sessions = LinkedHashMap<Long, MacosWindowSession>(8)
+    private val lastLeftMouseDownEventByWindowKey = HashMap<Long, NSEvent>()
     private var appInitialized: Boolean = false
     private var eventLoopRunning: Boolean = false
     private var frameTimer: NSTimer? = null
@@ -219,7 +222,7 @@ object MacosNativeWindowHost {
         appInitialized = true
 
         val app = NSApplication.sharedApplication
-        app.setActivationPolicy(NSApplicationActivationPolicy.NSApplicationActivationPolicyRegular)
+        syncActivationPolicyForCurrentState()
 
         installApplicationIcon(app)
 
@@ -516,8 +519,10 @@ object MacosNativeWindowHost {
         NSRunLoop.currentRunLoop.addTimer(timer, forMode = NSRunLoopCommonModes)
         frameTimer = timer
 
+        syncActivationPolicyForCurrentState()
         val app = NSApplication.sharedApplication
         app.finishLaunching()
+        MacosSystemTrayNativeImpl.syncAllTrayIcons()
         if (sessions.isNotEmpty()) {
             app.activateIgnoringOtherApps(true)
         }
@@ -722,6 +727,7 @@ object MacosNativeWindowHost {
         val key = windowImpl.nativeWidget.nativePointer
         val existing = sessions[key]
         if (existing != null) {
+            syncActivationPolicyForCurrentState()
             existing.hidingAfterFullscreenExit = false
             existing.lastStageActivityTimeMs = monotonicTimeMs()
             existing.overlayHudAlpha = 1f
@@ -745,8 +751,8 @@ object MacosNativeWindowHost {
         }
 
         val winSize = windowImpl.getWindowSize()
-        val initW = winSize.width.coerceAtLeast(320).toDouble()
-        val initH = winSize.height.coerceAtLeast(240).toDouble()
+        val initW = winSize.width.coerceAtLeast(if (windowImpl.isUndecorated()) 64 else 320).toDouble()
+        val initH = winSize.height.coerceAtLeast(if (windowImpl.isUndecorated()) 64 else 240).toDouble()
 
         val initialChromeMode = resolveTitleBarChromeMode(windowImpl)
         val styleMask = computeWindowStyleMask(windowImpl, initialChromeMode)
@@ -757,7 +763,7 @@ object MacosNativeWindowHost {
             defer = false
         )
         nsWindow.releasedWhenClosed = false
-        if (!windowImpl.isToolModalWindow) {
+        if (!windowImpl.isToolModalWindow && !windowImpl.isUndecorated()) {
             nsWindow.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary
         }
 
@@ -777,6 +783,7 @@ object MacosNativeWindowHost {
             clearWindowContentAspectRatio(nsWindow)
         }
         sessions[key] = session
+        syncActivationPolicyForCurrentState()
 
         nsWindow.contentView = canvasView
         nsWindow.delegate = delegate
@@ -794,7 +801,7 @@ object MacosNativeWindowHost {
         }
 
         val ownerImpl = windowImpl.ownerWindow as? MacosWindowNativeImpl
-        if (ownerImpl != null) {
+        if (ownerImpl != null && !windowImpl.isUndecorated()) {
             sessions[ownerImpl.nativeWidget.nativePointer]?.nsWindow?.addChildWindow(nsWindow, ordered = NSWindowAbove)
         }
 
@@ -871,6 +878,7 @@ object MacosNativeWindowHost {
         )
         session.lastStageActivityTimeMs = monotonicTimeMs()
         sessions[key] = session
+        syncActivationPolicyForCurrentState()
 
         panel.contentView = canvasView
         panel.delegate = delegate
@@ -1021,9 +1029,11 @@ object MacosNativeWindowHost {
         } else {
             0
         }
+        val minBaseW = if (windowImpl.isUndecorated()) 64 else 200
+        val minBaseH = if (windowImpl.isUndecorated()) 64 else 140
         session.nsWindow.contentMinSize = NSMakeSize(
-            minSz.width.coerceAtLeast(200).toDouble(),
-            (minSz.height.coerceAtLeast(140) + minInsetH).toDouble()
+            minSz.width.coerceAtLeast(minBaseW).toDouble(),
+            (minSz.height.coerceAtLeast(minBaseH) + minInsetH).toDouble()
         )
     }
 
@@ -1190,13 +1200,33 @@ object MacosNativeWindowHost {
                 clearWindowContentAspectRatio(nsWindow)
                 syncFullscreen(windowImpl, true)
             }
-            WindowState.NORMAL, WindowState.PICTURE_IN_PICTURE -> {
+            WindowState.NORMAL -> {
                 session.programmaticMaximized = false
                 if (nsWindow.miniaturized) nsWindow.deminiaturize(null)
                 if (nsWindow.zoomed) nsWindow.zoom(null)
                 syncFullscreen(windowImpl, false)
                 applyWindowAspectRatio(session, windowImpl)
             }
+        }
+    }
+
+    fun startSystemMove(windowImpl: MacosWindowNativeImpl) {
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
+        if (!NSThread.isMainThread) {
+            dispatch_async(dispatch_get_main_queue()) { startSystemMove(windowImpl) }
+            return
+        }
+        val key = windowImpl.nativeWidget.nativePointer
+        val session = sessions[key] ?: return
+        if ((session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL) return
+        val dragEvent = lastLeftMouseDownEventByWindowKey[key]
+            ?: NSApplication.sharedApplication.currentEvent()?.takeIf {
+                it.type == NSEventTypeLeftMouseDown || it.type == NSEventTypeLeftMouseDragged
+            }
+        if (dragEvent != null) {
+            session.pressedRegion = null
+            session.pressedWidget = null
+            session.nsWindow.performWindowDragWithEvent(dragEvent)
         }
     }
 
@@ -1361,6 +1391,7 @@ object MacosNativeWindowHost {
             return
         }
         val key = windowImpl.nativeWidget.nativePointer
+        lastLeftMouseDownEventByWindowKey.remove(key)
         val session = sessions.remove(key) ?: return
         clearFocusedWidgetInSession(session)
         session.nsWindow.delegate = null
@@ -1370,13 +1401,50 @@ object MacosNativeWindowHost {
 
         val hasRemainingMainWindow = sessions.values.any { it.windowImpl != null && !it.windowImpl.isToolModalWindow }
         if (!hasRemainingMainWindow && !windowImpl.isToolModalWindow && !visualTestMode) {
+            if (MacosSystemTrayNativeImpl.hasActiveTray()) {
+                syncActivationPolicyForCurrentState()
+            } else {
+                val app = Application.current
+                if (app != null) {
+                    app.exit(0)
+                } else {
+                    terminateEventLoop()
+                }
+            }
+        }
+    }
+
+    internal fun syncActivationPolicyForCurrentState() {
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
+        val applyPolicy = {
+            val hasVisibleMainWindow = sessions.values.any { it.windowImpl != null && !it.windowImpl.isToolModalWindow }
+            val desiredPolicy = if (!hasVisibleMainWindow && MacosSystemTrayNativeImpl.hasActiveTray()) {
+                NSApplicationActivationPolicy.NSApplicationActivationPolicyAccessory
+            } else {
+                NSApplicationActivationPolicy.NSApplicationActivationPolicyRegular
+            }
+            NSApplication.sharedApplication.setActivationPolicy(desiredPolicy)
+        }
+        if (NSThread.isMainThread) {
+            applyPolicy()
+        } else {
+            dispatch_async(dispatch_get_main_queue()) { applyPolicy() }
+        }
+    }
+
+    internal fun onTrayDisposed(hasRemainingActiveTrays: Boolean) {
+        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
+        val hasRemainingMainWindow = sessions.values.any { it.windowImpl != null && !it.windowImpl.isToolModalWindow }
+        if (!hasRemainingActiveTrays && !hasRemainingMainWindow && eventLoopRunning && !visualTestMode) {
             val app = Application.current
             if (app != null) {
-                app.exit(0)
+                GenericUiThreading.runOnLogic { app.exit(0) }
             } else {
                 terminateEventLoop()
             }
+            return
         }
+        syncActivationPolicyForCurrentState()
     }
 
     internal fun onNativeWindowShouldClose(windowKey: Long, isDialog: Boolean): Boolean {
@@ -1486,8 +1554,13 @@ object MacosNativeWindowHost {
         if (!miniaturized) {
             applyWindowAspectRatio(session, win)
         }
+        val restoredState = when {
+            (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL -> WindowState.FULLSCREEN
+            session.nsWindow.zoomed || session.programmaticMaximized -> WindowState.MAXIMIZED
+            else -> WindowState.NORMAL
+        }
         GenericUiThreading.runOnLogic {
-            win.notifyHostMiniaturizedFromOs(miniaturized)
+            win.notifyHostMiniaturizedFromOs(miniaturized, restoredState)
         }
     }
 
@@ -2041,6 +2114,7 @@ object MacosNativeWindowHost {
     }
 
     private fun resolveTitleBarChromeMode(windowImpl: MacosWindowNativeImpl): Int {
+        if (windowImpl.isUndecorated()) return CHROME_MODE_STANDARD
         if (windowImpl.isToolModalWindow) return CHROME_MODE_STANDARD
         if (windowImpl.isFullscreen() && windowImpl.getFullscreenElement() != null) return CHROME_MODE_STANDARD
         if (windowImpl.getTitleBarInstructions()?.customTitleBar == true) return CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR
@@ -2052,6 +2126,9 @@ object MacosNativeWindowHost {
         windowImpl: MacosWindowNativeImpl,
         chromeMode: Int = resolveTitleBarChromeMode(windowImpl)
     ): ULong {
+        if (windowImpl.isUndecorated()) {
+            return NSWindowStyleMaskBorderless or NSWindowStyleMaskResizable
+        }
         var mask = NSWindowStyleMaskTitled or NSWindowStyleMaskClosable or NSWindowStyleMaskResizable
         val tb = windowImpl.getTitleBarInstructions()
         val allowMin = if (windowImpl.isToolModalWindow) windowImpl.minimizable else (tb?.showMinimizeButton ?: true)
@@ -2073,6 +2150,9 @@ object MacosNativeWindowHost {
 
     internal fun onMouseDown(windowKey: Long, event: NSEvent, button: Int) {
         val session = sessions[windowKey] ?: return
+        if (button == 0) {
+            lastLeftMouseDownEventByWindowKey[windowKey] = event
+        }
         val (x, y) = toViewCoords(session, event)
         handlePointerDownAt(
             session = session,
@@ -2116,8 +2196,15 @@ object MacosNativeWindowHost {
         }
 
         // Native custom-titlebar window drag / double-click zoom when clicking empty titlebar/navbar area
+        // or dragging empty surface of an undecorated floating window
         if (button == 0 && hit == null && session.windowImpl != null) {
             val isFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
+            if (session.windowImpl.isUndecorated()) {
+                if (!isFs && rawEvent != null) {
+                    session.nsWindow.performWindowDragWithEvent(rawEvent)
+                }
+                return
+            }
             val chromeMode = resolveTitleBarChromeMode(session.windowImpl)
             val inset = session.titleBarInsetTopPx.takeIf { it > 0 } ?: CUSTOM_TITLEBAR_INSET_PX
             val dragHeight = when (chromeMode) {
@@ -2208,6 +2295,9 @@ object MacosNativeWindowHost {
     }
 
     internal fun onMouseUp(windowKey: Long, event: NSEvent, button: Int) {
+        if (button == 0) {
+            lastLeftMouseDownEventByWindowKey.remove(windowKey)
+        }
         val session = sessions[windowKey] ?: return
         val (x, y) = toViewCoords(session, event)
         handlePointerUpAt(

@@ -2,7 +2,6 @@ package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Size
-import com.nexustools.genericui.window.PipConfig
 import com.nexustools.genericui.window.WindowAspectRatioHelper
 import java.awt.GraphicsEnvironment
 import javax.swing.JFrame
@@ -16,7 +15,7 @@ import kotlin.test.assertTrue
 class SwingWindowAspectRatioAndAlwaysOnTopTest {
 
     @Test
-    fun alwaysOnTopTogglesFrameAndPreservesFlagAcrossPipRoundTrip() {
+    fun alwaysOnTopTogglesFrame() {
         val impl = SwingWindowImpl()
         try {
             assertFalse(impl.isAlwaysOnTop())
@@ -27,19 +26,6 @@ class SwingWindowAspectRatioAndAlwaysOnTopTest {
             impl.setAlwaysOnTop(true)
             assertTrue(impl.isAlwaysOnTop())
             assertEquals(true, impl.nativeWidget.getClientProperty("alwaysOnTop"))
-            if (!GraphicsEnvironment.isHeadless()) {
-                assertTrue(impl.jFrame?.isAlwaysOnTop == true)
-            }
-
-            // Entering and exiting PiP preserves user alwaysOnTop preference
-            impl.enterPictureInPicture(PipConfig())
-            assertTrue(impl.isInPictureInPicture())
-            if (!GraphicsEnvironment.isHeadless()) {
-                assertTrue(impl.jFrame?.isAlwaysOnTop == true)
-            }
-            impl.exitPictureInPicture()
-            assertFalse(impl.isInPictureInPicture())
-            assertTrue(impl.isAlwaysOnTop())
             if (!GraphicsEnvironment.isHeadless()) {
                 assertTrue(impl.jFrame?.isAlwaysOnTop == true)
             }

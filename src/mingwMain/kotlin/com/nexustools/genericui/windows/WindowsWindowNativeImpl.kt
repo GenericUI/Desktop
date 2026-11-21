@@ -95,6 +95,30 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         }
     }
 
+    override fun isUndecorated(): Boolean = super.isUndecorated()
+
+    override fun setUndecorated(undecorated: Boolean) {
+        super.setUndecorated(undecorated)
+        if (undecorated) {
+            nativeWidget.dwStyle = Win32HwndHandle.WS_POPUP or Win32HwndHandle.WS_THICKFRAME
+        } else {
+            nativeWidget.dwStyle = Win32HwndHandle.WS_OVERLAPPEDWINDOW or Win32HwndHandle.WS_VISIBLE
+        }
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
+            Win32NativeWindowHost.syncWindowUndecorated(this, undecorated)
+        }
+    }
+
+    override fun setOnWindowStateChanged(listener: ((WindowState) -> Unit)?) {
+        super.setOnWindowStateChanged(listener)
+    }
+
+    override fun startSystemMove() {
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
+            Win32NativeWindowHost.startSystemMove(this)
+        }
+    }
+
     override fun setAlwaysOnTop(alwaysOnTop: Boolean) {
         super.setAlwaysOnTop(alwaysOnTop)
         if (alwaysOnTop) {
@@ -102,28 +126,28 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         } else {
             nativeWidget.dwExStyle = nativeWidget.dwExStyle and Win32HwndHandle.WS_EX_TOPMOST.inv()
         }
-        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
             Win32NativeWindowHost.setWindowAlwaysOnTop(this, alwaysOnTop)
         }
     }
 
     override fun setAspectRatio(aspectRatio: Double?) {
         super.setAspectRatio(aspectRatio)
-        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
             Win32NativeWindowHost.setWindowAspectRatio(this, aspectRatio)
         }
     }
 
     override fun setWindowSize(size: Size) {
         super.setWindowSize(size)
-        if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this)) {
+        if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this))) {
             Win32NativeWindowHost.setWindowClientSize(this, getWindowSize())
         }
     }
 
     override fun setWindowPosition(x: Int, y: Int) {
         super.setWindowPosition(x, y)
-        if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this)) {
+        if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this))) {
             Win32NativeWindowHost.setWindowPosition(this, x, y)
         }
     }
@@ -139,7 +163,7 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
 
     override fun setWindowState(state: WindowState) {
         super.setWindowState(state)
-        if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this)) {
+        if (!suppressHostSync && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this))) {
             Win32NativeWindowHost.setWindowState(this, state)
         }
     }
@@ -151,15 +175,39 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         zoomedNow: Boolean,
         iconicNow: Boolean
     ) {
+        if (iconicNow && !fullscreenNow) {
+            val prevState = currentWindowState
+            suppressHostSync = true
+            try {
+                fullscreenFlag = false
+                currentWindowState = WindowState.MINIMIZED
+                nativeWidget.attributes["fullscreen"] = false
+                nativeWidget.attributes["windowState"] = WindowState.MINIMIZED
+            } finally {
+                suppressHostSync = false
+            }
+            if (prevState != currentWindowState) {
+                onWindowStateChangedListener?.invoke(currentWindowState)
+                onWindowResizeListener?.invoke(
+                    WindowConfiguration(
+                        widthPx = currentWindowSize.width,
+                        heightPx = currentWindowSize.height,
+                        windowState = currentWindowState,
+                        isFullscreen = false
+                    )
+                )
+            }
+            return
+        }
         val w = widthPx.coerceAtLeast(1)
         val h = heightPx.coerceAtLeast(1)
         val incoming = Size(w, h)
         suppressHostSync = true
+        val prevState = currentWindowState
         try {
             fullscreenFlag = fullscreenNow
             currentWindowState = when {
                 fullscreenNow -> WindowState.FULLSCREEN
-                iconicNow -> WindowState.MINIMIZED
                 zoomedNow -> WindowState.MAXIMIZED
                 currentWindowState == WindowState.FULLSCREEN ||
                     currentWindowState == WindowState.MAXIMIZED ||
@@ -180,14 +228,13 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
                     nativeWidget.bounds.height != h
                 currentWindowSize = incoming
                 nativeWidget.bounds = Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, w, h)
-                if (changed) {
+                if (changed || prevState != currentWindowState) {
                     onWindowResizeListener?.invoke(
                         WindowConfiguration(
                             widthPx = w,
                             heightPx = h,
                             windowState = currentWindowState,
-                            isFullscreen = fullscreenFlag,
-                            isInPictureInPicture = inPipMode
+                            isFullscreen = fullscreenFlag
                         )
                     )
                 }
@@ -196,6 +243,9 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
             }
         } finally {
             suppressHostSync = false
+        }
+        if (prevState != currentWindowState) {
+            onWindowStateChangedListener?.invoke(currentWindowState)
         }
     }
 
@@ -233,7 +283,7 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         } else {
             nativeWidget.attributes.remove("fullscreenElement")
         }
-        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
             Win32NativeWindowHost.setWindowFullscreen(
                 windowImpl = this,
                 fullscreen = fullscreen,
@@ -248,7 +298,7 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
 
     override fun setVisible(visible: Boolean) {
         super.setVisible(visible)
-        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.activeWindowImpl === this) {
+        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
             Win32NativeWindowHost.setWindowVisible(this, visible)
         }
     }
@@ -260,6 +310,13 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         }
         if (visible) {
             super.showWindow()
+        }
+    }
+
+    override fun closeWindow() {
+        super.closeWindow()
+        if (isDisposed && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this))) {
+            Win32NativeWindowHost.closeSecondaryOrPrimaryWindow(this)
         }
     }
 }

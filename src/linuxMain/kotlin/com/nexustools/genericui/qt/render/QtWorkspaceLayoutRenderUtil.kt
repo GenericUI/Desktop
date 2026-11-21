@@ -309,8 +309,18 @@ internal object QtWorkspaceLayoutRenderUtil {
         bounds: Rect
     ) {
         val visuals = widget.attributes["styledVisuals"] as? StyledVisualSpec
-        val grad = visuals?.backgroundGradient ?: (widget.attributes["backgroundGradient"] as? Gradient)
+        val impl = widget.attributes["nativeImpl"]
         val radius = visuals?.borderRadiusPx ?: ((widget.attributes["borderRadiusPx"] as? Number)?.toFloat() ?: 0f)
+        if (impl is com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl<*> && visuals?.hasBackdropFilter == true) {
+            QtControlRenderUtil.applyBackdropFilterRegion(
+                ctx = ctx,
+                bounds = bounds,
+                radiusPx = radius,
+                backdropBlurPx = visuals.backdropBlurPx,
+                backdropFilter = visuals.backdropFilter
+            )
+        }
+        val grad = visuals?.backgroundGradient ?: (widget.attributes["backgroundGradient"] as? Gradient)
         if (grad != null) {
             QtGraphicsDrawUtil.fillGradientRoundedRect(ctx, bounds.x, bounds.y, bounds.width, bounds.height, radius, grad)
         } else {

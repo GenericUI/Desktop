@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.gtk.render
 
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
@@ -641,8 +643,29 @@ object GtkWorkspaceLayoutRenderUtil {
         bounds: Rect
     ) {
         val tokens = widget.cachedAllClassTokens
-        val radius = ((widget.attributes["borderRadiusPx"] as? Number)?.toFloat()
-            ?: if ("card" in tokens || "alert" in tokens) 10f else 0f)
+        val impl = widget.attributes["nativeImpl"]
+        val styledVisuals = widget.attributes["styledVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec
+        val radius = styledVisuals?.borderRadiusPx
+            ?: ((widget.attributes["borderRadiusPx"] as? Number)?.toFloat()
+                ?: if ("card" in tokens || "alert" in tokens) 10f else 0f)
+        if (impl is com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl<*> && styledVisuals?.hasBackdropFilter == true) {
+            val effFilter = com.nexustools.genericui.style.css.CssFilter.backdropBlurOrFilter(
+                styledVisuals.backdropBlurPx,
+                styledVisuals.backdropFilter
+            )
+            val cr = ctx.cairoContext
+            if (effFilter != null && cr != null) {
+                com.nexustools.genericui.gtk.Gtk4DynamicBindings.cairoApplyBackdropFilterRegion(
+                    cr = cr,
+                    x = bounds.x.toInt(),
+                    y = bounds.y.toInt(),
+                    w = bounds.width.toInt(),
+                    h = bounds.height.toInt(),
+                    radiusPx = radius,
+                    filter = effFilter
+                )
+            }
+        }
         val explicitBg = widget.attributes["backgroundColor"] as? RgbaColor
         val bg = when {
             explicitBg != null && explicitBg.a > 0 -> explicitBg

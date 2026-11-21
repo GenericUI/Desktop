@@ -180,10 +180,11 @@ open class SwingBaseNativeImpl(
         val themeColors = activeThemeConfig.resolveEffectiveColors(isDark)
         nativeWidget.putClientProperty("effectiveThemeMode", effectiveTheme)
         nativeWidget.putClientProperty("themeMode", if (isDark) "dark" else "light")
-        // Desktop policy: backdrop-filter blur is explicitly ignored on desktop.
-        nativeWidget.putClientProperty("backdropBlurPx", null)
-        nativeWidget.putClientProperty("backdrop-filter", null)
-        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
+        if (!allowsSystemAestheticStyles()) {
+            nativeWidget.putClientProperty("backdropBlurPx", null)
+            nativeWidget.putClientProperty("backdrop-filter", null)
+            nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
+        }
 
         val semanticType = styleSnapshot.type?.takeIf { it.isSemantic }
             ?: styleSnapshot.backgroundType?.takeIf { it.isSemantic }
@@ -280,10 +281,11 @@ open class SwingBaseNativeImpl(
     }
 
     override fun setAttribute(name: String, value: String?) {
-        if (
-            name.equals("backdropBlurPx", ignoreCase = true) ||
-            name.equals("backdrop-filter", ignoreCase = true) ||
-            name.equals("-webkit-backdrop-filter", ignoreCase = true)
+        if (!allowsSystemAestheticStyles() && (
+                name.equals("backdropBlurPx", ignoreCase = true) ||
+                    name.equals("backdrop-filter", ignoreCase = true) ||
+                    name.equals("-webkit-backdrop-filter", ignoreCase = true)
+                )
         ) {
             nativeWidget.putClientProperty("backdropBlurPx", null)
             nativeWidget.putClientProperty("backdrop-filter", null)
@@ -608,9 +610,11 @@ open class SwingBaseNativeImpl(
             allowAestheticSkin = allowAesthetic
         )
         lastComputedStyle = filtered
-        nativeWidget.putClientProperty("backdropBlurPx", null)
-        nativeWidget.putClientProperty("backdrop-filter", null)
-        nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
+        if (!allowAesthetic) {
+            nativeWidget.putClientProperty("backdropBlurPx", null)
+            nativeWidget.putClientProperty("backdrop-filter", null)
+            nativeWidget.putClientProperty("-webkit-backdrop-filter", null)
+        }
         if (allowAesthetic) {
             filtered.backgroundColor?.let { c ->
                 val alpha = c.a.coerceIn(0, 255)

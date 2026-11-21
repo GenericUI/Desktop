@@ -320,6 +320,18 @@ object Win32ContainerChromeRenderUtil {
             val borderWidth = visuals?.borderWidthPx ?: compStyle?.borderWidth?.top?.resolvePx() ?: 0f
             val radiusPx = visuals?.borderRadiusPx ?: compStyle?.borderRadius?.topLeft?.resolvePx() ?: 0f
 
+            if (styledImpl != null && visuals?.hasBackdropFilter == true) {
+                Win32NativeWindowHost.applyBackdropFilterRect(
+                    hdc = ctx.hdc,
+                    left = left,
+                    top = top,
+                    right = right,
+                    bottom = bottom,
+                    radiusPx = radiusPx,
+                    backdropBlurPx = visuals.backdropBlurPx,
+                    backdropFilter = visuals.backdropFilter
+                )
+            }
             if (grad != null) {
                 Win32NativeWindowHost.drawGradientRect(ctx.hdc, left, top, right, bottom, grad, opacity = ctx.opacity)
             } else if (bgCol != null || (borderCol != null && borderWidth > 0f)) {

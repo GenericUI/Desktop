@@ -8,6 +8,7 @@ import com.nexustools.genericui.component.dialog.FileTypeFilter
 import com.nexustools.genericui.component.dialog.SelectedFile
 import com.nexustools.genericui.component.system.PreferenceElement
 import com.nexustools.genericui.core.GenericUiAppDescriptor
+import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.enums.dialog.FileBrowserMode
 import com.nexustools.genericui.gtk.GtkFileBrowserDialogNativeImpl
@@ -35,6 +36,7 @@ import platform.posix.getpid
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -49,7 +51,13 @@ class LinuxOsServicesIntegrationTest {
             store1.writeElement("theme", PreferenceElement.ofString("dark"))
             store1.writeElement("count", PreferenceElement.ofInt(42))
             store1.writeElement("enabled", PreferenceElement.ofBoolean(true))
+            val specialKeys = listOf("window:pos", "path/to/key", "100%raw", ".hidden", "CON", "~", "")
+            for (k in specialKeys) {
+                store1.writeElement(k, PreferenceElement.ofString("linux_$k"))
+            }
             assertTrue(store1.flush())
+            assertFalse(DesktopConfigDirectoryHelper.fileExists("${store1.configDirectory}/.preference_keys"))
+            assertFalse(DesktopConfigDirectoryHelper.fileExists("${store1.configDirectory}/.user_dir_manifest"))
 
             val store2 = LinuxXdgPreferenceStoreImpl(appName)
             try {
@@ -57,6 +65,11 @@ class LinuxOsServicesIntegrationTest {
                 assertEquals(42, store2.readElement("count")?.asInt())
                 assertEquals(true, store2.readElement("enabled")?.asBoolean())
                 assertTrue(store2.contains("theme"))
+                assertEquals(setOf("theme", "count", "enabled") + specialKeys, store2.keys())
+                for (k in specialKeys) {
+                    assertTrue(store2.contains(k))
+                    assertEquals("linux_$k", store2.readElement(k)?.stringValue)
+                }
             } finally {
                 store2.clear()
                 store2.dispose()

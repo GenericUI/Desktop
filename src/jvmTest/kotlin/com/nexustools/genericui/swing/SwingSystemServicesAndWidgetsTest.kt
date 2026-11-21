@@ -396,4 +396,91 @@ class SwingSystemServicesAndWidgetsTest {
         assertEquals(255, decoded.getPixel(1, 0).a)
         codec.dispose()
     }
+
+    @Test
+    fun swingStyledContainerAndStyledButtonApplyBackdropBlurFromAncestorRoot() {
+        val parent = JPanel(null)
+        parent.setBounds(0, 0, 200, 100)
+        parent.isOpaque = false
+
+        val splitPanel = object : JPanel() {
+            override fun paintComponent(g: java.awt.Graphics) {
+                g.color = java.awt.Color.RED
+                g.fillRect(0, 0, width / 2, height)
+                g.color = java.awt.Color.BLUE
+                g.fillRect(width / 2, 0, width - width / 2, height)
+            }
+        }
+        splitPanel.setBounds(0, 0, 200, 100)
+
+        val glassImpl = SwingStyledContainerImpl()
+        glassImpl.setStyledVisuals(
+            com.nexustools.genericui.style.css.StyledVisualSpec(
+                backgroundColor = RgbaColor(0, 0, 0, 0),
+                backdropBlurPx = 6f,
+                backdropFilter = com.nexustools.genericui.style.css.CssFilter.blur(
+                    com.nexustools.genericui.style.css.CssLength.px(6)
+                )
+            )
+        )
+        glassImpl.nativeWidget.setBounds(0, 0, 200, 100)
+
+        // In Swing Container.paintChildren loops componentCount-1 downTo 0, so index 1 paints before index 0
+        parent.add(glassImpl.nativeWidget)
+        parent.add(splitPanel)
+
+        assertEquals(6f, glassImpl.nativeWidget.getClientProperty("backdropBlurPx"))
+        val bmp = java.awt.image.BufferedImage(200, 100, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        val g2 = bmp.createGraphics()
+        parent.paint(g2)
+        g2.dispose()
+
+        val seamRgb = bmp.getRGB(99, 50)
+        val redCh = (seamRgb ushr 16) and 0xFF
+        val blueCh = seamRgb and 0xFF
+        assertTrue(blueCh > 20, "Expected Swing backdrop blur to pull blue across seam, got R=$redCh B=$blueCh")
+        assertTrue(redCh < 245, "Expected Swing backdrop blur to attenuate red at seam, got R=$redCh B=$blueCh")
+
+        val btnRoot = JPanel(null).apply {
+            setBounds(0, 0, 200, 100)
+            isOpaque = false
+        }
+        val nestedWrapper = JPanel(null).apply {
+            setBounds(0, 0, 200, 100)
+            isOpaque = false
+        }
+        val btnImpl = SwingStyledButtonImpl()
+        btnImpl.setBaseVisuals(
+            com.nexustools.genericui.style.css.StyledVisualSpec(
+                backgroundColor = RgbaColor(0, 0, 0, 0),
+                borderWidthPx = 0f,
+                backdropBlurPx = 8f,
+                backdropFilter = com.nexustools.genericui.style.css.CssFilter.blur(
+                    com.nexustools.genericui.style.css.CssLength.px(8)
+                )
+            )
+        )
+        btnImpl.nativeWidget.setBounds(0, 0, 200, 100)
+        val resolvedBtn = btnImpl.resolveCurrentVisuals()
+        assertEquals(8f, resolvedBtn.backdropBlurPx)
+        assertNotNull(resolvedBtn.backdropFilter)
+        assertEquals(8f, btnImpl.nativeWidget.getClientProperty("backdropBlurPx"))
+
+        nestedWrapper.add(btnImpl.nativeWidget)
+        btnRoot.add(nestedWrapper)
+        btnRoot.add(splitPanel)
+
+        val btnBmp = java.awt.image.BufferedImage(200, 100, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        val bg2 = btnBmp.createGraphics()
+        btnRoot.paint(bg2)
+        bg2.dispose()
+        val btnSeamRgb = btnBmp.getRGB(99, 50)
+        val btnR = (btnSeamRgb ushr 16) and 0xFF
+        val btnB = btnSeamRgb and 0xFF
+        assertTrue(btnB > 20, "Expected nested Swing StyledButton backdrop blur across seam, got R=$btnR B=$btnB")
+        assertTrue(btnR < 245, "Expected nested Swing StyledButton backdrop blur to attenuate red, got R=$btnR B=$btnB")
+
+        glassImpl.dispose()
+        btnImpl.dispose()
+    }
 }

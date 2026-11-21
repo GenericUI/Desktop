@@ -56,6 +56,7 @@ internal object LinuxGlibGioBindings {
     private var fnVariantTypeNew: CPointer<CFunction<(CPointer<ByteVar>?) -> COpaquePointer?>>? = null
     private var fnVariantTypeFree: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
     private var fnVariantNewString: CPointer<CFunction<(CPointer<ByteVar>?) -> COpaquePointer?>>? = null
+    private var fnVariantNewObjectPath: CPointer<CFunction<(CPointer<ByteVar>?) -> COpaquePointer?>>? = null
     private var fnVariantNewByte: CPointer<CFunction<(UByte) -> COpaquePointer?>>? = null
     private var fnVariantNewUint32: CPointer<CFunction<(UInt) -> COpaquePointer?>>? = null
     private var fnVariantNewInt32: CPointer<CFunction<(Int) -> COpaquePointer?>>? = null
@@ -63,9 +64,12 @@ internal object LinuxGlibGioBindings {
     private var fnVariantNewBoolean: CPointer<CFunction<(Int) -> COpaquePointer?>>? = null
     private var fnVariantNewVariant: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
     private var fnVariantNewArray: CPointer<CFunction<(COpaquePointer?, CPointer<COpaquePointerVar>?, ULong) -> COpaquePointer?>>? = null
+    private var fnVariantNewFromBytes: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, Int) -> COpaquePointer?>>? = null
     private var fnVariantNewTuple: CPointer<CFunction<(CPointer<COpaquePointerVar>?, ULong) -> COpaquePointer?>>? = null
     private var fnVariantNewDictEntry: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> COpaquePointer?>>? = null
     private var fnVariantGetChildValue: CPointer<CFunction<(COpaquePointer?, ULong) -> COpaquePointer?>>? = null
+    private var fnVariantNChildren: CPointer<CFunction<(COpaquePointer?) -> ULong>>? = null
+    private var fnVariantGetInt32: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnVariantGetUint32: CPointer<CFunction<(COpaquePointer?) -> UInt>>? = null
     private var fnVariantGetString: CPointer<CFunction<(COpaquePointer?, CPointer<ULongVar>?) -> CPointer<ByteVar>?>>? = null
     private var fnVariantUnref: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
@@ -123,6 +127,7 @@ internal object LinuxGlibGioBindings {
             fnVariantTypeNew = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_type_new")?.reinterpret()
             fnVariantTypeFree = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_type_free")?.reinterpret()
             fnVariantNewString = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_string")?.reinterpret()
+            fnVariantNewObjectPath = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_object_path")?.reinterpret()
             fnVariantNewByte = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_byte")?.reinterpret()
             fnVariantNewUint32 = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_uint32")?.reinterpret()
             fnVariantNewInt32 = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_int32")?.reinterpret()
@@ -130,9 +135,12 @@ internal object LinuxGlibGioBindings {
             fnVariantNewBoolean = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_boolean")?.reinterpret()
             fnVariantNewVariant = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_variant")?.reinterpret()
             fnVariantNewArray = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_array")?.reinterpret()
+            fnVariantNewFromBytes = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_from_bytes")?.reinterpret()
             fnVariantNewTuple = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_tuple")?.reinterpret()
             fnVariantNewDictEntry = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_new_dict_entry")?.reinterpret()
             fnVariantGetChildValue = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_child_value")?.reinterpret()
+            fnVariantNChildren = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_n_children")?.reinterpret()
+            fnVariantGetInt32 = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_int32")?.reinterpret()
             fnVariantGetUint32 = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_uint32")?.reinterpret()
             fnVariantGetString = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_string")?.reinterpret()
             fnVariantUnref = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_unref")?.reinterpret()
@@ -276,6 +284,26 @@ internal object LinuxGlibGioBindings {
         fnVariantNewString?.invoke(value.cstr.ptr)
     }
 
+    fun variantNewObjectPath(objectPath: String): COpaquePointer? = memScoped {
+        fnVariantNewObjectPath?.invoke(objectPath.cstr.ptr)
+    }
+
+    fun variantNewBytes(bytes: ByteArray): COpaquePointer? {
+        if (!ensureLoaded()) return null
+        val fn = fnVariantNewFromBytes ?: return null
+        val arrayByteType = variantTypeNew("ay") ?: return null
+        val gBytes = bytesNew(bytes) ?: run {
+            variantTypeFree(arrayByteType)
+            return null
+        }
+        return try {
+            fn.invoke(arrayByteType, gBytes, 1)
+        } finally {
+            variantTypeFree(arrayByteType)
+            bytesUnref(gBytes)
+        }
+    }
+
     fun variantNewByte(value: UByte): COpaquePointer? = fnVariantNewByte?.invoke(value)
     fun variantNewUint32(value: UInt): COpaquePointer? = fnVariantNewUint32?.invoke(value)
     fun variantNewInt32(value: Int): COpaquePointer? = fnVariantNewInt32?.invoke(value)
@@ -314,6 +342,12 @@ internal object LinuxGlibGioBindings {
 
     fun variantGetChildValue(container: COpaquePointer?, index: Int): COpaquePointer? =
         if (container != null) fnVariantGetChildValue?.invoke(container, index.convert()) else null
+
+    fun variantNChildren(container: COpaquePointer?): Int =
+        if (container != null) (fnVariantNChildren?.invoke(container) ?: 0uL).toInt() else 0
+
+    fun variantGetInt32(variant: COpaquePointer?): Int =
+        if (variant != null) fnVariantGetInt32?.invoke(variant) ?: 0 else 0
 
     fun variantGetUint32(variant: COpaquePointer?): UInt =
         if (variant != null) fnVariantGetUint32?.invoke(variant) ?: 0u else 0u
