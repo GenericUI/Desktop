@@ -18,7 +18,7 @@ import com.nexustools.genericui.component.layout.ResponsiveMasterDetailLayoutImp
 
 /**
  * Shared desktop [LayoutFactory] used by `:desktop:windows`, `:desktop:macos`, `:desktop:gtk`,
- * `:desktop:qt`, and `:desktop:swing`.
+ * `:desktop:kde`, and `:desktop:swing`.
  *
  * Desktop implements only large-screen layouts (`supportsDynamicViewportSwitching = false`) while
  * enforcing minimum window dimensions (`minRequiredWindowSize`) on the hosting window.

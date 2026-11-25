@@ -1,143 +1,143 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.gtk
 
-import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.desktop.widget.DesktopStyledButtonNativeImpl
-import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.geometry.Rect
-import com.nexustools.genericui.gtk.render.GtkControlRenderUtil
-import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
-import com.nexustools.genericui.style.css.ComponentStyle
-import com.nexustools.genericui.style.css.ComputedStyle
-import com.nexustools.genericui.style.css.StyledVisualSpec
-import com.nexustools.genericui.style.theme.SystemThemeDetector
-import com.nexustools.genericui.style.transition.CssTransitionSpec
+import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.gtk.widget.GtkRetainedContainerSupport
+import com.nexustools.genericui.gtk.widget.GtkSurfaceRenderHelper
+import com.nexustools.genericui.gtk.widget.GtkWidgetLifecycleBridge
+import com.nexustools.genericui.linux.style.LinuxBackdropFilterController
+import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssTransform
+import kotlinx.cinterop.COpaquePointer
+import kotlin.math.ceil
+import kotlin.math.max
 
 /**
- * GTK4 / Cairo `GtkButton` implementation of [com.nexustools.genericui.nativeimpl.action.StyledButtonNativeImpl]
- * supporting translucent RGBA backgrounds, linear/radial gradients, rounded borders, focus rings, and interactive
- * `:hover`, `:focus`, `:active`, and `:disabled` states while ignoring `backdrop-filter` blur on desktop.
+ * Retained GTK4 styled button (`GtkDrawingArea` with focus/hover/press/disabled visual states,
+ * multi-stop gradients, borders, box-shadows, 10-op `backdrop-filter`, foreground `CssFilter`,
+ * and centered Pango typography).
  */
-class GtkStyledButtonNativeImpl(
-    nativeWidget: GtkWidgetHandle = GtkWidgetHandle("GtkButton_Styled"),
+open class GtkStyledButtonNativeImpl(
+    nativeWidget: GtkWidgetHandle = GtkWidgetHandle("GtkDrawingArea_StyledButton"),
     classPrefix: String = "styled-btn"
 ) : DesktopStyledButtonNativeImpl<GtkWidgetHandle>(nativeWidget, classPrefix) {
 
     init {
+        nativeWidget.ownerImpl = this
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
-        syncGtkStyledButtonVisuals()
+        nativeWidget.hasCustomSurfaceBackground = true
+        nativeWidget.onDrawSurfaceCairo = { cr, width, height -> paintStyledButton(cr, width, height) }
+        nativeWidget.widgetMaterializer = { materializeStyledButton() }
     }
 
-    private fun syncGtkStyledButtonVisuals() {
-        val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
-        val isDark = effectiveTheme == ThemeMode.DARK
-        nativeWidget.attributes["effectiveThemeMode"] = effectiveTheme
-        nativeWidget.attributes["gtkPreferDarkTheme"] = isDark
-        nativeWidget.attributes["adwColorScheme"] = if (isDark) "ADW_COLOR_SCHEME_FORCE_DARK" else "ADW_COLOR_SCHEME_FORCE_LIGHT"
-        nativeWidget.attributes["useSystemControlAppearance"] = "false"
-
-        val resolved = resolveCurrentVisuals()
-        nativeWidget.attributes["styledButtonVisuals"] = resolved
-        val blurPx = resolved.backdropBlurPx ?: resolved.backdropFilter?.blur?.resolvePx()
-        if (blurPx != null && blurPx > 0f) {
-            nativeWidget.attributes["backdropBlurPx"] = blurPx
-        } else {
-            nativeWidget.attributes.remove("backdropBlurPx")
-        }
-        val bf = resolved.backdropFilter
-        if (bf != null && !bf.isNone) {
-            nativeWidget.attributes["backdropFilter"] = bf
-        } else {
-            nativeWidget.attributes.remove("backdropFilter")
-        }
-        if (resolved.backgroundColor != null) nativeWidget.attributes["backgroundColor"] = resolved.backgroundColor else nativeWidget.attributes.remove("backgroundColor")
-        if (resolved.backgroundGradient != null) nativeWidget.attributes["backgroundGradient"] = resolved.backgroundGradient else nativeWidget.attributes.remove("backgroundGradient")
-        if (resolved.textColor != null) nativeWidget.attributes["textColor"] = resolved.textColor else nativeWidget.attributes.remove("textColor")
-        if (resolved.borderColor != null) nativeWidget.attributes["borderColor"] = resolved.borderColor else nativeWidget.attributes.remove("borderColor")
-        if (resolved.borderWidthPx != null) nativeWidget.attributes["borderWidthPx"] = resolved.borderWidthPx else nativeWidget.attributes.remove("borderWidthPx")
-        if (resolved.borderStyle != null) nativeWidget.attributes["borderStyle"] = resolved.borderStyle else nativeWidget.attributes.remove("borderStyle")
-        if (resolved.borderRadiusPx != null) nativeWidget.attributes["borderRadiusPx"] = resolved.borderRadiusPx else nativeWidget.attributes.remove("borderRadiusPx")
-        if (resolved.focusRingColor != null) nativeWidget.attributes["focusRingColor"] = resolved.focusRingColor else nativeWidget.attributes.remove("focusRingColor")
-        if (resolved.focusRingWidthPx != null) nativeWidget.attributes["focusRingWidthPx"] = resolved.focusRingWidthPx else nativeWidget.attributes.remove("focusRingWidthPx")
-        resolved.opacity?.let {
-            val op = it.coerceIn(0f, 1f)
-            nativeWidget.opacity = op
-            nativeWidget.attributes["opacity"] = op
-        }
-        resolved.padding?.let { nativeWidget.padding = it }
-        nativeWidget.notifyTreeInvalidated()
-    }
-
-    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
-        GtkControlRenderUtil.renderStyledButton(this, renderContext, bounds)
-
-    override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
-        super.applyComponentBootstrap(bootstrap)
-        syncGtkStyledButtonVisuals()
-    }
-
-    override fun applyComponentStyle(style: ComponentStyle) {
-        super.applyComponentStyle(style)
-        syncGtkStyledButtonVisuals()
-    }
-
-    override fun applyComputedStyle(style: ComputedStyle) {
-        super.applyComputedStyle(style)
-        syncGtkStyledButtonVisuals()
-    }
-
-    override fun resolveCurrentVisuals(): StyledVisualSpec {
-        val isDark = (Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()) == ThemeMode.DARK
-        val computed = getComputedStyle()
-        val computedBase = StyledVisualSpec.fromComponentAndComputed(
-            componentStyle = lastComponentStyle,
-            computedStyle = computed,
-            snapshot = styleSnapshot,
-            darkTheme = isDark
+    private fun materializeStyledButton(): COpaquePointer? {
+        nativeWidget.realGtkWidgetPtr?.let { return it }
+        if (!Gtk4DynamicBindings.ensureGtkInitialized()) return null
+        val da = GtkWidgetLifecycleBridge.createDrawingSurfaceForPainter(nativeWidget) { cr, w, h ->
+            paintStyledButton(cr, w, h)
+        } ?: return null
+        Gtk4DynamicBindings.gtkWidgetSetFocusable(da, true)
+        GtkWidgetLifecycleBridge.attachControllersAndState(
+            impl = this,
+            rootPtr = da,
+            focusTargetPtr = da,
+            isTextInput = false,
+            dispatchClickOnPrimaryRelease = true,
+            attachClickGesture = true
         )
-        var effective = computedBase.mergeWith(getBaseVisuals())
-
-        if (!nativeWidget.enabled) {
-            val computedDisabled = computed?.disabledStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedDisabled).mergeWith(getDisabledVisuals())
-            return effective
-        }
-
-        if (isHoveredState()) {
-            val computedHover = computed?.hoverStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedHover).mergeWith(getHoverVisuals())
-        }
-
-        if (isFocusedState()) {
-            val computedFocus = computed?.focusStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedFocus).mergeWith(getFocusVisuals())
-        }
-
-        if (isActivePressedState()) {
-            val computedActive = computed?.activeStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedActive).mergeWith(getActiveVisuals())
-        }
-
-        return effective
+        return da
     }
 
-    override fun runNativeTransition(
-        property: String,
-        fromValue: String?,
-        toValue: String,
-        spec: CssTransitionSpec,
-        onComplete: () -> Unit
-    ): Boolean {
-        val handled = super.runNativeTransition(property, fromValue, toValue, spec, onComplete)
-        if (property.equals("opacity", ignoreCase = true)) {
-            val fromAlpha = (fromValue?.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
-            val targetAlpha = (toValue.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
-            nativeWidget.attributes["transitionFromOpacity"] = fromAlpha
-            nativeWidget.attributes["transitionToOpacity"] = targetAlpha
-            setOpacity(targetAlpha)
-            if (spec.durationMs <= 0f) {
-                onComplete()
-            }
+    private fun paintStyledButton(cr: COpaquePointer, width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        val dark = GtkRetainedContainerSupport.resolveDarkTheme()
+        val visuals = resolveCurrentVisuals()
+        val computed = getComputedStyle()
+        val paintSpec = GtkSurfaceRenderHelper.fromStyledVisualSpec(
+            spec = visuals,
+            cornerRadii = computed?.borderRadius,
+            backdropFilter = nativeWidget.attributes["backdropFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.backdropFilter,
+            foregroundFilter = nativeWidget.attributes["cssFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.filter,
+            opacity = visuals.opacity ?: getOpacity(),
+            darkTheme = dark
+        )
+        val hasBackdrop = GtkSurfaceRenderHelper.effectiveBackdropFilter(paintSpec)?.let {
+            LinuxBackdropFilterController.shared.hasActiveEffects(it)
+        } == true
+        val behindCapture: (() -> IntArray?)? = if (hasBackdrop) {
+            { GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(this, width, height) }
+        } else {
+            null
         }
-        return handled
+        GtkSurfaceRenderHelper.paintSurface(
+            cr = cr,
+            width = width,
+            height = height,
+            spec = paintSpec,
+            behindBgraCapture = behindCapture
+        )
+
+        val icon = getIcon()?.takeIf { it.isNotBlank() }
+        val text = getText()
+        val display = if (icon != null && text.isNotEmpty()) "$icon $text" else (icon ?: text)
+        if (display.isNotEmpty()) {
+            val fg = visuals.textColor ?: if (dark) RgbaColor.WHITE else RgbaColor(20, 22, 26, 255)
+            val fontSize = (nativeWidget.attributes["fontSizePx"] as? Float) ?: 14f
+            GtkSurfaceRenderHelper.drawPangoText(
+                cr = cr,
+                text = display,
+                x = 6.0,
+                y = 0.0,
+                width = (width - 12.0).coerceAtLeast(1.0),
+                height = height.toDouble(),
+                color = fg,
+                fontSizePx = fontSize,
+                fontWeight = Gtk4DynamicBindings.PANGO_WEIGHT_SEMIBOLD,
+                align = Gtk4DynamicBindings.PANGO_ALIGN_CENTER,
+                singleLine = true,
+                opacity = visuals.opacity ?: getOpacity()
+            )
+        }
     }
+
+    override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {
+        val visuals = resolveCurrentVisuals()
+        val icon = getIcon()?.takeIf { it.isNotBlank() }
+        val text = getText()
+        val display = if (icon != null && text.isNotEmpty()) "$icon $text" else (icon ?: text).ifEmpty { " " }
+        val fontSize = (nativeWidget.attributes["fontSizePx"] as? Float) ?: 14f
+        val (tw, th) = GtkSurfaceRenderHelper.measureTextSize(
+            text = display,
+            fontSizePx = fontSize,
+            fontWeight = Gtk4DynamicBindings.PANGO_WEIGHT_SEMIBOLD
+        )
+        val prefW = visuals.widthPx ?: max(visuals.minWidthPx ?: 44, tw + 24)
+        val prefH = visuals.heightPx ?: max(visuals.minHeightPx ?: 34, th + 12)
+        return Size(prefW, prefH)
+    }
+
+    override fun setText(text: String) {
+        super.setText(text)
+        nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+    }
+
+    override fun setIcon(icon: String?) {
+        super.setIcon(icon)
+        nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+    }
+
+    override fun onNativeBoundsChanged(rect: Rect) = GtkWidgetLifecycleBridge.onBoundsChanged(this, rect)
+    override fun onNativeVisibilityChanged(visible: Boolean) = GtkWidgetLifecycleBridge.onVisibilityChanged(this, visible)
+    override fun onNativeEnabledChanged(enabled: Boolean) = GtkWidgetLifecycleBridge.onEnabledChanged(this, enabled)
+    override fun onNativeOpacityChanged(opacity: Float) = GtkWidgetLifecycleBridge.onOpacityChanged(this, opacity)
+    override fun onNativeTooltipChanged(tooltip: String?) = GtkWidgetLifecycleBridge.onTooltipChanged(this, tooltip)
+    override fun onNativeCursorChanged(cursor: CssCursorValue?) = GtkWidgetLifecycleBridge.onCursorChanged(this, cursor)
+    override fun onNativePointerEventsChanged(pointerEventsNone: Boolean) = GtkWidgetLifecycleBridge.onPointerEventsChanged(this, pointerEventsNone)
+    override fun onNativeZIndexChanged(zIndex: Int) = GtkWidgetLifecycleBridge.onZIndexChanged(this, zIndex)
+    override fun onNativeTransformChanged(transform: CssTransform?) = GtkWidgetLifecycleBridge.onTransformChanged(this, transform)
+    override fun onNativeStyleSynced() = GtkWidgetLifecycleBridge.onStyleSynced(this)
 }

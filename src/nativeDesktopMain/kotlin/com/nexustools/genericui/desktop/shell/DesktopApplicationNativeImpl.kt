@@ -6,7 +6,7 @@ import com.nexustools.genericui.nativeimpl.shell.ApplicationNativeImpl
 
 /**
  * Shared desktop base implementation of [ApplicationNativeImpl] for Win32 message loops (`GetMessageW` /
- * `DispatchMessageW`), macOS `NSApplication`, GTK4 `GtkApplication` (`GMainLoop`), and Qt6 `QApplication`.
+ * `DispatchMessageW`), macOS `NSApplication`, GTK4 `GtkApplication` (`GMainLoop`), and KDE `QApplication`.
  */
 open class DesktopApplicationNativeImpl<out W : DesktopNativeWidget>(
     override val nativeApplication: W

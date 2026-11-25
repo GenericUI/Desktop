@@ -1,12 +1,9 @@
 package com.nexustools.genericui.swing
 
-import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
-import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
-import com.nexustools.genericui.style.theme.SystemThemeDetector
 import java.awt.image.BufferedImage
 import javax.swing.JButton
 import javax.swing.JComponent
@@ -62,59 +59,15 @@ open class SwingButtonImpl(
         width: Int = nativeWidget.width.takeIf { it > 0 } ?: 120,
         height: Int = nativeWidget.height.takeIf { it > 0 } ?: 36,
         includeTextOverlay: Boolean = true
-    ): BufferedImage {
-        val w = width.coerceAtLeast(1)
-        val h = height.coerceAtLeast(1)
-        val bType = getType() ?: BootstrapType.NONE
-        val isDark = (Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()) == ThemeMode.DARK
-        val themeConfig = BootstrapColorPalette.activeThemeConfig
-        if (this !is SwingStyledButtonImpl && bType != BootstrapType.NONE) {
-            val sprite = SwingControlTintRenderUtil.renderEmptyTextTintedButtonSprite(
-                button = nativeWidget,
-                width = w,
-                height = h,
-                type = bType,
-                outline = isOutline(),
-                isDark = isDark,
-                themeConfig = themeConfig
-            )
-            if (includeTextOverlay) {
-                val g2 = sprite.createGraphics()
-                try {
-                    val fgRgba = SwingControlTintRenderUtil.resolveButtonForeground(
-                        type = bType,
-                        outline = isOutline(),
-                        isDark = isDark,
-                        themeConfig = themeConfig
-                    )
-                    SwingControlTintRenderUtil.drawContrastingTextAndIconOverlay(
-                        g2 = g2,
-                        button = nativeWidget,
-                        width = w,
-                        height = h,
-                        fgColor = SwingControlTintRenderUtil.toAwtColor(fgRgba, !nativeWidget.isEnabled),
-                        pressed = false
-                    )
-                } finally {
-                    g2.dispose()
-                }
-            }
-            return sprite
-        }
-        val image = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
-        val g2 = image.createGraphics()
-        try {
-            val prevW = nativeWidget.width
-            val prevH = nativeWidget.height
-            if (prevW <= 0 || prevH <= 0) {
-                nativeWidget.setSize(w, h)
-            }
-            nativeWidget.paint(g2)
-        } finally {
-            g2.dispose()
-        }
-        return image
-    }
+    ): BufferedImage = SwingControlTintRenderUtil.renderButtonOffscreenSprite(
+        button = nativeWidget,
+        width = width,
+        height = height,
+        type = getType() ?: BootstrapType.NONE,
+        outline = isOutline(),
+        allowTinted = this !is SwingStyledButtonImpl,
+        includeTextOverlay = includeTextOverlay
+    )
 
     override fun setBackgroundGradient(gradient: Gradient?) {
         if (this is SwingStyledButtonImpl) {

@@ -71,7 +71,12 @@ internal object LinuxGlibGioBindings {
     private var fnVariantNChildren: CPointer<CFunction<(COpaquePointer?) -> ULong>>? = null
     private var fnVariantGetInt32: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnVariantGetUint32: CPointer<CFunction<(COpaquePointer?) -> UInt>>? = null
+    private var fnVariantGetDouble: CPointer<CFunction<(COpaquePointer?) -> Double>>? = null
+    private var fnVariantGetBoolean: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
     private var fnVariantGetString: CPointer<CFunction<(COpaquePointer?, CPointer<ULongVar>?) -> CPointer<ByteVar>?>>? = null
+    private var fnVariantGetVariant: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
+    private var fnVariantGetTypeString: CPointer<CFunction<(COpaquePointer?) -> CPointer<ByteVar>?>>? = null
+    private var fnVariantLookupValue: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?, COpaquePointer?) -> COpaquePointer?>>? = null
     private var fnVariantUnref: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
 
     private var fnObjectUnref: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
@@ -79,6 +84,15 @@ internal object LinuxGlibGioBindings {
     private var fnSignalConnectData: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?, COpaquePointer?, COpaquePointer?, COpaquePointer?, UInt) -> ULong>>? = null
     private var fnSignalHandlerDisconnect: CPointer<CFunction<(COpaquePointer?, ULong) -> Unit>>? = null
     private var fnTypeCheckInstanceIsA: CPointer<CFunction<(COpaquePointer?, ULong) -> Int>>? = null
+
+    private var fnSettingsSchemaSourceGetDefault: CPointer<CFunction<() -> COpaquePointer?>>? = null
+    private var fnSettingsSchemaSourceLookup: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?, Int) -> COpaquePointer?>>? = null
+    private var fnSettingsSchemaHasKey: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?) -> Int>>? = null
+    private var fnSettingsSchemaUnref: CPointer<CFunction<(COpaquePointer?) -> Unit>>? = null
+    private var fnSettingsNew: CPointer<CFunction<(CPointer<ByteVar>?) -> COpaquePointer?>>? = null
+    private var fnSettingsGetString: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?) -> CPointer<ByteVar>?>>? = null
+    private var fnSettingsGetBoolean: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?) -> Int>>? = null
+    private var fnSettingsGetInt: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?) -> Int>>? = null
 
     private var fnNetworkMonitorGetDefault: CPointer<CFunction<() -> COpaquePointer?>>? = null
     private var fnNetworkMonitorGetAvailable: CPointer<CFunction<(COpaquePointer?) -> Int>>? = null
@@ -142,7 +156,12 @@ internal object LinuxGlibGioBindings {
             fnVariantNChildren = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_n_children")?.reinterpret()
             fnVariantGetInt32 = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_int32")?.reinterpret()
             fnVariantGetUint32 = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_uint32")?.reinterpret()
+            fnVariantGetDouble = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_double")?.reinterpret()
+            fnVariantGetBoolean = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_boolean")?.reinterpret()
             fnVariantGetString = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_string")?.reinterpret()
+            fnVariantGetVariant = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_variant")?.reinterpret()
+            fnVariantGetTypeString = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_get_type_string")?.reinterpret()
+            fnVariantLookupValue = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_lookup_value")?.reinterpret()
             fnVariantUnref = LinuxDynamicLibraryLoader.symbol(glib, "g_variant_unref")?.reinterpret()
             glibAvailable = fnFree != null && fnMainContextDefault != null && fnMainContextIteration != null
         }
@@ -178,6 +197,14 @@ internal object LinuxGlibGioBindings {
             fnListStoreAppend = LinuxDynamicLibraryLoader.symbol(gio, "g_list_store_append")?.reinterpret()
             fnFileNewForPath = LinuxDynamicLibraryLoader.symbol(gio, "g_file_new_for_path")?.reinterpret()
             fnFileGetPath = LinuxDynamicLibraryLoader.symbol(gio, "g_file_get_path")?.reinterpret()
+            fnSettingsSchemaSourceGetDefault = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_schema_source_get_default")?.reinterpret()
+            fnSettingsSchemaSourceLookup = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_schema_source_lookup")?.reinterpret()
+            fnSettingsSchemaHasKey = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_schema_has_key")?.reinterpret()
+            fnSettingsSchemaUnref = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_schema_unref")?.reinterpret()
+            fnSettingsNew = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_new")?.reinterpret()
+            fnSettingsGetString = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_get_string")?.reinterpret()
+            fnSettingsGetBoolean = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_get_boolean")?.reinterpret()
+            fnSettingsGetInt = LinuxDynamicLibraryLoader.symbol(gio, "g_settings_get_int")?.reinterpret()
             gioAvailable = fnNetworkMonitorGetDefault != null && fnBusGetSync != null
         }
 
@@ -352,8 +379,28 @@ internal object LinuxGlibGioBindings {
     fun variantGetUint32(variant: COpaquePointer?): UInt =
         if (variant != null) fnVariantGetUint32?.invoke(variant) ?: 0u else 0u
 
+    fun variantGetDouble(variant: COpaquePointer?): Double =
+        if (variant != null) fnVariantGetDouble?.invoke(variant) ?: 0.0 else 0.0
+
+    fun variantGetBoolean(variant: COpaquePointer?): Boolean =
+        if (variant != null) (fnVariantGetBoolean?.invoke(variant) ?: 0) != 0 else false
+
     fun variantGetString(variant: COpaquePointer?): String? =
         variant?.let { fnVariantGetString?.invoke(it, null)?.toKString() }
+
+    fun variantGetVariant(variant: COpaquePointer?): COpaquePointer? =
+        if (variant != null) fnVariantGetVariant?.invoke(variant) else null
+
+    fun variantGetTypeString(variant: COpaquePointer?): String? =
+        variant?.let { fnVariantGetTypeString?.invoke(it)?.toKString() }
+
+    fun variantLookupValue(
+        dictionary: COpaquePointer?,
+        key: String,
+        expectedType: COpaquePointer? = null
+    ): COpaquePointer? = memScoped {
+        if (dictionary == null) null else fnVariantLookupValue?.invoke(dictionary, key.cstr.ptr, expectedType)
+    }
 
     fun variantUnref(variant: COpaquePointer?) {
         if (variant != null) fnVariantUnref?.invoke(variant)
@@ -538,5 +585,220 @@ internal object LinuxGlibGioBindings {
         val str = pathPtr.toKString()
         free(pathPtr)
         return str
+    }
+
+    fun dbusCallSyncWithError(
+        connection: COpaquePointer,
+        busName: String?,
+        objectPath: String,
+        interfaceName: String,
+        methodName: String,
+        parameters: COpaquePointer?,
+        timeoutMs: Int = 5000
+    ): Pair<COpaquePointer?, String?> = memScoped {
+        val err = alloc<COpaquePointerVar>()
+        err.value = null
+        val res = fnDbusCallSync?.invoke(
+            connection,
+            busName?.cstr?.ptr,
+            objectPath.cstr.ptr,
+            interfaceName.cstr.ptr,
+            methodName.cstr.ptr,
+            parameters,
+            null,
+            G_DBUS_CALL_FLAGS_NONE,
+            timeoutMs,
+            null,
+            err.ptr
+        )
+        val errMsg = readAndFreeError(err.ptr)
+        res to errMsg
+    }
+
+    fun gsettingsHasSchema(schemaId: String): Boolean = memScoped {
+        if (!ensureLoaded()) return@memScoped false
+        val lookupFn = fnSettingsSchemaSourceLookup ?: return@memScoped false
+        val source = fnSettingsSchemaSourceGetDefault?.invoke() ?: return@memScoped false
+        val schema = lookupFn.invoke(source, schemaId.cstr.ptr, 1) ?: return@memScoped false
+        fnSettingsSchemaUnref?.invoke(schema)
+        true
+    }
+
+    private fun openGSettingsSafely(schemaId: String, key: String): COpaquePointer? = memScoped {
+        if (!ensureLoaded()) return@memScoped null
+        val lookupFn = fnSettingsSchemaSourceLookup ?: return@memScoped null
+        val newFn = fnSettingsNew ?: return@memScoped null
+        val source = fnSettingsSchemaSourceGetDefault?.invoke() ?: return@memScoped null
+        // Mandatory: g_settings_new aborts the process if schemaId does not exist!
+        val schema = lookupFn.invoke(source, schemaId.cstr.ptr, 1) ?: return@memScoped null
+        val hasKey = try {
+            val hasKeyFn = fnSettingsSchemaHasKey
+            hasKeyFn == null || hasKeyFn.invoke(schema, key.cstr.ptr) != 0
+        } finally {
+            fnSettingsSchemaUnref?.invoke(schema)
+        }
+        if (!hasKey) return@memScoped null
+        newFn.invoke(schemaId.cstr.ptr)
+    }
+
+    fun gsettingsReadString(schemaId: String, key: String): String? = memScoped {
+        val getFn = fnSettingsGetString
+        val settings = openGSettingsSafely(schemaId, key) ?: return@memScoped null
+        try {
+            val strPtr = getFn?.invoke(settings, key.cstr.ptr) ?: return@memScoped null
+            try {
+                strPtr.toKString()
+            } finally {
+                free(strPtr)
+            }
+        } finally {
+            objectUnref(settings)
+        }
+    }
+
+    fun gsettingsReadBoolean(schemaId: String, key: String): Boolean? = memScoped {
+        val getFn = fnSettingsGetBoolean ?: return@memScoped null
+        val settings = openGSettingsSafely(schemaId, key) ?: return@memScoped null
+        try {
+            getFn.invoke(settings, key.cstr.ptr) != 0
+        } finally {
+            objectUnref(settings)
+        }
+    }
+
+    fun gsettingsReadInt(schemaId: String, key: String): Int? = memScoped {
+        val getFn = fnSettingsGetInt ?: return@memScoped null
+        val settings = openGSettingsSafely(schemaId, key) ?: return@memScoped null
+        try {
+            getFn.invoke(settings, key.cstr.ptr)
+        } finally {
+            objectUnref(settings)
+        }
+    }
+
+    private fun queryPortalSettingVariant(
+        namespace: String,
+        key: String,
+        timeoutMs: Int = 400,
+        errorOut: MutableList<String>? = null
+    ): COpaquePointer? {
+        if (!ensureLoaded() || fnDbusCallSync == null) return null
+        val bus = busGetSessionSync() ?: return null
+        try {
+            val nsVar = variantNewString(namespace) ?: return null
+            val keyVar = variantNewString(key) ?: run {
+                variantUnref(nsVar)
+                return null
+            }
+            val tuple1 = variantNewTuple(listOf(nsVar, keyVar)) ?: run {
+                variantUnref(nsVar)
+                variantUnref(keyVar)
+                return null
+            }
+            var (reply, err1) = dbusCallSyncWithError(
+                connection = bus,
+                busName = "org.freedesktop.portal.Desktop",
+                objectPath = "/org/freedesktop/portal/desktop",
+                interfaceName = "org.freedesktop.portal.Settings",
+                methodName = "ReadOne",
+                parameters = tuple1,
+                timeoutMs = timeoutMs
+            )
+            if (reply == null) {
+                val nsVar2 = variantNewString(namespace) ?: return null
+                val keyVar2 = variantNewString(key) ?: run {
+                    variantUnref(nsVar2)
+                    return null
+                }
+                val tuple2 = variantNewTuple(listOf(nsVar2, keyVar2)) ?: run {
+                    variantUnref(nsVar2)
+                    variantUnref(keyVar2)
+                    return null
+                }
+                val (reply2, err2) = dbusCallSyncWithError(
+                    connection = bus,
+                    busName = "org.freedesktop.portal.Desktop",
+                    objectPath = "/org/freedesktop/portal/desktop",
+                    interfaceName = "org.freedesktop.portal.Settings",
+                    methodName = "Read",
+                    parameters = tuple2,
+                    timeoutMs = timeoutMs
+                )
+                reply = reply2
+                if (reply == null) {
+                    val diag = err2 ?: err1
+                    if (!diag.isNullOrBlank()) {
+                        errorOut?.add("Portal Settings ($namespace/$key): $diag")
+                    }
+                    return null
+                }
+            }
+            try {
+                var cur = variantGetChildValue(reply, 0) ?: return null
+                var depth = 0
+                while (depth < 4 && variantGetTypeString(cur) == "v") {
+                    val next = variantGetVariant(cur)
+                    variantUnref(cur)
+                    if (next == null) return null
+                    cur = next
+                    depth++
+                }
+                return cur
+            } finally {
+                variantUnref(reply)
+            }
+        } finally {
+            objectUnref(bus)
+        }
+    }
+
+    fun readPortalAppearanceColorScheme(errorOut: MutableList<String>? = null): Int? {
+        val valueVar = queryPortalSettingVariant("org.freedesktop.appearance", "color-scheme", errorOut = errorOut)
+            ?: return null
+        return try {
+            when (variantGetTypeString(valueVar)) {
+                "u" -> variantGetUint32(valueVar).toInt()
+                "i" -> variantGetInt32(valueVar)
+                else -> null
+            }
+        } finally {
+            variantUnref(valueVar)
+        }
+    }
+
+    fun readPortalAppearanceAccentColor(errorOut: MutableList<String>? = null): Triple<Double, Double, Double>? {
+        val valueVar = queryPortalSettingVariant("org.freedesktop.appearance", "accent-color", errorOut = errorOut)
+            ?: return null
+        return try {
+            if (variantGetTypeString(valueVar) != "(ddd)" || variantNChildren(valueVar) != 3) {
+                null
+            } else {
+                val c0 = variantGetChildValue(valueVar, 0)
+                val c1 = variantGetChildValue(valueVar, 1)
+                val c2 = variantGetChildValue(valueVar, 2)
+                try {
+                    if (c0 == null || c1 == null || c2 == null) {
+                        null
+                    } else {
+                        val r = variantGetDouble(c0)
+                        val g = variantGetDouble(c1)
+                        val b = variantGetDouble(c2)
+                        if (r.isFinite() && g.isFinite() && b.isFinite() &&
+                            r in 0.0..1.0 && g in 0.0..1.0 && b in 0.0..1.0
+                        ) {
+                            Triple(r, g, b)
+                        } else {
+                            null
+                        }
+                    }
+                } finally {
+                    variantUnref(c0)
+                    variantUnref(c1)
+                    variantUnref(c2)
+                }
+            }
+        } finally {
+            variantUnref(valueVar)
+        }
     }
 }

@@ -3,9 +3,10 @@ package com.nexustools.genericui.desktop.core
 /**
  * Generic stage-overlay layout & state contract attached to an overlay root [DesktopNativeWidget]
  * by `:extensions:overlay`, `:extensions:media`, `:extensions:canvas2d`, or consumer overlays.
- * Allows desktop backends to identify overlay zones (`top-bar`, `center-zone`, `bottom-bar`,
- * `controls-row`, `seek-container`, `hover-bubble`, `time-readout`, `expanding-slider-pill`,
- * `caption-banner`, `popover-panel`, etc.) without referencing extension or consumer-app class names.
+ * Allows desktop backends to identify overlay zones (`window-title-bar`, `top-bar`, `center-zone`,
+ * `bottom-bar`, `controls-row`, `seek-container`, `hover-bubble`, `time-readout`,
+ * `expanding-slider-pill`, `caption-banner`, `popover-panel`, etc.) without referencing extension
+ * or consumer-app class names.
  */
 class DesktopStageOverlaySpec(
     val isTargetActive: ((DesktopNativeWidget) -> Boolean)? = null,
@@ -29,6 +30,7 @@ class DesktopStageOverlaySpec(
 
     companion object {
         const val ATTR_OVERLAY_ROLE = "data-overlay-role"
+        const val ROLE_WINDOW_TITLE_BAR = "window-title-bar"
         const val ROLE_CONTROLS_LAYER = "controls-layer"
         const val ROLE_TOP_BAR = "top-bar"
         const val ROLE_CENTER_ZONE = "center-zone"

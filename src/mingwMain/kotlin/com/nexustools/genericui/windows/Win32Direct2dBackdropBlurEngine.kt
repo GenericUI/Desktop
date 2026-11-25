@@ -43,6 +43,7 @@ import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -119,8 +120,11 @@ object Win32Direct2dBackdropBlurEngine {
         regionY: Int,
         regionWidth: Int,
         regionHeight: Int,
-        cornerRadiusPx: Float
+        cornerRadiusPx: Float,
+        opacity: Float = 1f
     ): Boolean {
+        val effOpacity = opacity.coerceIn(0f, 1f)
+        if (effOpacity <= 0.002f) return true
         val capW = capX1 - capX0
         val capH = capY1 - capY0
         val copyW = x1 - x0
@@ -144,7 +148,8 @@ object Win32Direct2dBackdropBlurEngine {
                 regionY = regionY,
                 regionWidth = regionWidth,
                 regionHeight = regionHeight,
-                cornerRadiusPx = cornerRadiusPx
+                cornerRadiusPx = cornerRadiusPx,
+                opacity = effOpacity
             )
         }
         if (appliedGpu) return true
@@ -165,7 +170,8 @@ object Win32Direct2dBackdropBlurEngine {
             regionY = regionY,
             regionWidth = regionWidth,
             regionHeight = regionHeight,
-            cornerRadiusPx = cornerRadiusPx
+            cornerRadiusPx = cornerRadiusPx,
+            opacity = effOpacity
         )
     }
 
@@ -182,9 +188,12 @@ object Win32Direct2dBackdropBlurEngine {
         regionY: Int,
         regionWidth: Int,
         regionHeight: Int,
-        cornerRadiusPx: Float = 0f
+        cornerRadiusPx: Float = 0f,
+        opacity: Float = 1f
     ): Boolean {
         if (!filter.hasActiveEffects || bufferWidth <= 0 || bufferHeight <= 0) return false
+        val effOpacity = opacity.coerceIn(0f, 1f)
+        if (effOpacity <= 0.002f) return true
         if (argbPixels.size < bufferWidth * bufferHeight) return false
         val x0 = regionX.coerceIn(0, bufferWidth)
         val y0 = regionY.coerceIn(0, bufferHeight)
@@ -192,7 +201,16 @@ object Win32Direct2dBackdropBlurEngine {
         val y1 = (regionY + regionHeight).coerceIn(0, bufferHeight)
         if (x1 <= x0 || y1 <= y0) return false
         val blurPx = (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
-        val pad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 32) else 0
+        val shadow = filter.dropShadow?.takeIf { filter.hasDropShadow }
+        val blurPad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 32) else 0
+        val shadowPad = if (shadow != null) {
+            val sBlur = (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, 48f)
+            val sOff = max(kotlin.math.abs(shadow.offsetX.resolvePx() ?: 0f), kotlin.math.abs(shadow.offsetY.resolvePx() ?: 0f))
+            (ceil(sBlur * 1.5f).toInt() + ceil(sOff).toInt()).coerceIn(1, 64)
+        } else {
+            0
+        }
+        val pad = max(blurPad, shadowPad)
         val capX0 = (x0 - pad).coerceAtLeast(0)
         val capY0 = (y0 - pad).coerceAtLeast(0)
         val capX1 = (x1 + pad).coerceAtMost(bufferWidth)
@@ -218,7 +236,8 @@ object Win32Direct2dBackdropBlurEngine {
                 regionY = regionY,
                 regionWidth = regionWidth,
                 regionHeight = regionHeight,
-                cornerRadiusPx = cornerRadiusPx
+                cornerRadiusPx = cornerRadiusPx,
+                opacity = effOpacity
             )
         }
         return handled
@@ -240,22 +259,72 @@ object Win32Direct2dBackdropBlurEngine {
         regionY: Int,
         regionWidth: Int,
         regionHeight: Int,
-        cornerRadiusPx: Float
+        cornerRadiusPx: Float,
+        opacity: Float
     ): Boolean {
+        if (filter.hasDropShadow) return false
         if (!ensureGpuInitialized()) return false
         val ctx = d2dContext ?: return false
-        if (!ensureBitmaps(ctx, capW, capH, copyW, copyH)) return false
+        val blurPx = if (filter.hasBlur) (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f) else 0f
+        val downsample = when {
+            blurPx >= 12f && capW >= 32 && capH >= 32 -> 4
+            blurPx >= 6f && capW >= 16 && capH >= 16 -> 2
+            else -> 1
+        }
+        val uploadW = if (downsample > 1) ((capW + downsample - 1) / downsample).coerceAtLeast(2) else capW
+        val uploadH = if (downsample > 1) ((capH + downsample - 1) / downsample).coerceAtLeast(2) else capH
+        val readW = if (downsample > 1) uploadW else copyW
+        val readH = if (downsample > 1) uploadH else copyH
+
+        if (!ensureBitmaps(ctx, uploadW, uploadH, readW, readH)) return false
         val srcBmp = cachedSrcBitmap ?: return false
         val dstBmp = cachedTargetBitmap ?: return false
         val stagingBmp = cachedStagingBitmap ?: return false
 
-        ensureScratchSize(capW * capH)
+        ensureScratchSize(uploadW * uploadH)
         val captureBuf = reusableCaptureBuffer
-        var dstIdx = 0
-        for (py in capY0 until capY0 + capH) {
-            val rowOff = py * bufW
-            for (px in capX0 until capX0 + capW) {
-                captureBuf[dstIdx++] = wordsPtr[rowOff + px].toInt() or 0xFF000000.toInt()
+        if (downsample == 1) {
+            var dstIdx = 0
+            for (py in capY0 until capY0 + capH) {
+                val rowOff = py * bufW
+                for (px in capX0 until capX0 + capW) {
+                    captureBuf[dstIdx++] = wordsPtr[rowOff + px].toInt() or 0xFF000000.toInt()
+                }
+            }
+        } else {
+            val capXEnd = capX0 + capW
+            val capYEnd = capY0 + capH
+            var dstIdx = 0
+            for (dsY in 0 until uploadH) {
+                val sy0 = capY0 + dsY * downsample
+                val sy1 = min(capYEnd, sy0 + downsample)
+                for (dsX in 0 until uploadW) {
+                    val sx0 = capX0 + dsX * downsample
+                    val sx1 = min(capXEnd, sx0 + downsample)
+                    var rSum = 0
+                    var gSum = 0
+                    var bSum = 0
+                    var cnt = 0
+                    for (sy in sy0 until sy1) {
+                        val rowOff = sy * bufW
+                        for (sx in sx0 until sx1) {
+                            val w = wordsPtr[rowOff + sx].toInt()
+                            rSum += (w ushr 16) and 0xFF
+                            gSum += (w ushr 8) and 0xFF
+                            bSum += w and 0xFF
+                            cnt++
+                        }
+                    }
+                    if (cnt <= 0) {
+                        val w = wordsPtr[(min(capYEnd - 1, sy0)) * bufW + min(capXEnd - 1, sx0)].toInt()
+                        captureBuf[dstIdx++] = w or 0xFF000000.toInt()
+                    } else {
+                        captureBuf[dstIdx++] = (0xFF000000.toInt()) or
+                            ((rSum / cnt) shl 16) or
+                            ((gSum / cnt) shl 8) or
+                            (bSum / cnt)
+                    }
+                }
             }
         }
 
@@ -263,22 +332,22 @@ object Win32Direct2dBackdropBlurEngine {
             val dstRect = allocArray<UIntVar>(4)
             dstRect[0] = 0u
             dstRect[1] = 0u
-            dstRect[2] = capW.toUInt()
-            dstRect[3] = capH.toUInt()
+            dstRect[2] = uploadW.toUInt()
+            dstRect[3] = uploadH.toUInt()
             captureBuf.usePinned { pinned ->
                 val fnCopyFromMem = comMethod<CFunction<(COpaquePointer, COpaquePointer?, COpaquePointer, UInt) -> Int>>(
                     srcBmp,
                     SLOT_BITMAP_COPY_FROM_MEMORY
                 )
-                fnCopyFromMem(srcBmp, dstRect, pinned.addressOf(0), (capW * 4).toUInt()) >= 0
+                fnCopyFromMem(srcBmp, dstRect, pinned.addressOf(0), (uploadW * 4).toUInt()) >= 0
             }
         }
         if (!okCopyIn) return false
 
-        val blurPx = if (filter.hasBlur) (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f) else 0f
+        val effectiveBlurPx = blurPx / downsample.toFloat()
         var outputEffect: COpaquePointer? = null
 
-        if (blurPx > 0f) {
+        if (effectiveBlurPx > 0f) {
             val blurEff = gaussianBlurEffect ?: return false
             val setInputFn = comMethod<CFunction<(COpaquePointer, UInt, COpaquePointer?, Int) -> Unit>>(
                 blurEff,
@@ -286,7 +355,7 @@ object Win32Direct2dBackdropBlurEngine {
             )
             setInputFn(blurEff, 0u, srcBmp, 1)
 
-            val okStdDev = setEffectFloatProperty(blurEff, D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, blurPx)
+            val okStdDev = setEffectFloatProperty(blurEff, D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, effectiveBlurPx)
             val okOpt = setEffectUIntProperty(blurEff, D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION, D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED)
             val okBorder = setEffectUIntProperty(blurEff, D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_HARD)
             if (!okStdDev || !okOpt || !okBorder) return false
@@ -334,8 +403,8 @@ object Win32Direct2dBackdropBlurEngine {
             val srcImageRect = allocArray<FloatVar>(4)
             srcImageRect[0] = 0f
             srcImageRect[1] = 0f
-            srcImageRect[2] = capW.toFloat()
-            srcImageRect[3] = capH.toFloat()
+            srcImageRect[2] = uploadW.toFloat()
+            srcImageRect[3] = uploadH.toFloat()
             drawImageFn(ctx, outImage, null, srcImageRect, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_COMPOSITE_MODE_SOURCE_COPY)
             val hrEnd = endDrawFn(ctx, null, null)
             setTargetFn(ctx, null)
@@ -349,12 +418,22 @@ object Win32Direct2dBackdropBlurEngine {
             return false
         }
 
+        val effOp255 = (opacity * 255f).roundToInt().coerceIn(0, 255)
+        if (effOp255 <= 0) return true
+
         val mappedOk = memScoped {
             val srcRect = allocArray<UIntVar>(4)
-            srcRect[0] = (x0 - capX0).toUInt()
-            srcRect[1] = (y0 - capY0).toUInt()
-            srcRect[2] = (x0 - capX0 + copyW).toUInt()
-            srcRect[3] = (y0 - capY0 + copyH).toUInt()
+            if (downsample == 1) {
+                srcRect[0] = (x0 - capX0).toUInt()
+                srcRect[1] = (y0 - capY0).toUInt()
+                srcRect[2] = (x0 - capX0 + copyW).toUInt()
+                srcRect[3] = (y0 - capY0 + copyH).toUInt()
+            } else {
+                srcRect[0] = 0u
+                srcRect[1] = 0u
+                srcRect[2] = uploadW.toUInt()
+                srcRect[3] = uploadH.toUInt()
+            }
             val copyFn = comMethod<CFunction<(COpaquePointer, COpaquePointer?, COpaquePointer, COpaquePointer) -> Int>>(
                 stagingBmp,
                 SLOT_BITMAP_COPY_FROM_BITMAP
@@ -373,42 +452,121 @@ object Win32Direct2dBackdropBlurEngine {
                 val effectiveRadius = cornerRadiusPx.coerceIn(0f, min(regionWidth, regionHeight) * 0.5f)
                 val checkRounded = effectiveRadius > 0.5f
 
-                for (row in 0 until copyH) {
-                    val py = y0 + row
-                    val dstRow = py * bufW
-                    val srcRowPtr = (baseBytePtr + row.toLong() * pitchBytes.toLong())!!.reinterpret<UIntVar>()
-                    val localY = (py - regionY).toFloat()
-                    for (col in 0 until copyW) {
-                        val px = x0 + col
-                        if (checkRounded && !isPointInsideRoundedRect(
-                                x = (px - regionX).toFloat(),
-                                y = localY,
-                                width = regionWidth.toFloat(),
-                                height = regionHeight.toFloat(),
-                                radius = effectiveRadius
-                            )
-                        ) {
-                            continue
+                if (downsample == 1) {
+                    for (row in 0 until copyH) {
+                        val py = y0 + row
+                        val dstRow = py * bufW
+                        val srcRowPtr = (baseBytePtr + row.toLong() * pitchBytes.toLong())!!.reinterpret<UIntVar>()
+                        val localY = (py - regionY).toFloat()
+                        for (col in 0 until copyW) {
+                            val px = x0 + col
+                            if (checkRounded && !isPointInsideRoundedRect(
+                                    x = (px - regionX).toFloat(),
+                                    y = localY,
+                                    width = regionWidth.toFloat(),
+                                    height = regionHeight.toFloat(),
+                                    radius = effectiveRadius
+                                )
+                            ) {
+                                continue
+                            }
+                            val word = srcRowPtr[col].toInt()
+                            val fa = (word ushr 24) and 0xFF
+                            if (fa <= 0) continue
+                            val outA = (fa * effOp255 + 127) / 255
+                            if (outA >= 255) {
+                                wordsPtr[dstRow + px] = word.toUInt()
+                            } else if (outA > 0) {
+                                val pr = (((word ushr 16) and 0xFF) * effOp255 + 127) / 255
+                                val pg = (((word ushr 8) and 0xFF) * effOp255 + 127) / 255
+                                val pb = ((word and 0xFF) * effOp255 + 127) / 255
+                                val orig = wordsPtr[dstRow + px].toInt()
+                                val or = (orig ushr 16) and 0xFF
+                                val og = (orig ushr 8) and 0xFF
+                                val ob = orig and 0xFF
+                                val invA = 255 - outA
+                                val outR = (pr + (or * invA + 127) / 255).coerceIn(0, 255)
+                                val outG = (pg + (og * invA + 127) / 255).coerceIn(0, 255)
+                                val outB = (pb + (ob * invA + 127) / 255).coerceIn(0, 255)
+                                wordsPtr[dstRow + px] =
+                                    0xFF000000u or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+                            }
                         }
-                        val word = srcRowPtr[col].toInt()
-                        val fa = (word ushr 24) and 0xFF
-                        if (fa >= 255) {
-                            wordsPtr[dstRow + px] = word.toUInt()
-                        } else if (fa > 0) {
-                            // Direct2D premultiplies RGB by fa; blend SrcOver directly over existing dst.
-                            val orig = wordsPtr[dstRow + px].toInt()
-                            val or = (orig ushr 16) and 0xFF
-                            val og = (orig ushr 8) and 0xFF
-                            val ob = orig and 0xFF
-                            val pr = (word ushr 16) and 0xFF
-                            val pg = (word ushr 8) and 0xFF
-                            val pb = word and 0xFF
-                            val invA = 255 - fa
-                            val outR = (pr + (or * invA + 127) / 255).coerceIn(0, 255)
-                            val outG = (pg + (og * invA + 127) / 255).coerceIn(0, 255)
-                            val outB = (pb + (ob * invA + 127) / 255).coerceIn(0, 255)
-                            wordsPtr[dstRow + px] =
-                                0xFF000000u or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+                    }
+                } else {
+                    val maxDsX = (uploadW - 1).coerceAtLeast(0)
+                    val maxDsY = (uploadH - 1).coerceAtLeast(0)
+                    val maxDsXf = maxDsX.toFloat()
+                    val maxDsYf = maxDsY.toFloat()
+                    val invDs = 1f / downsample.toFloat()
+                    for (row in 0 until copyH) {
+                        val py = y0 + row
+                        val dstRow = py * bufW
+                        val localY = (py - regionY).toFloat()
+                        val fy = ((py - capY0 + 0.5f) * invDs - 0.5f).coerceIn(0f, maxDsYf)
+                        val iy0 = fy.toInt().coerceIn(0, maxDsY)
+                        val iy1 = min(iy0 + 1, maxDsY)
+                        val wy1 = ((fy - iy0) * 256f).roundToInt().coerceIn(0, 256)
+                        val wy0 = 256 - wy1
+                        val r0Ptr = (baseBytePtr + iy0.toLong() * pitchBytes.toLong())!!.reinterpret<UIntVar>()
+                        val r1Ptr = (baseBytePtr + iy1.toLong() * pitchBytes.toLong())!!.reinterpret<UIntVar>()
+                        for (col in 0 until copyW) {
+                            val px = x0 + col
+                            if (checkRounded && !isPointInsideRoundedRect(
+                                    x = (px - regionX).toFloat(),
+                                    y = localY,
+                                    width = regionWidth.toFloat(),
+                                    height = regionHeight.toFloat(),
+                                    radius = effectiveRadius
+                                )
+                            ) {
+                                continue
+                            }
+                            val fx = ((px - capX0 + 0.5f) * invDs - 0.5f).coerceIn(0f, maxDsXf)
+                            val ix0 = fx.toInt().coerceIn(0, maxDsX)
+                            val ix1 = min(ix0 + 1, maxDsX)
+                            val wx1 = ((fx - ix0) * 256f).roundToInt().coerceIn(0, 256)
+                            val wx0 = 256 - wx1
+
+                            val c00 = r0Ptr[ix0].toInt()
+                            val c10 = r0Ptr[ix1].toInt()
+                            val c01 = r1Ptr[ix0].toInt()
+                            val c11 = r1Ptr[ix1].toInt()
+
+                            val w00 = wx0 * wy0
+                            val w10 = wx1 * wy0
+                            val w01 = wx0 * wy1
+                            val w11 = wx1 * wy1
+
+                            val fa = ((((c00 ushr 24) and 0xFF) * w00 + ((c10 ushr 24) and 0xFF) * w10 +
+                                ((c01 ushr 24) and 0xFF) * w01 + ((c11 ushr 24) and 0xFF) * w11) shr 16).coerceIn(0, 255)
+                            if (fa <= 0) continue
+                            val pr = ((((c00 ushr 16) and 0xFF) * w00 + ((c10 ushr 16) and 0xFF) * w10 +
+                                ((c01 ushr 16) and 0xFF) * w01 + ((c11 ushr 16) and 0xFF) * w11) shr 16).coerceIn(0, 255)
+                            val pg = ((((c00 ushr 8) and 0xFF) * w00 + ((c10 ushr 8) and 0xFF) * w10 +
+                                ((c01 ushr 8) and 0xFF) * w01 + ((c11 ushr 8) and 0xFF) * w11) shr 16).coerceIn(0, 255)
+                            val pb = (((c00 and 0xFF) * w00 + (c10 and 0xFF) * w10 +
+                                (c01 and 0xFF) * w01 + (c11 and 0xFF) * w11) shr 16).coerceIn(0, 255)
+
+                            val outA = (fa * effOp255 + 127) / 255
+                            if (outA >= 255) {
+                                wordsPtr[dstRow + px] =
+                                    0xFF000000u or (pr.toUInt() shl 16) or (pg.toUInt() shl 8) or pb.toUInt()
+                            } else if (outA > 0) {
+                                val sPr = (pr * effOp255 + 127) / 255
+                                val sPg = (pg * effOp255 + 127) / 255
+                                val sPb = (pb * effOp255 + 127) / 255
+                                val orig = wordsPtr[dstRow + px].toInt()
+                                val or = (orig ushr 16) and 0xFF
+                                val og = (orig ushr 8) and 0xFF
+                                val ob = orig and 0xFF
+                                val invA = 255 - outA
+                                val outR = (sPr + (or * invA + 127) / 255).coerceIn(0, 255)
+                                val outG = (sPg + (og * invA + 127) / 255).coerceIn(0, 255)
+                                val outB = (sPb + (ob * invA + 127) / 255).coerceIn(0, 255)
+                                wordsPtr[dstRow + px] =
+                                    0xFF000000u or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+                            }
                         }
                     }
                 }
@@ -437,13 +595,16 @@ object Win32Direct2dBackdropBlurEngine {
         regionY: Int,
         regionWidth: Int,
         regionHeight: Int,
-        cornerRadiusPx: Float
+        cornerRadiusPx: Float,
+        opacity: Float
     ): Boolean {
         val capW = capX1 - capX0
         val capH = capY1 - capY0
         val copyW = x1 - x0
         val copyH = y1 - y0
         if (capW <= 0 || capH <= 0 || copyW <= 0 || copyH <= 0) return false
+        val effOp255 = (opacity * 255f).roundToInt().coerceIn(0, 255)
+        if (effOp255 <= 0) return true
 
         ensureScratchSize(capW * capH)
         val subArgb = reusableCaptureBuffer
@@ -477,7 +638,8 @@ object Win32Direct2dBackdropBlurEngine {
             val srcRow = (py - capY0) * capW
             for (px in x0 until x1) {
                 val filteredWord = subArgb[srcRow + (px - capX0)]
-                val fa = (filteredWord ushr 24) and 0xFF
+                val rawFa = (filteredWord ushr 24) and 0xFF
+                val fa = if (effOp255 >= 255) rawFa else ((rawFa * effOp255 + 127) / 255)
                 if (fa >= 255) {
                     wordsPtr[dstRow + px] = filteredWord.toUInt()
                 } else if (fa > 0) {

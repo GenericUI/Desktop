@@ -33,11 +33,19 @@ object SwingControlTintRenderUtil {
     fun createNativeOrTintedButton(): JButton = object : JButton() {
         private var paintingOffscreenNativeSprite: Boolean = false
 
+        override fun contains(x: Int, y: Int): Boolean {
+            val impl = getClientProperty(SwingBaseNativeImpl.CLIENT_PROPERTY_KEY) as? SwingBaseNativeImpl ?: return super.contains(x, y)
+            return impl.hitTestContains(this, x, y, super.contains(x, y))
+        }
+
         override fun paintComponent(g: Graphics) {
             if (paintingOffscreenNativeSprite) {
                 super.paintComponent(g)
                 return
             }
+
+            val componentOpacity = ((getClientProperty("opacity") as? Float) ?: 1f).coerceIn(0f, 1f)
+            if (componentOpacity <= SwingSurfacePaintUtil.OPACITY_SKIP_THRESHOLD) return
 
             val type = (getClientProperty("bootstrapType") as? BootstrapType)
                 ?.takeIf { it != BootstrapType.NONE }
@@ -45,6 +53,18 @@ object SwingControlTintRenderUtil {
             if (type == null) {
                 if (!isContentAreaFilled) isContentAreaFilled = true
                 if (!isBorderPainted) isBorderPainted = true
+                if (componentOpacity < 0.999f) {
+                    val alphaG2 = g.create() as? Graphics2D
+                    if (alphaG2 != null) {
+                        try {
+                            alphaG2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, componentOpacity)
+                            super.paintComponent(alphaG2)
+                        } finally {
+                            alphaG2.dispose()
+                        }
+                        return
+                    }
+                }
                 super.paintComponent(g)
                 return
             }
@@ -56,7 +76,6 @@ object SwingControlTintRenderUtil {
             val hovered = model?.isRollover == true
             val pressed = (model?.isArmed == true && model?.isPressed == true) || model?.isSelected == true
             val disabled = !isEnabled
-            val componentOpacity = ((getClientProperty("opacity") as? Float) ?: 1f).coerceIn(0f, 1f)
 
             val offscreen = renderEmptyTextTintedButtonSprite(
                 button = this,
@@ -342,5 +361,64 @@ object SwingControlTintRenderUtil {
             },
             onError = {}
         )
+    }
+
+    fun renderButtonOffscreenSprite(
+        button: JButton,
+        width: Int = button.width.takeIf { it > 0 } ?: 120,
+        height: Int = button.height.takeIf { it > 0 } ?: 36,
+        type: BootstrapType = BootstrapType.NONE,
+        outline: Boolean = false,
+        allowTinted: Boolean = true,
+        includeTextOverlay: Boolean = true
+    ): BufferedImage {
+        val w = width.coerceAtLeast(1)
+        val h = height.coerceAtLeast(1)
+        val isDark = resolveIsDark(button)
+        val themeConfig = BootstrapColorPalette.activeThemeConfig
+        if (allowTinted && type != BootstrapType.NONE) {
+            val sprite = renderEmptyTextTintedButtonSprite(
+                button = button,
+                width = w,
+                height = h,
+                type = type,
+                outline = outline,
+                isDark = isDark,
+                themeConfig = themeConfig
+            )
+            if (includeTextOverlay) {
+                val g2 = sprite.createGraphics()
+                try {
+                    val fgRgba = resolveButtonForeground(
+                        type = type,
+                        outline = outline,
+                        isDark = isDark,
+                        themeConfig = themeConfig
+                    )
+                    drawContrastingTextAndIconOverlay(
+                        g2 = g2,
+                        button = button,
+                        width = w,
+                        height = h,
+                        fgColor = toAwtColor(fgRgba, !button.isEnabled),
+                        pressed = false
+                    )
+                } finally {
+                    g2.dispose()
+                }
+            }
+            return sprite
+        }
+        val image = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+        val g2 = image.createGraphics()
+        try {
+            if (button.width <= 0 || button.height <= 0) {
+                button.setSize(w, h)
+            }
+            button.paint(g2)
+        } finally {
+            g2.dispose()
+        }
+        return image
     }
 }

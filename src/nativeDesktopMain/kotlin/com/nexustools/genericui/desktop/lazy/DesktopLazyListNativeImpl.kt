@@ -18,8 +18,22 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
     protected var orientationState: Orientation = Orientation.VERTICAL
     protected var itemFactoryFn: ((Int) -> NativeImpl<*>)? = null
     protected val materializedItems: MutableMap<Int, NativeImpl<*>> = linkedMapOf()
+    private val materializedLock = kotlin.concurrent.AtomicInt(0)
     protected var onViewportScrollChangedListener: ((Float, Float) -> Unit)? = null
     protected var explicitViewportWindowProvided: Boolean = false
+    private var viewportScrollScopeDepth: Int = 0
+    var viewportVersion: Long = 0L
+        private set
+
+    private inline fun <T> withMaterializedLock(block: () -> T): T {
+        while (!materializedLock.compareAndSet(0, 1)) {
+        }
+        try {
+            return block()
+        } finally {
+            materializedLock.value = 0
+        }
+    }
 
     var firstActiveIndex: Int = 0
         private set
@@ -78,11 +92,64 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["totalContentExtentPx"] = this.totalContentExtentPx
         nativeWidget.attributes["hostSyncedScrollOffsetPx"] = viewportEngine.scrollOffsetPx.roundToInt()
         nativeWidget.attributes["hostSyncedScrollVer"] = ((nativeWidget.attributes["hostSyncedScrollVer"] as? Long) ?: 0L) + 1L
-        nativeWidget.notifyTreeInvalidated()
+        viewportVersion++
+        if (DesktopNativeWidget.suppressTreeVersionBumpCount.value <= 0) {
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun setOnViewportScrollChanged(listener: ((scrollOffsetPx: Float, viewportExtentPx: Float) -> Unit)?) {
         this.onViewportScrollChangedListener = listener
+    }
+
+    internal fun attachedChildImplsSnapshot(): List<NativeImpl<*>> = childImpls
+
+    internal fun materializedItemsSnapshot(): Map<Int, NativeImpl<*>> = withMaterializedLock { LinkedHashMap(materializedItems) }
+
+    override fun beginViewportScrollScope() {
+        DesktopNativeWidget.activeViewportScrollHost = nativeWidget
+        DesktopNativeWidget.activeViewportScrollScopeCount.addAndGet(1)
+        viewportScrollScopeDepth++
+    }
+
+    override fun endViewportScrollScope() {
+        if (viewportScrollScopeDepth > 0) {
+            viewportScrollScopeDepth--
+        }
+        val remaining = DesktopNativeWidget.activeViewportScrollScopeCount.addAndGet(-1)
+        if (remaining <= 0) {
+            if (remaining < 0) {
+                DesktopNativeWidget.activeViewportScrollScopeCount.value = 0
+            }
+            if (DesktopNativeWidget.activeViewportScrollHost === nativeWidget) {
+                DesktopNativeWidget.activeViewportScrollHost = null
+            }
+        }
+    }
+
+    protected fun dispatchLayoutViewportExtent(viewportExtentPx: Float) {
+        val clampedExtent = viewportExtentPx.coerceAtLeast(1f)
+        if (kotlin.math.abs(viewportEngine.viewportExtentPx - clampedExtent) <= 0.5f &&
+            !(viewportEngine.itemCount > 0 && materializedItems.isEmpty())
+        ) {
+            return
+        }
+        DesktopNativeWidget.suppressTreeVersionBumpCount.addAndGet(1)
+        beginViewportScrollScope()
+        try {
+            viewportEngine.viewportExtentPx = clampedExtent
+            viewportVersion++
+            val listener = onViewportScrollChangedListener
+            if (listener != null) {
+                listener(viewportEngine.scrollOffsetPx, clampedExtent)
+            } else {
+                rematerializeVisibleWindow()
+            }
+        } finally {
+            endViewportScrollScope()
+            val rem = DesktopNativeWidget.suppressTreeVersionBumpCount.addAndGet(-1)
+            if (rem < 0) DesktopNativeWidget.suppressTreeVersionBumpCount.value = 0
+        }
     }
 
     fun dispatchHostViewportScroll(scrollOffsetPx: Float, viewportExtentPx: Float) {
@@ -91,14 +158,48 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
         if (kotlin.math.abs(viewportEngine.scrollOffsetPx - clampedScroll) > 0.5f ||
             kotlin.math.abs(viewportEngine.viewportExtentPx - clampedExtent) > 0.5f
         ) {
-            viewportEngine.scrollOffsetPx = clampedScroll
-            viewportEngine.viewportExtentPx = clampedExtent
-            val listener = onViewportScrollChangedListener
-            if (listener != null) {
-                listener(clampedScroll, clampedExtent)
-            } else {
-                rematerializeVisibleWindow()
+            beginViewportScrollScope()
+            try {
+                viewportEngine.scrollOffsetPx = clampedScroll
+                viewportEngine.viewportExtentPx = clampedExtent
+                viewportVersion++
+                if (DesktopNativeWidget.suppressTreeVersionBumpCount.value <= 0) {
+                    nativeWidget.bumpSubtreeMutationVersion()
+                }
+                val listener = onViewportScrollChangedListener
+                if (listener != null) {
+                    listener(clampedScroll, clampedExtent)
+                } else {
+                    rematerializeVisibleWindow()
+                }
+            } finally {
+                endViewportScrollScope()
             }
+        }
+    }
+
+    override fun addChildNative(childImpl: NativeImpl<*>, index: Int) {
+        withMaterializedLock {
+            super.addChildNative(childImpl, index)
+        }
+    }
+
+    override fun removeChildNative(childImpl: NativeImpl<*>) {
+        withMaterializedLock {
+            val iterator = materializedItems.entries.iterator()
+            while (iterator.hasNext()) {
+                if (iterator.next().value === childImpl) {
+                    iterator.remove()
+                }
+            }
+            super.removeChildNative(childImpl)
+        }
+    }
+
+    override fun clearChildrenNative() {
+        withMaterializedLock {
+            materializedItems.clear()
+            super.clearChildrenNative()
         }
     }
 
@@ -107,15 +208,20 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["totalItemCount"] = viewportEngine.itemCount
         itemFactoryFn = itemFactory
         rematerializeVisibleWindow()
-        nativeWidget.notifyTreeInvalidated()
     }
 
     override fun notifyItemRangeChanged(startIndex: Int, count: Int) {
-        for (i in startIndex until (startIndex + count)) {
-            materializedItems.remove(i)?.let { removeChildNative(it) }
+        val removed = withMaterializedLock {
+            val list = ArrayList<NativeImpl<*>>()
+            for (i in startIndex until (startIndex + count)) {
+                materializedItems.remove(i)?.let { list.add(it) }
+            }
+            list
+        }
+        for (item in removed) {
+            removeChildNative(item)
         }
         rematerializeVisibleWindow()
-        nativeWidget.notifyTreeInvalidated()
     }
 
     override fun scrollToIndex(index: Int) {
@@ -127,12 +233,20 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
     }
 
     protected open fun rematerializeVisibleWindow() {
+        viewportVersion++
         val factory = itemFactoryFn ?: return
+        val totalCount = viewportEngine.itemCount.coerceAtLeast(0)
         val visibleRange = if (explicitViewportWindowProvided) {
             explicitViewportWindowProvided = false
-            if (lastActiveIndex >= firstActiveIndex && viewportEngine.itemCount > 0) {
-                firstActiveIndex..lastActiveIndex
+            if (totalCount > 0 && lastActiveIndex >= firstActiveIndex && lastActiveIndex >= 0 && firstActiveIndex < totalCount) {
+                val clampedFirst = firstActiveIndex.coerceIn(0, totalCount - 1)
+                val clampedLast = lastActiveIndex.coerceIn(clampedFirst, totalCount - 1)
+                firstActiveIndex = clampedFirst
+                lastActiveIndex = clampedLast
+                clampedFirst..clampedLast
             } else {
+                firstActiveIndex = 0
+                lastActiveIndex = -1
                 IntRange.EMPTY
             }
         } else {
@@ -154,24 +268,84 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
             computed
         }
 
-        val toEvict = materializedItems.keys.filter { it !in visibleRange }
-        for (idx in toEvict) {
-            materializedItems.remove(idx)?.let { evicted ->
-                if (evicted in childImpls) {
-                    removeChildNative(evicted)
-                }
-            }
-        }
+        val builtPairs = ArrayList<Pair<Int, NativeImpl<*>>>(
+            if (visibleRange.isEmpty()) 0 else (visibleRange.last - visibleRange.first + 1)
+        )
         for (idx in visibleRange) {
-            if (idx !in materializedItems) {
-                val created = factory(idx)
-                materializedItems[idx] = created
-                if (created !in childImpls) {
-                    val insertAt = (idx - visibleRange.first).coerceAtLeast(0)
-                    addChildNative(created, insertAt)
-                }
+            val current = factory(idx)
+            if (!current.isDisposed) {
+                builtPairs.add(idx to current)
             }
         }
-        nativeWidget.notifyTreeInvalidated()
+
+        val childrenAlreadySynced = withMaterializedLock {
+            val keysToEvict = materializedItems.entries
+                .filter { (idx, impl) -> idx !in 0 until totalCount || idx !in visibleRange || impl.isDisposed }
+                .map { it.key }
+            for (idx in keysToEvict) {
+                materializedItems.remove(idx)
+            }
+
+            val desiredOrdered = ArrayList<NativeImpl<*>>(builtPairs.size)
+            for ((idx, current) in builtPairs) {
+                if (current.isDisposed) continue
+                val previous = materializedItems[idx]
+                if (previous !== current) {
+                    materializedItems[idx] = current
+                }
+                if (desiredOrdered.none { it === current }) {
+                    desiredOrdered.add(current)
+                }
+            }
+
+            val desiredWidgets = ArrayList<DesktopNativeWidget>(desiredOrdered.size)
+            for (item in desiredOrdered) {
+                val w = item.nativeWidget as? DesktopNativeWidget
+                if (w != null && !w.disposed && desiredWidgets.none { it === w }) {
+                    desiredWidgets.add(w)
+                }
+            }
+
+            val currentChildImpls = childImpls
+            val currentWidgets = nativeWidget.children
+            val alreadySynced = desiredOrdered.size == currentChildImpls.size &&
+                desiredOrdered.indices.all { desiredOrdered[it] === currentChildImpls[it] } &&
+                desiredWidgets.size == currentWidgets.size &&
+                desiredWidgets.indices.all { desiredWidgets[it] === currentWidgets[it] }
+            if (!alreadySynced) {
+                val seenImpls = ArrayList<NativeImpl<*>>(desiredOrdered.size)
+                for (existing in currentChildImpls) {
+                    if (existing.isDisposed || desiredOrdered.none { it === existing } || seenImpls.any { it === existing }) {
+                        super.removeChildNative(existing)
+                    } else {
+                        seenImpls.add(existing)
+                    }
+                }
+
+                val seenWidgets = ArrayList<DesktopNativeWidget>(desiredWidgets.size)
+                for (existingWidget in currentWidgets) {
+                    if (existingWidget.disposed || desiredWidgets.none { it === existingWidget } || seenWidgets.any { it === existingWidget }) {
+                        nativeWidget.removeChildWidget(existingWidget)
+                    } else {
+                        seenWidgets.add(existingWidget)
+                    }
+                }
+
+                for ((targetIdx, item) in desiredOrdered.withIndex()) {
+                    val itemWidget = item.nativeWidget as? DesktopNativeWidget
+                    val latestChildImpls = childImpls
+                    val latestWidgets = nativeWidget.children
+                    val childMatches = targetIdx < latestChildImpls.size && latestChildImpls[targetIdx] === item
+                    val widgetMatches = itemWidget == null ||
+                        (targetIdx < latestWidgets.size && latestWidgets[targetIdx] === itemWidget)
+                    if (!childMatches || !widgetMatches) {
+                        super.addChildNative(item, targetIdx)
+                    }
+                }
+            }
+            alreadySynced
+        }
+
+        nativeWidget.notifyTreeInvalidated(visualOnly = childrenAlreadySynced)
     }
 }

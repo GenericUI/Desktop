@@ -19,7 +19,7 @@ import com.nexustools.genericui.window.WindowConfiguration
 
 /**
  * Shared desktop base implementation of [WindowNativeImpl] supporting custom title bars,
- * platform-configurable embedded menu bar in title bar (`true` on Windows/GTK/Qt, `false` on macOS),
+ * platform-configurable embedded menu bar in title bar (`true` on Windows/GTK/KDE, `false` on macOS),
  * multi-window management, tool-modal panel windows, fullscreen, Picture-in-Picture, and window lifecycle callbacks.
  */
 open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
@@ -211,16 +211,19 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         val prevSize = currentWindowSize
         val boundsUnchanged = nativeWidget.bounds.width == clamped.width && nativeWidget.bounds.height == clamped.height
         currentWindowSize = clamped
-        nativeWidget.bounds = Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, clamped.width, clamped.height)
+        setBounds(Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, clamped.width, clamped.height))
         if (prevSize == clamped && boundsUnchanged) {
             return
         }
+        val resolvedTheme = com.nexustools.genericui.component.shell.Application.current?.getResolvedTheme()
+            ?: com.nexustools.genericui.style.theme.SystemThemeDetector.detectSystemTheme()
         onWindowResizeListener?.invoke(
             WindowConfiguration(
                 widthPx = clamped.width,
                 heightPx = clamped.height,
                 windowState = currentWindowState,
-                isFullscreen = fullscreenFlag
+                isFullscreen = fullscreenFlag,
+                themeMode = resolvedTheme
             )
         )
     }
@@ -251,8 +254,16 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         }
     }
 
+    private fun bumpSubtreeAttrVersionsForFullscreenTransition(widget: DesktopNativeWidget) {
+        widget.bumpAttrMutationVersion()
+        for (child in widget.children) {
+            bumpSubtreeAttrVersionsForFullscreenTransition(child)
+        }
+    }
+
     override fun setWindowState(state: WindowState) {
         val prevState = currentWindowState
+        val prevFullscreen = fullscreenFlag
         currentWindowState = state
         fullscreenFlag = (state == WindowState.FULLSCREEN)
         if (!fullscreenFlag) {
@@ -260,6 +271,9 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes.remove("fullscreenElement")
         }
         nativeWidget.attributes["windowState"] = state
+        if (prevFullscreen != fullscreenFlag) {
+            bumpSubtreeAttrVersionsForFullscreenTransition(nativeWidget)
+        }
         if (prevState != state) {
             onWindowStateChangedListener?.invoke(state)
         }
@@ -268,6 +282,7 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     override fun getWindowState(): WindowState = currentWindowState
 
     override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
+        val prevFullscreen = fullscreenFlag
         fullscreenFlag = fullscreen
         cutoutModeState = cutoutMode
         if (!fullscreen) {
@@ -276,6 +291,9 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
         }
         currentWindowState = if (fullscreen) WindowState.FULLSCREEN else WindowState.NORMAL
         nativeWidget.attributes["fullscreen"] = fullscreen
+        if (prevFullscreen != fullscreenFlag) {
+            bumpSubtreeAttrVersionsForFullscreenTransition(nativeWidget)
+        }
     }
 
     override fun isFullscreen(): Boolean = fullscreenFlag

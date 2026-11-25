@@ -7,6 +7,9 @@ import com.nexustools.genericui.component.dialog.DialogWindow
 import com.nexustools.genericui.component.form.CheckBox
 import com.nexustools.genericui.component.form.TextField
 import com.nexustools.genericui.component.layout.Container
+import com.nexustools.genericui.component.surface.StyledComponent
+import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.VStack
 import com.nexustools.genericui.component.shell.Window
 import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.GenericUI
@@ -16,9 +19,7 @@ import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.enums.bootstrap.FontWeight
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
-import com.nexustools.genericui.gtk.impl.GtkButtonNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkCheckboxNativeImpl
-import com.nexustools.genericui.gtk.impl.GtkContainerNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkDropdownNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkLazyGridNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkMarkdownViewNativeImpl
@@ -26,11 +27,16 @@ import com.nexustools.genericui.gtk.impl.GtkProgressBarNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkRangeSliderNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkSelectNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkSpinnerNativeImpl
-import com.nexustools.genericui.gtk.impl.GtkTabContainerNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTabNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTableNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTextInputNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTextNativeImpl
+import com.nexustools.genericui.gtk.widget.GtkSurfacePaintSpec
+import com.nexustools.genericui.gtk.widget.GtkSurfaceRenderHelper
+import com.nexustools.genericui.image.PixelFormat
+import com.nexustools.genericui.linux.style.LinuxBackdropFilterController
+import com.nexustools.genericui.style.css.CssFilter
+import com.nexustools.genericui.style.css.CssShadow
 import com.nexustools.genericui.io.ByteBuffer
 import com.nexustools.genericui.io.FileSystem
 import com.nexustools.genericui.io.FileSystemAvailability
@@ -127,6 +133,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -452,7 +459,7 @@ class GtkAsyncIoDatabaseAndNetworkingTest {
     }
 
     @Test
-    fun testGtkPerComponentNativeImplsTextFieldLabelAndControlRenderUtil() {
+    fun testGtkPerComponentNativeImplsRetainedWidgetsAndSkinBoundaries() {
         val factory = GtkNativeFactory()
         val prevFactory = GenericUI.activeFactory
         try {
@@ -468,25 +475,19 @@ class GtkAsyncIoDatabaseAndNetworkingTest {
                 }
             )
             assertFalse(buttonImpl.acceptsAestheticSkinStyles())
+            assertTrue(buttonImpl.isNativeDefaultButtonMode())
+            assertEquals("GtkButton", buttonImpl.nativeWidget.activeGtkClassName)
             assertFalse(buttonImpl.nativeWidget.attributes.containsKey("backgroundColor"))
             assertFalse(buttonImpl.nativeWidget.attributes.containsKey("textColor"))
             assertEquals("true", buttonImpl.nativeWidget.attributes["useSystemControlAppearance"])
-            assertEquals("unmodified_native_control", buttonImpl.nativeWidget.attributes["nativeControlRenderMode"])
-
-            val nativePixels = IntArray(96 * 28)
-            buttonImpl.renderDesktopNode(nativePixels, Rect(0, 0, 96, 28))
-            assertEquals(false, buttonImpl.nativeWidget.attributes["renderedOffscreenEmptyTextSprite"])
-            assertTrue(nativePixels.any { ((it ushr 24) and 0xFF) > 0 })
 
             buttonImpl.setType(BootstrapType.PRIMARY)
+            assertFalse(buttonImpl.isNativeDefaultButtonMode())
+            assertEquals("GtkButton", buttonImpl.nativeWidget.activeGtkClassName)
             assertEquals("false", buttonImpl.nativeWidget.attributes["useSystemControlAppearance"])
-            assertEquals("offscreen_empty_text_sprite_tint", buttonImpl.nativeWidget.attributes["nativeControlRenderMode"])
-
-            val tintedPixels = IntArray(96 * 28)
-            buttonImpl.renderDesktopNode(tintedPixels, Rect(0, 0, 96, 28))
-            assertEquals(true, buttonImpl.nativeWidget.attributes["renderedOffscreenEmptyTextSprite"])
-            assertEquals(true, buttonImpl.nativeWidget.attributes["contrastingTextRenderedAfterTint"])
-            assertTrue(tintedPixels.any { ((it ushr 24) and 0xFF) > 0 })
+            val primaryPtr = assertNotNull(buttonImpl.nativeWidget.ensureLiveWidgetPtr())
+            assertTrue(Gtk4DynamicBindings.gtkWidgetHasCssClass(primaryPtr, "gui-btn-primary"))
+            assertTrue(Gtk4DynamicBindings.gtkWidgetHasCssClass(primaryPtr, "suggested-action"))
 
             val textImpl = factory.createText() as GtkTextNativeImpl
             textImpl.setText("Hello GTK4")
@@ -497,6 +498,7 @@ class GtkAsyncIoDatabaseAndNetworkingTest {
                     fontWeight = FontWeight.BOLD
                 }
             )
+            assertEquals("GtkLabel", textImpl.nativeWidget.activeGtkClassName)
             assertEquals(RgbaColor(0x11, 0x22, 0x33), textImpl.nativeWidget.attributes["textColor"])
             assertEquals(18f, textImpl.nativeWidget.attributes["fontSizePx"])
             assertEquals("BOLD", textImpl.nativeWidget.attributes["fontWeight"])
@@ -511,31 +513,41 @@ class GtkAsyncIoDatabaseAndNetworkingTest {
             textInputImpl.setPlaceholder("User")
             textInputImpl.setLabel("Username")
             assertFalse(textInputImpl.acceptsAestheticSkinStyles())
-            val inputPixels = IntArray(180 * 36)
-            textInputImpl.renderDesktopNode(inputPixels, Rect(0, 0, 180, 36))
-            assertEquals("Username", textInputImpl.nativeWidget.attributes["lastRenderedLabel"])
-            assertTrue(inputPixels.any { ((it ushr 24) and 0xFF) > 0 })
+            assertEquals("GtkEntry", textInputImpl.nativeWidget.activeGtkClassName)
+            assertEquals("Username", textInputImpl.getLabel())
 
             val checkboxImpl = factory.createCheckbox() as GtkCheckboxNativeImpl
             assertFalse(checkboxImpl.acceptsAestheticSkinStyles())
+            checkboxImpl.setLabel("Agree")
+            checkboxImpl.setType(BootstrapType.PRIMARY)
+            assertEquals("GtkCheckButton", checkboxImpl.nativeWidget.activeGtkClassName)
+            assertEquals(null, checkboxImpl.nativeWidget.attributes["bootstrapTintColor"])
 
             val selectImpl = factory.createSelect() as GtkSelectNativeImpl
             assertFalse(selectImpl.acceptsAestheticSkinStyles())
+            assertEquals("GtkDropDown", selectImpl.nativeWidget.activeGtkClassName)
 
             val dropdownImpl = factory.createDropdown() as GtkDropdownNativeImpl
             assertFalse(dropdownImpl.acceptsAestheticSkinStyles())
+            assertEquals("GtkMenuButton", dropdownImpl.nativeWidget.activeGtkClassName)
 
             val sliderImpl = factory.createRangeSlider() as GtkRangeSliderNativeImpl
             assertFalse(sliderImpl.acceptsAestheticSkinStyles())
 
             val progressImpl = factory.createProgressBar() as GtkProgressBarNativeImpl
             assertFalse(progressImpl.acceptsAestheticSkinStyles())
+            progressImpl.setProgress(0.6f)
+            progressImpl.setType(BootstrapType.PRIMARY)
+            assertEquals(null, progressImpl.nativeWidget.attributes["bootstrapTintColor"])
 
             val spinnerImpl = factory.createSpinner() as GtkSpinnerNativeImpl
             assertFalse(spinnerImpl.acceptsAestheticSkinStyles())
 
             val containerImpl = factory.createContainer() as GtkContainerNativeImpl
             assertFalse(containerImpl.acceptsAestheticSkinStyles())
+
+            val layeredImpl = factory.createContainer("gui-layered-container", "genericui:layered-container") as GtkContainerNativeImpl
+            assertEquals("GtkOverlay", layeredImpl.nativeWidget.activeGtkClassName)
 
             val tabContainerImpl = factory.createTabContainer() as GtkTabContainerNativeImpl
             assertFalse(tabContainerImpl.acceptsAestheticSkinStyles())
@@ -559,7 +571,211 @@ class GtkAsyncIoDatabaseAndNetworkingTest {
     }
 
     @Test
-    fun testGtkInteractiveWindowCairoRenderUnderDisplayOrOffscreen() {
+    fun testGenuineGtkButtonVsBootstrapButtonWidgetAndLiveModeSwap() {
+        val factory = GtkNativeFactory()
+        val prevFactory = GenericUI.activeFactory
+        try {
+            GenericUI.initialize(factory)
+            val btn = factory.createButton() as GtkButtonNativeImpl
+            btn.setText("Execute")
+            btn.setIcon("★")
+            btn.setEnabled(false)
+            btn.setBounds(Rect(12, 24, 140, 36))
+
+            // Plain un-tinted button defaults cleanly to genuine GtkButton
+            assertTrue(btn.isNativeDefaultButtonMode())
+            assertEquals("GtkButton", btn.nativeWidget.activeGtkClassName)
+            assertEquals("true", btn.nativeWidget.attributes["useSystemControlAppearance"])
+
+            // Bootstrap type styles genuine GtkButton natively via Libadwaita/GTK CSS classes
+            btn.setType(BootstrapType.SUCCESS)
+            assertFalse(btn.isNativeDefaultButtonMode())
+            assertEquals("GtkButton", btn.nativeWidget.activeGtkClassName)
+            assertEquals("false", btn.nativeWidget.attributes["useSystemControlAppearance"])
+            assertEquals("Execute", btn.getText())
+            assertEquals("★", btn.getIcon())
+            assertFalse(btn.isEnabled())
+            assertEquals(Rect(12, 24, 140, 36), btn.getBounds())
+
+            // Outline mode also keeps genuine GtkButton with gui-btn-outline CSS class
+            btn.setType(null)
+            btn.setOutline(true)
+            assertEquals("GtkButton", btn.nativeWidget.activeGtkClassName)
+
+            // Reverting back to default clears semantic styling on genuine GtkButton
+            btn.setOutline(false)
+            assertTrue(btn.isNativeDefaultButtonMode())
+            assertEquals("GtkButton", btn.nativeWidget.activeGtkClassName)
+            assertEquals("Execute", btn.getText())
+            assertEquals("★", btn.getIcon())
+            assertFalse(btn.isEnabled())
+            assertEquals(Rect(12, 24, 140, 36), btn.getBounds())
+        } finally {
+            GenericUI.activeFactory = prevFactory
+        }
+    }
+
+    @Test
+    fun testAllTenBackdropFilterOperationsInGtkSurfaceRenderHelper() {
+        assertTrue(Gtk4DynamicBindings.ensureLibrariesLoaded())
+        val width = 48
+        val height = 48
+
+        fun makePatternBuffer(): IntArray = IntArray(width * height) { i ->
+            val x = i % width
+            val y = i / width
+            if (x !in 6 until width - 6 || y !in 6 until height - 6) {
+                0
+            } else {
+                val r = if (x < width / 2) 220 else 30
+                val g = if (y < height / 2) 190 else 45
+                val b = if ((x + y) % 2 == 0) 210 else 60
+                (255 shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+
+        val ops = listOf(
+            "blur" to CssFilter(blur = CssLength.px(4f)),
+            "brightness" to CssFilter(brightness = 1.45f),
+            "contrast" to CssFilter(contrast = 1.6f),
+            "grayscale" to CssFilter(grayscale = 1f),
+            "hue-rotate" to CssFilter(hueRotateDeg = 120f),
+            "invert" to CssFilter(invert = 1f),
+            "opacity" to CssFilter(opacity = 0.45f),
+            "saturate" to CssFilter(saturate = 2.2f),
+            "sepia" to CssFilter(sepia = 1f),
+            "drop-shadow" to CssFilter(dropShadow = CssShadow.px(2f, 2f, 3f, color = RgbaColor(0, 0, 0, 180)))
+        )
+
+        val baseline = makePatternBuffer()
+        for ((name, filter) in ops) {
+            assertTrue(LinuxBackdropFilterController.shared.hasActiveEffects(filter), "Expected active filter for $name")
+            val words = makePatternBuffer()
+            LinuxBackdropFilterController.shared.applyToPremulBgraBuffer(
+                filter = filter,
+                pixels = words,
+                strideWords = width,
+                bufferWidth = width,
+                bufferHeight = height,
+                regionX = 0,
+                regionY = 0,
+                regionWidth = width,
+                regionHeight = height
+            )
+            assertFalse(
+                words.contentEquals(baseline),
+                "Backdrop filter '$name' must deterministically alter premultiplied BGRA pixels"
+            )
+        }
+
+        val combinedFilter = CssFilter(
+            blur = CssLength.px(3f),
+            brightness = 1.15f,
+            contrast = 1.2f,
+            grayscale = 0.2f,
+            hueRotateDeg = 45f,
+            invert = 0.1f,
+            opacity = 0.85f,
+            saturate = 1.3f,
+            sepia = 0.15f,
+            dropShadow = CssShadow.px(1f, 2f, 3f, color = RgbaColor(10, 20, 30, 160))
+        )
+        val surface = Gtk4DynamicBindings.cairoImageSurfaceCreate(width, height)
+        assertNotNull(surface)
+        val cr = Gtk4DynamicBindings.cairoCreate(surface)
+        assertNotNull(cr)
+        try {
+            GtkSurfaceRenderHelper.paintSurface(
+                cr = cr,
+                width = width,
+                height = height,
+                spec = GtkSurfacePaintSpec(
+                    backgroundColor = RgbaColor(255, 255, 255, 70),
+                    fallbackRadiusPx = 10f,
+                    backdropFilter = combinedFilter
+                ),
+                behindBgraCapture = { makePatternBuffer() }
+            )
+            Gtk4DynamicBindings.cairoDestroy(cr)
+            val resultWords = GtkSurfaceRenderHelper.cairoSurfaceToPremulBgraWords(surface, width, height)
+            assertTrue(resultWords.any { ((it ushr 24) and 0xFF) > 0 })
+            assertFalse(resultWords.contentEquals(baseline))
+        } finally {
+            Gtk4DynamicBindings.cairoSurfaceDestroy(surface)
+        }
+    }
+
+    @Test
+    fun testHeadlessWindowScreenshotCapturesStyledRetainedHierarchy() {
+        assertTrue(Gtk4DynamicBindings.ensureLibrariesLoaded())
+        val prevInteractive = GtkApplicationNativeImpl.interactiveGtkGuiEnabled
+        val prevFactory = GenericUI.activeFactory
+        val factory = GtkNativeFactory()
+        try {
+            GtkApplicationNativeImpl.interactiveGtkGuiEnabled = false
+            GenericUI.initialize(factory)
+
+            val heroCard = StyledComponent().apply {
+                getStyle().apply {
+                    width = CssLength.px(300f)
+                    height = CssLength.px(70f)
+                }
+                backgroundColor = RgbaColor(24, 110, 220, 255)
+                borderRadiusPx = 12f
+            }
+            val glassOverlay = StyledContainer().apply {
+                getStyle().apply {
+                    width = CssLength.px(280f)
+                    height = CssLength.px(44f)
+                }
+                backgroundColor = RgbaColor(255, 255, 255, 96)
+                borderRadiusPx = 8f
+                backdropFilter = CssFilter(blur = CssLength.px(4f), saturate = 1.25f)
+                addChild(Text("Frosted Overlay"))
+            }
+            val nativeBtn = Button(text = "Native OK")
+            val bootstrapBtn = Button(text = "Delete", type = BootstrapType.DANGER)
+
+            val root = VStack().apply {
+                addChild(heroCard)
+                addChild(glassOverlay)
+                addChild(nativeBtn)
+                addChild(bootstrapBtn)
+            }
+            val window = Window(title = "Headless Screenshot").apply {
+                setWindowSize(Size(360, 260))
+                setContent(root)
+            }
+            window.show(factory)
+
+            val winImpl = GtkWindowNativeImpl.activeWindows.lastOrNull()
+            assertNotNull(winImpl)
+            val shot = GtkNativeWindowHost.captureWindowScreenshot(winImpl, 360, 260)
+            assertNotNull(shot)
+            assertEquals(360, shot.width)
+            assertEquals(260, shot.height)
+            assertEquals(PixelFormat.RGBA_8888, shot.pixelFormat)
+
+            val distinctRgbColors = HashSet<Int>()
+            for (y in 0 until shot.height step 4) {
+                for (x in 0 until shot.width step 4) {
+                    val idx = (y * shot.width + x) * 4
+                    val key = ((shot.bytes[idx].toInt() and 0xFF) shl 16) or
+                        ((shot.bytes[idx + 1].toInt() and 0xFF) shl 8) or
+                        (shot.bytes[idx + 2].toInt() and 0xFF)
+                    distinctRgbColors.add(key)
+                }
+            }
+            assertTrue(distinctRgbColors.size > 4, "Expected multi-widget screenshot pixels, saw ${distinctRgbColors.size}")
+            window.close()
+        } finally {
+            GtkApplicationNativeImpl.interactiveGtkGuiEnabled = prevInteractive
+            GenericUI.activeFactory = prevFactory
+        }
+    }
+
+    @Test
+    fun testGtkInteractiveWindowRetainedRenderUnderDisplayOrOffscreen() {
         assertTrue(LinuxGlibGioBindings.ensureLoaded())
         assertTrue(Gtk4DynamicBindings.ensureLibrariesLoaded())
 
@@ -580,10 +796,10 @@ class GtkAsyncIoDatabaseAndNetworkingTest {
 
             val labelField = TextField(value = "gtk4@example.org", label = "LabelField")
             val primaryBtn = Button(text = "Submit", type = BootstrapType.PRIMARY)
-            val check = CheckBox(label = "Enable Cairo", checked = true)
+            val check = CheckBox(label = "Enable GTK4", checked = true)
 
             val root = Container()
-            root.addChild(Text("GTK4 + Cairo Window Test"))
+            root.addChild(Text("GTK4 Retained Widget Window Test"))
             root.addChild(labelField)
             root.addChild(primaryBtn)
             root.addChild(check)
@@ -599,12 +815,18 @@ class GtkAsyncIoDatabaseAndNetworkingTest {
             assertNotNull(windowImpl)
             val session = GtkNativeWindowHost.sessionForWindow(windowImpl)
             assertNotNull(session)
+            assertNotNull(session.rootVBox)
+            assertNotNull(session.contentLayoutBox)
             assertTrue(session.paintedFrameCount >= 1)
             assertTrue(session.lastPaintedWidth > 0)
             assertTrue(session.lastPaintedHeight > 0)
-            assertTrue(session.hitRegions.isNotEmpty())
             val realizedField = findWidgetNativeImpl<GtkTextInputNativeImpl>(windowImpl.nativeWidget)
-            assertEquals("LabelField", realizedField?.nativeWidget?.attributes?.get("lastRenderedLabel"))
+            assertEquals("LabelField", realizedField?.getLabel())
+
+            val shot = GtkNativeWindowHost.captureWindowScreenshot(windowImpl, 640, 480)
+            assertNotNull(shot)
+            assertEquals(640, shot.width)
+            assertEquals(480, shot.height)
 
             window.close()
         } finally {

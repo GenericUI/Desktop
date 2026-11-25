@@ -1,7 +1,13 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.component.action.Button
+import com.nexustools.genericui.component.fragment.Fragment
+import com.nexustools.genericui.component.fragment.FragmentContainer
+import com.nexustools.genericui.component.shell.Window
+import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.window.TitleBar
 import java.awt.GraphicsEnvironment
 import javax.swing.JFrame
 import javax.swing.SwingUtilities
@@ -138,6 +144,82 @@ class SwingWindowUndecoratedAndStateTest {
                 assertTrue(impl.isUndecorated())
             } finally {
                 impl.closeWindow()
+            }
+        }
+    }
+
+    @Test
+    fun titleCapabilitiesDisableCustomTitleBarAndComponentEmbedding() {
+        runEdtAware {
+            val factory = SwingNativeFactory()
+            val impl = SwingWindowImpl()
+            try {
+                assertFalse(impl.supportsCustomTitleBar)
+                assertFalse(impl.supportsEmbeddedMenuBarInTitleBar)
+
+                val caps = impl.getTitleCapabilities()
+                assertEquals(caps, factory.defaultTitleCapabilities)
+                assertTrue(caps.isSupported)
+                assertFalse(caps.isEmulated)
+                assertFalse(caps.supportsCustomTitleBar)
+                assertFalse(caps.supportsCustomComponents)
+                assertFalse(caps.supportsLeadingComponents)
+                assertFalse(caps.supportsCenterComponents)
+                assertFalse(caps.supportsTrailingComponents)
+                assertFalse(caps.supportsEmbeddedMenuBar)
+                assertFalse(caps.supportsControlsPlacement)
+                assertFalse(caps.supportsCustomHeight)
+                assertFalse(caps.canEmbedComponentsInTitleBar)
+                assertTrue(caps.isTitleBarRequired)
+                assertTrue(caps.supportsWindowIcon)
+                assertTrue(caps.supportsWindowTitle)
+                assertTrue(caps.supportsMinimizeButton)
+                assertTrue(caps.supportsMaximizeButton)
+                assertTrue(caps.supportsCloseButton)
+
+                val leadingBtn = Button("Back")
+                val titleBar = TitleBar().apply { addLeading(leadingBtn) }
+                titleBar.setHostEmbedsComponents(true)
+                assertTrue(leadingBtn.mountedInTitleBar)
+                impl.applyTitleBarInstructions(titleBar)
+                assertFalse(leadingBtn.mountedInTitleBar)
+            } finally {
+                impl.closeWindow()
+            }
+        }
+    }
+
+    @Test
+    fun fragmentPrefersUndecoratedWindowKeepsNativeSwingFrameDecorations() {
+        runEdtAware {
+            val prevFactory = GenericUI.activeFactory
+            val factory = SwingNativeFactory()
+            GenericUI.initialize(factory)
+            val window = Window("Swing Fragment Host", initialSize = Size(800, 450))
+            val container = FragmentContainer(hostWindow = window)
+            val undecoratedFragment = object : Fragment() {
+                override val prefersUndecoratedWindow: Boolean = true
+            }
+            try {
+                container.setFragment(undecoratedFragment)
+                assertFalse(undecoratedFragment.isOverlayWindowTitleBarSupported)
+                assertFalse(window.isUndecorated)
+
+                window.setContent(container)
+                window.show(factory)
+
+                val impl = window.ensureNativeImpl() as SwingWindowImpl
+                assertFalse(undecoratedFragment.isOverlayWindowTitleBarSupported)
+                assertFalse(window.isUndecorated)
+                assertFalse(impl.isUndecorated())
+                assertFalse(impl.nativeWidget.getClientProperty("undecorated") == true)
+                impl.jFrame?.let { frame ->
+                    assertFalse(frame.isUndecorated)
+                }
+            } finally {
+                window.close()
+                window.dispose()
+                GenericUI.activeFactory = prevFactory
             }
         }
     }

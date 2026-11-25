@@ -6,6 +6,7 @@ import com.nexustools.genericui.desktop.shell.DesktopApplicationNativeImpl
 import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import kotlinx.cinterop.toKString
+import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSUserDefaults
 import platform.posix.getenv
 
@@ -79,19 +80,38 @@ class MacosApplicationNativeImpl :
          */
         var systemDefinedEventHook: ((subtype: Int, data1: Int) -> Boolean)? = null
 
+        private var cachedDefaultsThemeMode: ThemeMode? = null
+        private var cachedDefaultsTimestampMs: Double = -10_000.0
+
         fun detectMacosSystemTheme(): ThemeMode {
+            if (interactiveMacosGuiEnabled) {
+                val nowMs = NSProcessInfo.processInfo.systemUptime * 1000.0
+                val cached = cachedDefaultsThemeMode
+                if (cached != null && (nowMs - cachedDefaultsTimestampMs) in 0.0..250.0) {
+                    return cached
+                }
+                val appleStyle = getenv("APPLE_INTERFACE_STYLE")?.toKString()?.trim()
+                    ?: getenv("AppleInterfaceStyle")?.toKString()?.trim()
+                val resolved = if (appleStyle != null) {
+                    if (appleStyle.equals("Dark", ignoreCase = true)) ThemeMode.DARK else ThemeMode.LIGHT
+                } else {
+                    val defaultsStyle = NSUserDefaults.standardUserDefaults
+                        .stringForKey("AppleInterfaceStyle")
+                        ?.trim()
+                    if (defaultsStyle != null && defaultsStyle.equals("Dark", ignoreCase = true)) {
+                        ThemeMode.DARK
+                    } else {
+                        ThemeMode.LIGHT
+                    }
+                }
+                cachedDefaultsThemeMode = resolved
+                cachedDefaultsTimestampMs = nowMs
+                return resolved
+            }
             val appleStyle = getenv("APPLE_INTERFACE_STYLE")?.toKString()?.trim()
                 ?: getenv("AppleInterfaceStyle")?.toKString()?.trim()
             if (appleStyle != null) {
                 return if (appleStyle.equals("Dark", ignoreCase = true)) ThemeMode.DARK else ThemeMode.LIGHT
-            }
-            if (interactiveMacosGuiEnabled) {
-                val defaultsStyle = NSUserDefaults.standardUserDefaults
-                    .stringForKey("AppleInterfaceStyle")
-                    ?.trim()
-                if (defaultsStyle != null) {
-                    return if (defaultsStyle.equals("Dark", ignoreCase = true)) ThemeMode.DARK else ThemeMode.LIGHT
-                }
             }
             return ThemeMode.LIGHT
         }

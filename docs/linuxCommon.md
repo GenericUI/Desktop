@@ -1,9 +1,9 @@
 # `:desktop` Linux Shared Layer (`linuxMain` / `linuxCommon`)
 
-> **Module Guide**: [**`:desktop` (`../README.md`)**](../README.md) | **Backends**: [`gtk.md`](gtk.md) · [`qt.md`](qt.md)
+> **Module Guide**: [**`:desktop` (`../README.md`)**](../README.md) | **Backends**: [`gtk.md`](gtk.md) · [`kde.md`](kde.md)
 
 ## Overview
-The `linuxMain` source set of `:desktop` (`linuxCommon` variant scope for `linuxX64` and `linuxArm64`) hosts all shared Linux OS implementations reused identically by both **`Gtk`** (`GtkNativeFactory`) and **`Qt`** (`QtNativeFactory`).
+The `linuxMain` source set of `:desktop` (`linuxCommon` variant scope for `linuxX64` and `linuxArm64`) hosts all shared Linux OS implementations reused identically by both **`Gtk`** (`libgenericui-gtk.so`) and **`Kde`** (`libgenericui-kde.so`). Sibling backends stay strictly isolated with zero cross-imports.
 
 ---
 
@@ -11,6 +11,7 @@ The `linuxMain` source set of `:desktop` (`linuxCommon` variant scope for `linux
 
 | Domain | Classes | Implementation & Responsibility |
 |-------|---------|--------------------------------|
+| **Toolkit-Agnostic Style & Backdrop Helpers (`linux.style`)** | `LinuxStyledSurfaceHelper`<br/>`LinuxBackdropFilterController` | Strictly toolkit-agnostic (`zero` GTK or KDE/Qt imports) resolved CSS paint, normalized linear/radial gradient (`GradientStopNormalizer`), box-shadow, transform, and 10-op `CssFilter` / `FastBackdropBlurKernel` backdrop-filter state shared cleanly by both `Gtk` and `Kde` custom styled widgets. |
 | **Embedded ELF Resources** | `LinuxResourceResolverImpl` | Looks up prefix-free `ResourceID.nativeResourceKey` entries (`"gui/"` / `"gui/ext/<cat>/<ext>/"` / `"app/"` stripped) from ELF `.rodata` resource tables (`genericui_res_lookup_<group>` / `genericui_res_lookup_app`) via `dlsym` inside the running executable (`dlopen(null, RTLD_LAZY)`) or `lib<group>.so` (cached in `lookupCache`), falling back to `$exeDir` / XDG data roots and `Resources.activeTable`. |
 | **XDG Config, Cache, & Preferences** | `LinuxXdgConfigDirectoryImpl`<br/>`LinuxXdgCacheDirectoryImpl`<br/>`LinuxXdgPreferenceStoreImpl` | Resolves `$XDG_CONFIG_HOME/<app>` (`~/.config`) and `$XDG_CACHE_HOME/<app>` (`~/.cache`), persisting key-value preferences via `SystemStorageKeyHelper`. |
 | **Filesystem, SQLite, & Images** | `LinuxPosixFileSystemNativeImpl` (`Readable`/`Writable`)<br/>`LinuxSqliteDatabaseNativeImpl` (`DatabaseReadable`/`Writable`)<br/>`LinuxGdkPixbufImageCodecNativeImpl` | Asynchronous POSIX file I/O (`open`/`read`/`write`), `libsqlite3` structured AST query execution (`LinuxSqliteBindings`), and `gdk-pixbuf` decoding/encoding (`LinuxGdkPixbufBindings`). |
@@ -23,5 +24,5 @@ The `linuxMain` source set of `:desktop` (`linuxCommon` variant scope for `linux
 ```text
 :common
   └── :system
-        └── :desktop (commonMain -> nativeDesktopMain -> linuxMain [linuxCommon -> Gtk + Qt])
+        └── :desktop (commonMain -> nativeDesktopMain -> linuxMain [linuxCommon + linux/style -> Gtk + Kde])
 ```

@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.desktop.shell.DesktopApplicationNativeImpl
@@ -18,6 +20,7 @@ class WindowsApplicationNativeImpl :
     ) {
 
     init {
+        Win32WinMain.ensureWindowsControlsInitialized()
         installWindowsThemeDetector()
     }
 

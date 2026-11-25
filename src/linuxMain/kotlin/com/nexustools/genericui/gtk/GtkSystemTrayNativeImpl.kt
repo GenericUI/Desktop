@@ -139,6 +139,7 @@ class GtkSystemTrayNativeImpl : DesktopSystemTrayNativeImpl(
         }
         ref?.dispose()
         if (GtkApplicationNativeImpl.interactiveGtkGuiEnabled) {
+            GtkNativeWindowHost.onTrayDisposed(hasRemainingActiveTrays = hasActiveTrayIconsInProcess())
             LinuxGlibGioBindings.mainContextWakeup(LinuxGlibGioBindings.mainContextDefault())
         }
     }
@@ -793,8 +794,11 @@ class GtkSystemTrayNativeImpl : DesktopSystemTrayNativeImpl(
         private var trayCounter: Int = 0
         private val activeTrayInstances = mutableListOf<GtkSystemTrayNativeImpl>()
 
-        internal fun hasActiveTray(): Boolean =
+        internal fun hasActiveTrayIconsInProcess(): Boolean =
             activeTrayInstances.any { !it.isDisposed }
+
+        internal fun hasActiveTray(): Boolean =
+            hasActiveTrayIconsInProcess()
 
         internal fun ensureAllRegisteredIfInteractive() {
             for (tray in activeTrayInstances.toList()) {

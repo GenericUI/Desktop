@@ -1,86 +1,77 @@
 package com.nexustools.genericui.desktop.widget
 
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
+import com.nexustools.genericui.desktop.style.DesktopStyledWidgetDelegate
 import com.nexustools.genericui.nativeimpl.layout.StyledContainerNativeImpl
+import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.StyledVisualSpec
 
 /**
- * Shared desktop base implementation of [StyledContainerNativeImpl] across `:windows`, `:macos`, `:gtk`, and `:qt`.
+ * Shared desktop base implementation of [StyledContainerNativeImpl] across `:windows`, `:macos`, `:gtk`, and `:kde`.
  */
 open class DesktopStyledContainerNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W,
-    classPrefix: String = "styled-container"
-) : DesktopContainerNativeImpl<W>(nativeWidget, classPrefix), StyledContainerNativeImpl<W> {
+    classPrefix: String = "styled-container",
+    tagName: String = "div"
+) : DesktopContainerNativeImpl<W>(nativeWidget, classPrefix, tagName), StyledContainerNativeImpl<W> {
 
-    private var styledVisuals: StyledVisualSpec = StyledVisualSpec()
-    private var cachedMergedVisuals: StyledVisualSpec? = null
+    private var delegateInitialized: Boolean = false
 
-    private fun isTextBubbleComponent(): Boolean {
-        val tokens = componentClassPrefix.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
-        return tokens.any { token ->
-            val norm = token.removePrefix("genericui:")
-            norm == "text-bubble" || norm == "textbubble" || norm == "gui-text-bubble"
+    private val styledDelegate = DesktopStyledWidgetDelegate(
+        owner = this,
+        visualsAttributeKey = "styledContainerVisuals",
+        allowsBootstrapTypeTint = false,
+        onOpacitySynced = { op -> applyResolvedOpacity(op, notifyTree = false) },
+        onStyleSynced = { notifyStyleSyncedIfReady() }
+    )
+
+    init {
+        nativeWidget.attributes["componentRole"] = "styled-container"
+        nativeWidget.attributes["useSystemControlAppearance"] = "false"
+        delegateInitialized = true
+    }
+
+    override fun syncStyleToNativeWidget() {
+        super<DesktopContainerNativeImpl>.syncStyleToNativeWidget()
+        if (delegateInitialized) {
+            styledDelegate.syncToWidget()
         }
     }
 
+    protected fun syncResolvedVisualsToWidget(visualOnly: Boolean = false) {
+        styledDelegate.syncToWidget(visualOnly = visualOnly)
+    }
+
     override fun setStyledVisuals(visuals: StyledVisualSpec) {
-        val effective = if (isTextBubbleComponent()) visuals.withoutBackdropFilter() else visuals
-        if (styledVisuals == effective && nativeWidget.attributes["styledVisuals"] == effective) return
-        styledVisuals = effective
-        cachedMergedVisuals = null
-        nativeWidget.attributes["styledVisuals"] = effective
-        effective.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
-        effective.backgroundGradient?.let {
-            setBackgroundGradient(it)
-            nativeWidget.attributes["backgroundGradient"] = it
-        }
-        effective.textColor?.let { nativeWidget.attributes["textColor"] = it }
-        effective.borderColor?.let { nativeWidget.attributes["borderColor"] = it }
-        effective.borderWidthPx?.let { nativeWidget.attributes["borderWidthPx"] = it }
-        effective.borderStyle?.let { nativeWidget.attributes["borderStyle"] = it }
-        effective.borderRadiusPx?.let { nativeWidget.attributes["borderRadiusPx"] = it }
-        val blurPx = effective.backdropBlurPx ?: effective.backdropFilter?.blur?.resolvePx()
-        if (!isTextBubbleComponent() && blurPx != null && blurPx > 0f) {
-            nativeWidget.attributes["backdropBlurPx"] = blurPx
-        } else {
-            nativeWidget.attributes.remove("backdropBlurPx")
-        }
-        val bf = effective.backdropFilter
-        if (!isTextBubbleComponent() && bf != null && !bf.isNone) {
-            nativeWidget.attributes["backdropFilter"] = bf
-        } else {
-            nativeWidget.attributes.remove("backdropFilter")
-        }
-        effective.opacity?.let {
-            val op = it.coerceIn(0f, 1f)
-            nativeWidget.opacity = op
-            nativeWidget.attributes["opacity"] = op
-        }
-        effective.padding?.let { nativeWidget.padding = it }
-        nativeWidget.notifyTreeInvalidated(visualOnly = true)
+        if (styledDelegate.getBaseVisuals() == visuals && nativeWidget.attributes["styledVisuals"] == visuals) return
+        styledDelegate.setBaseVisuals(visuals)
     }
 
     override fun acceptsAestheticSkinStyles(): Boolean = true
 
     override fun acceptsTypographyStyles(): Boolean = true
 
+    override fun acceptsBootstrapSemanticColors(): Boolean = isHostedInCustomStyleEngine()
+
+    override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
+        styledDelegate.invalidate()
+        super<DesktopContainerNativeImpl>.applyComponentBootstrap(bootstrap)
+        styledDelegate.syncToWidget()
+    }
+
     override fun applyComponentStyle(style: ComponentStyle) {
-        cachedMergedVisuals = null
+        styledDelegate.invalidate()
         super<DesktopContainerNativeImpl>.applyComponentStyle(style)
+        styledDelegate.syncToWidget()
     }
 
     override fun applyComputedStyle(style: ComputedStyle) {
-        cachedMergedVisuals = null
+        styledDelegate.invalidate()
         super<DesktopContainerNativeImpl>.applyComputedStyle(style)
+        styledDelegate.syncToWidget()
     }
 
-    override fun getStyledVisuals(): StyledVisualSpec {
-        cachedMergedVisuals?.let { return it }
-        val computedBase = StyledVisualSpec.fromComponentAndComputed(lastComponentStyle, getComputedStyle())
-        val merged = computedBase.mergeWith(styledVisuals)
-        val result = if (isTextBubbleComponent()) merged.withoutBackdropFilter() else merged
-        return result.also { cachedMergedVisuals = it }
-    }
+    override fun getStyledVisuals(): StyledVisualSpec = styledDelegate.resolveBaseVisuals()
 }

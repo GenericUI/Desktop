@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.core.NativeImpl
@@ -32,6 +34,46 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
 ) {
     private var suppressHostSync: Boolean = false
 
+    init {
+        Win32WinMain.ensureWindowsControlsInitialized()
+        layoutController = com.nexustools.genericui.desktop.layout.DesktopContainerLayoutController(this).apply {
+            onZOrderUpdated = { sorted ->
+                Win32NativeWindowHost.resolveHwndForWindow(this@WindowsWindowNativeImpl)?.let { hostHwnd ->
+                    Win32ControlMessageRouter.layoutChildrenBatch(hostHwnd, sorted)
+                }
+            }
+        }
+    }
+
+    override fun onChildAddedNative(childImpl: NativeImpl<*>, index: Int) {
+        super.onChildAddedNative(childImpl, index)
+        val hostHwnd = Win32NativeWindowHost.resolveHwndForWindow(this) ?: return
+        val base = childImpl as? com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<*> ?: return
+        val handle = base.nativeWidget as? Win32HwndHandle ?: return
+        Win32InteractiveSurfaceHwnd.ensureSurfaceChildHwnd(handle, base)
+        Win32ControlMessageRouter.attachChildHwnd(handle, hostHwnd)
+        Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+    }
+
+    override fun onChildRemovedNative(childImpl: NativeImpl<*>) {
+        super.onChildRemovedNative(childImpl)
+        val handle = childImpl.nativeWidget as? Win32HwndHandle
+        if (handle != null) {
+            Win32ControlMessageRouter.detachChildHwnd(handle)
+        }
+        Win32NativeWindowHost.resolveHwndForWindow(this)?.let { hostHwnd ->
+            Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+        }
+    }
+
+    override fun onChildrenClearedNative() {
+        for (child in childImpls.toList()) {
+            val handle = child.nativeWidget as? Win32HwndHandle ?: continue
+            Win32ControlMessageRouter.detachChildHwnd(handle)
+        }
+        super.onChildrenClearedNative()
+    }
+
     val titleBarKind: Win32TitleBarKind
         get() = if (isToolModalWindow) Win32TitleBarKind.TOOL_WINDOW else Win32TitleBarKind.STANDARD_WINDOW
 
@@ -59,6 +101,33 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         nativeWidget.attributes["win32OwnedByHwnd"] = (ownerWindow?.nativeWidget as? Win32HwndHandle)?.nativePointer
     }
 
+    internal fun computeDesiredWindowStyle(
+        undecorated: Boolean = isUndecorated(),
+        preserveVisible: Boolean = (nativeWidget.dwStyle and Win32HwndHandle.WS_VISIBLE) != 0L
+    ): Long {
+        val resizable = (nativeWidget.attributes["resizable"] as? Boolean) != false
+        val titleBar = getTitleBarInstructions()
+        val allowMin = !isToolModalWindow && (titleBar?.showMinimizeButton ?: true)
+        val allowMax = !isToolModalWindow && resizable && (titleBar?.showMaximizeButton ?: true)
+        var style = if (undecorated) {
+            var base = Win32HwndHandle.WS_POPUP or Win32HwndHandle.WS_SYSMENU
+            if (resizable) base = base or Win32HwndHandle.WS_THICKFRAME
+            if (allowMin) base = base or Win32HwndHandle.WS_MINIMIZEBOX
+            if (allowMax) base = base or Win32HwndHandle.WS_MAXIMIZEBOX
+            base
+        } else {
+            var base = Win32HwndHandle.WS_OVERLAPPEDWINDOW
+            if (!resizable) base = base and Win32HwndHandle.WS_THICKFRAME.inv()
+            if (!allowMin) base = base and Win32HwndHandle.WS_MINIMIZEBOX.inv()
+            if (!allowMax) base = base and Win32HwndHandle.WS_MAXIMIZEBOX.inv()
+            base
+        }
+        if (preserveVisible) {
+            style = style or Win32HwndHandle.WS_VISIBLE
+        }
+        return style
+    }
+
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         super.applyTitleBarInstructions(titleBar)
         val hasCustomOrEmbedded = titleBar != null && (
@@ -71,18 +140,10 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         nativeWidget.attributes["DwmExtendFrameIntoClientArea"] = hasCustomOrEmbedded
         nativeWidget.attributes["WM_NCHITTEST_CustomCaption"] = hasCustomOrEmbedded
         nativeWidget.attributes["win32TitleBarKind"] = titleBarKind.name
-        val allowMinimize = if (isToolModalWindow) false else (titleBar?.showMinimizeButton ?: true)
-        val allowMaximize = if (isToolModalWindow) false else (titleBar?.showMaximizeButton ?: true)
-        if (!allowMinimize) {
-            nativeWidget.dwStyle = nativeWidget.dwStyle and Win32HwndHandle.WS_MINIMIZEBOX.inv()
-        } else {
-            nativeWidget.dwStyle = nativeWidget.dwStyle or Win32HwndHandle.WS_MINIMIZEBOX
-        }
-        if (!allowMaximize) {
-            nativeWidget.dwStyle = nativeWidget.dwStyle and Win32HwndHandle.WS_MAXIMIZEBOX.inv()
-        } else {
-            nativeWidget.dwStyle = nativeWidget.dwStyle or Win32HwndHandle.WS_MAXIMIZEBOX
-        }
+        nativeWidget.dwStyle = computeDesiredWindowStyle(
+            undecorated = isUndecorated(),
+            preserveVisible = (nativeWidget.dwStyle and Win32HwndHandle.WS_VISIBLE) != 0L
+        )
         if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
             Win32NativeWindowHost.onMainWindowTitleBarChanged(this)
         }
@@ -99,11 +160,14 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
 
     override fun setUndecorated(undecorated: Boolean) {
         super.setUndecorated(undecorated)
-        if (undecorated) {
-            nativeWidget.dwStyle = Win32HwndHandle.WS_POPUP or Win32HwndHandle.WS_THICKFRAME
-        } else {
-            nativeWidget.dwStyle = Win32HwndHandle.WS_OVERLAPPEDWINDOW or Win32HwndHandle.WS_VISIBLE
-        }
+        nativeWidget.dwStyle = computeDesiredWindowStyle(
+            undecorated = undecorated,
+            preserveVisible = if (undecorated) {
+                (nativeWidget.dwStyle and Win32HwndHandle.WS_VISIBLE) != 0L
+            } else {
+                true
+            }
+        )
         if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
             Win32NativeWindowHost.syncWindowUndecorated(this, undecorated)
         }
@@ -249,6 +313,16 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         }
     }
 
+    internal fun notifyHostFocusChanged(focused: Boolean) {
+        if (isFocusedState() == focused && nativeWidget.attributes.containsKey("focused")) return
+        suppressHostSync = true
+        try {
+            dispatchFocusChanged(focused)
+        } finally {
+            suppressHostSync = false
+        }
+    }
+
     override fun getTitleCapabilities(): TitleCapabilities = TitleCapabilities(
         isSupported = true,
         isEmulated = false,
@@ -272,7 +346,8 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         isTitleBarRequired = true,
         titleBarRendersAsNavbar = false,
         menuBarRendersAsNavbar = false,
-        menuBarMergesIntoTitleNavbar = false
+        menuBarMergesIntoTitleNavbar = false,
+        prefersBlurredTranslucentOverlayTitleBar = false
     )
 
     override fun setFullscreen(fullscreen: Boolean, cutoutMode: DisplayCutoutMode) {
@@ -287,13 +362,41 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
             Win32NativeWindowHost.setWindowFullscreen(
                 windowImpl = this,
                 fullscreen = fullscreen,
-                targetElementWidget = targetWidget
+                fullscreenWidget = targetWidget
             )
         }
     }
 
+    internal fun notifyHostFullscreenExited() {
+        val sz = getWindowSize()
+        val resolvedTheme = com.nexustools.genericui.component.shell.Application.current?.getResolvedTheme()
+            ?: com.nexustools.genericui.style.theme.SystemThemeDetector.detectSystemTheme()
+        onWindowResizeListener?.invoke(
+            WindowConfiguration(
+                widthPx = sz.width,
+                heightPx = sz.height,
+                windowState = currentWindowState,
+                isFullscreen = false,
+                themeMode = resolvedTheme
+            )
+        )
+    }
+
     override fun setFullscreenElement(elementImpl: NativeImpl<*>?, cutoutMode: DisplayCutoutMode) {
         super.setFullscreenElement(elementImpl, cutoutMode)
+        Win32NativeWindowHost.resolveHwndForWindow(this)?.let { hostHwnd ->
+            Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+        }
+    }
+
+    override fun onNativeBoundsChanged(rect: Rect) {
+        super.onNativeBoundsChanged(rect)
+        val hostHwnd = Win32NativeWindowHost.resolveHwndForWindow(this)
+        if (hostHwnd != null) {
+            Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+        } else if (rect.width > 0 && rect.height > 0) {
+            layoutChildrenInBounds(rect.width.toFloat(), rect.height.toFloat())
+        }
     }
 
     override fun setVisible(visible: Boolean) {

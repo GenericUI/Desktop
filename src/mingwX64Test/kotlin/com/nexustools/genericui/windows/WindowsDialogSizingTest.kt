@@ -228,13 +228,23 @@ class WindowsDialogSizingTest {
         val m = measure(modal)
         println("[WindowsDialogSizingTest] wide footer: $m")
 
-        val regions = (0 until Win32NativeWindowHost.getHitRegionsCount()).map { Win32NativeWindowHost.getHitRegionAt(it) }
+        val dImpl = dialogImpl(modal)
+        val dHwnd = assertNotNull(Win32NativeWindowHost.dialogHwnds[dImpl])
         val footerTopLimit = m.clientH - 12 - 44
         val buttonRects = buttons.map { btn ->
-            val widget = (btn.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget
-            val r = regions.firstOrNull { it.widget === widget }
-            assertNotNull(r, "Footer button '${btn.text}' was not laid out/hit-testable at all (clipped away) — $m")
-            Triple(btn.text, r.left to r.top, r.right to r.bottom)
+            val handle = btn.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle
+            val bHwnd = assertNotNull(handle.hwnd, "Footer button '${btn.text}' must hold a retained HWND")
+            val r = memScoped {
+                val cr = alloc<RECT>()
+                GetClientRect(bHwnd, cr.ptr)
+                val pt = alloc<platform.windows.POINT>()
+                pt.x = 0
+                pt.y = 0
+                platform.windows.MapWindowPoints(bHwnd, dHwnd, pt.ptr, 1u)
+                intArrayOf(pt.x, pt.y, pt.x + (cr.right - cr.left), pt.y + (cr.bottom - cr.top))
+            }
+            assertTrue(r[2] > r[0] && r[3] > r[1], "Footer button '${btn.text}' was not laid out (empty HWND bounds) — $m")
+            Triple(btn.text, r[0] to r[1], r[2] to r[3])
         }
         for ((label, lt, rb) in buttonRects) {
             assertTrue(

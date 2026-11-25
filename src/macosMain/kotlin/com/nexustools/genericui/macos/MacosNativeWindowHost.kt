@@ -1,22 +1,20 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class, kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
 
 package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.apple.AppleImageIoCodecNativeImpl
-import com.nexustools.genericui.apple.AppleSvgCoreGraphicsRasterizer
-import com.nexustools.genericui.component.shell.Application
+import com.nexustools.genericui.apple.style.AppleBackdropFilterController
 import com.nexustools.genericui.core.GenericUI
+import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
+import com.nexustools.genericui.desktop.core.DesktopStageOverlaySpec
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
+import com.nexustools.genericui.desktop.dock.DesktopDockWindowNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopDropdownNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopSelectNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopSpinnerNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
+import com.nexustools.genericui.enums.css.CssCursor
 import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.enums.window.WindowState
-import com.nexustools.genericui.event.InputFocusManager
 import com.nexustools.genericui.event.KeyEvent
 import com.nexustools.genericui.event.PointerDragManager
 import com.nexustools.genericui.event.PointerEvent
@@ -30,28 +28,15 @@ import com.nexustools.genericui.image.ImageDecodeOptions
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.image.ImageSource
 import com.nexustools.genericui.image.PixelFormat
-import com.nexustools.genericui.macos.impl.MacosDropdownNativeImpl
-import com.nexustools.genericui.macos.render.MacosControlRenderUtil
-import com.nexustools.genericui.macos.render.MacosGraphicsDrawUtil
-import com.nexustools.genericui.macos.render.MacosHitRegion
-import com.nexustools.genericui.macos.render.MacosNavigationRenderUtil
-import com.nexustools.genericui.macos.render.MacosRenderContext
-import com.nexustools.genericui.macos.render.MacosScrollRegion
-import com.nexustools.genericui.macos.render.MacosStageOverlayRenderUtil
-import com.nexustools.genericui.macos.render.MacosThemePalette
-import com.nexustools.genericui.macos.render.MacosWorkspaceLayoutRenderUtil
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 import com.nexustools.genericui.res.DrawableResource
 import com.nexustools.genericui.res.Resources
-import com.nexustools.genericui.style.css.CssCustomCursor
-import com.nexustools.genericui.style.theme.SystemThemeDetector
-import com.nexustools.genericui.style.theme.ThemeConfig
 import com.nexustools.genericui.threading.GenericUiThreading
-import com.nexustools.genericui.window.MainWindowSavedState
-import com.nexustools.genericui.window.WindowAspectRatioHelper
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.addressOf
-import kotlinx.cinterop.convert
+import kotlinx.cinterop.autoreleasepool
+import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.useContents
 import kotlinx.cinterop.usePinned
 import platform.AppKit.NSAppearance
@@ -60,35 +45,48 @@ import platform.AppKit.NSAppearanceNameDarkAqua
 import platform.AppKit.NSApplication
 import platform.AppKit.NSApplicationActivationPolicy
 import platform.AppKit.NSBackingStoreBuffered
+import platform.AppKit.NSButton
 import platform.AppKit.NSCursor
+import platform.AppKit.NSCursorFrameResizeDirectionsAll
+import platform.AppKit.NSCursorFrameResizePositionBottom
+import platform.AppKit.NSCursorFrameResizePositionBottomLeft
+import platform.AppKit.NSCursorFrameResizePositionBottomRight
+import platform.AppKit.NSCursorFrameResizePositionLeft
+import platform.AppKit.NSCursorFrameResizePositionRight
+import platform.AppKit.NSCursorFrameResizePositionTop
+import platform.AppKit.NSCursorFrameResizePositionTopLeft
+import platform.AppKit.NSCursorFrameResizePositionTopRight
 import platform.AppKit.NSEvent
 import platform.AppKit.NSEventMaskAny
-import platform.AppKit.NSEventMaskSystemDefined
 import platform.AppKit.NSEventModifierFlagCommand
 import platform.AppKit.NSEventModifierFlagControl
 import platform.AppKit.NSEventModifierFlagOption
 import platform.AppKit.NSEventModifierFlagShift
+import platform.AppKit.NSEventTypeApplicationDefined
+import platform.AppKit.NSEventTypeCursorUpdate
 import platform.AppKit.NSEventTypeLeftMouseDown
 import platform.AppKit.NSEventTypeLeftMouseDragged
 import platform.AppKit.NSEventTypeLeftMouseUp
-import platform.AppKit.NSEventTypeOtherMouseDown
-import platform.AppKit.NSEventTypeOtherMouseDragged
-import platform.AppKit.NSEventTypeOtherMouseUp
+import platform.AppKit.NSEventTypeMouseEntered
+import platform.AppKit.NSEventTypeMouseExited
+import platform.AppKit.NSEventTypeMouseMoved
 import platform.AppKit.NSEventTypeRightMouseDown
-import platform.AppKit.NSEventTypeRightMouseDragged
 import platform.AppKit.NSEventTypeRightMouseUp
 import platform.AppKit.NSFloatingWindowLevel
 import platform.AppKit.NSGraphicsContext
 import platform.AppKit.NSImage
+import platform.AppKit.NSModalPanelWindowLevel
 import platform.AppKit.NSNormalWindowLevel
 import platform.AppKit.NSPanel
-import platform.AppKit.NSPasteboard
-import platform.AppKit.NSPasteboardTypeString
+import platform.AppKit.NSPopUpMenuWindowLevel
 import platform.AppKit.NSScreen
+import platform.AppKit.NSScrollView
+import platform.AppKit.NSScroller
+import platform.AppKit.NSScrollerStyleLegacy
+import platform.AppKit.NSView
 import platform.AppKit.NSWindow
 import platform.AppKit.NSWindowAbove
 import platform.AppKit.NSWindowCollectionBehaviorFullScreenPrimary
-import platform.AppKit.NSWindowStyleMaskBorderless
 import platform.AppKit.NSWindowStyleMaskClosable
 import platform.AppKit.NSWindowStyleMaskFullScreen
 import platform.AppKit.NSWindowStyleMaskFullSizeContentView
@@ -98,230 +96,374 @@ import platform.AppKit.NSWindowStyleMaskTitled
 import platform.AppKit.NSWindowStyleMaskUtilityWindow
 import platform.AppKit.NSWindowTitleHidden
 import platform.AppKit.NSWindowTitleVisible
+import platform.AppKit.appearance
 import platform.AppKit.currentEvent
-import platform.CoreFoundation.CFRunLoopGetMain
-import platform.CoreFoundation.CFRunLoopRunInMode
-import platform.CoreFoundation.CFRunLoopWakeUp
-import platform.CoreFoundation.kCFRunLoopDefaultMode
+import platform.AppKit.nextEventMatchingMask
+import platform.AppKit.postEvent
+import platform.AppKit.sendAction
+import platform.AppKit.sendEvent
+import platform.AppKit.setAppearance
 import platform.CoreGraphics.CGBitmapContextCreate
-import platform.CoreGraphics.CGBitmapContextCreateImage
+import platform.CoreGraphics.CGBitmapContextGetData
 import platform.CoreGraphics.CGColorSpaceCreateDeviceRGB
 import platform.CoreGraphics.CGColorSpaceRelease
+import platform.CoreGraphics.CGContextDrawImage
 import platform.CoreGraphics.CGContextRef
 import platform.CoreGraphics.CGContextRelease
+import platform.CoreGraphics.CGContextRestoreGState
+import platform.CoreGraphics.CGContextSaveGState
 import platform.CoreGraphics.CGContextScaleCTM
 import platform.CoreGraphics.CGContextTranslateCTM
 import platform.CoreGraphics.CGImageAlphaInfo
-import platform.CoreGraphics.CGImageRelease
-import platform.CoreGraphics.kCGBitmapByteOrderDefault
+import platform.CoreGraphics.CGRectMake
+import platform.CoreGraphics.kCGBitmapByteOrder32Big
 import platform.Foundation.NSBundle
 import platform.Foundation.NSData
 import platform.Foundation.NSDate
 import platform.Foundation.NSDefaultRunLoopMode
 import platform.Foundation.NSMakePoint
+import platform.Foundation.NSPoint
 import platform.Foundation.NSMakeRect
 import platform.Foundation.NSMakeSize
 import platform.Foundation.NSProcessInfo
 import platform.Foundation.NSRect
 import platform.Foundation.NSRunLoop
-import platform.Foundation.NSRunLoopCommonModes
+import platform.Foundation.NSSelectorFromString
 import platform.Foundation.NSThread
-import platform.Foundation.NSTimer
 import platform.Foundation.dataWithContentsOfFile
 import platform.Foundation.dateWithTimeIntervalSinceNow
+import platform.Foundation.runMode
+import platform.darwin.DISPATCH_TIME_NOW
+import platform.darwin.dispatch_after
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
-import platform.posix.memcpy
-import platform.posix.usleep
-import kotlin.concurrent.AtomicInt
-import kotlin.io.encoding.Base64
+import platform.darwin.dispatch_sync
+import platform.darwin.dispatch_time
+import kotlin.concurrent.atomics.AtomicInt
 import kotlin.io.encoding.ExperimentalEncodingApi
-import kotlin.math.abs
+import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.time.TimeSource
 
 /**
- * Singleton AppKit window, event-loop, CoreGraphics display, hit-testing, and input coordinator
+ * Singleton AppKit window, event-loop, layout, hit-testing, and offscreen capture coordinator
  * for `:desktop:macos`.
  */
 object MacosNativeWindowHost {
 
+    internal var stageTopologyVersion: Long = 0L
+
+    internal enum class UndecoratedResizeEdge(
+        val left: Boolean,
+        val right: Boolean,
+        val top: Boolean,
+        val bottom: Boolean
+    ) {
+        NONE(false, false, false, false),
+        N(false, false, true, false),
+        S(false, false, false, true),
+        E(false, true, false, false),
+        W(true, false, false, false),
+        NE(false, true, true, false),
+        NW(true, false, true, false),
+        SE(false, true, false, true),
+        SW(true, false, false, true)
+    }
+
+    internal const val UNDECORATED_RESIZE_EDGE_PT: Double = 8.0
+    internal const val UNDECORATED_RESIZE_CORNER_PT: Double = 14.0
+    internal const val UNDECORATED_RESIZE_CONTROL_EDGE_PT: Double = 2.0
     private const val CUSTOM_TITLEBAR_INSET_PX: Int = 28
     private const val CHROME_MODE_STANDARD: Int = 0
     private const val CHROME_MODE_SEAMLESS_STACKED_NAVBAR: Int = 1
     private const val CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR: Int = 2
-    private const val STAGE_HUD_IDLE_HIDE_MS: Double = 5000.0
+    private const val CHROME_MODE_NATIVE_OVERLAY_TITLEBAR: Int = 3
 
     private val sessions = LinkedHashMap<Long, MacosWindowSession>(8)
-    private val lastLeftMouseDownEventByWindowKey = HashMap<Long, NSEvent>()
+    private var syntheticKeySeq: Long = 1000L
     private var appInitialized: Boolean = false
+    private var appFinishedLaunching: Boolean = false
     private var eventLoopRunning: Boolean = false
-    private var frameTimer: NSTimer? = null
-    private var localSystemEventMonitor: Any? = null
-    private var lastFrameTickMs: Double = 0.0
-    private var lastSpinnerRedrawMs: Double = 0.0
-    private var lastThemePollMs: Double = 0.0
-    private var lastObservedSystemTheme: ThemeMode? = null
+    private var hooksInstalled: Boolean = false
+    private var syncingChromeSessionKey: Long = 0L
+    private var activeKeyWindowId: Long? = null
+    private var activeAppearanceName: String? = null
+    private var hostVBlankWatcherId: Int = -1
+    private val frameReadyPending = AtomicInt(0)
+
     @kotlin.concurrent.Volatile
     private var redrawRequested: Boolean = true
     @kotlin.concurrent.Volatile
     private var stageRedrawRequested: Boolean = false
     private val redrawDispatchScheduled = AtomicInt(0)
     private val stageRedrawDispatchScheduled = AtomicInt(0)
-    private var activeKeyWindowId: Long? = null
+
+    private val pendingOverlayRelayoutRoots = linkedSetOf<com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>>()
+    private val overlayRelayoutLock = AtomicInt(0)
+    private val overlayRelayoutDispatchScheduled = AtomicInt(0)
+
+    private inline fun <T> withOverlayRelayoutLock(block: () -> T): T {
+        while (!overlayRelayoutLock.compareAndSet(0, 1)) {
+            // brief spin strictly around pendingOverlayRelayoutRoots
+        }
+        return try {
+            block()
+        } finally {
+            overlayRelayoutLock.store(0)
+        }
+    }
+
+    private var totalPaintsCount: Long = 0L
+    private var stageOnlyPaintsCount: Long = 0L
+    private var fullWindowPaintsCount: Long = 0L
+    private var redisplayOnlyRequested: Boolean = false
+    private val redisplayDispatchScheduled = AtomicInt(0)
+    private val paintDurationsUs = ArrayList<Long>(256)
 
     var visualTestMode: Boolean = false
     var visualTestBannerText: String? = null
-        set(value) {
-            field = value
-            if (appInitialized && MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
-                runOnMainAppKitThread {
-                    val mainSess = sessions.values.firstOrNull {
-                        val w = it.windowImpl
-                        w != null &&
-                            !w.isDisposed &&
-                            w.isVisible() &&
-                            !w.isToolModalWindow &&
-                            !it.isApplyingChromeGeometryTransition &&
-                            !it.isFullscreenTransitionInFlight &&
-                            it.nsWindow.visible
-                    }
-                    if (mainSess != null && mainSess.windowImpl != null) {
-                        val baseTitle = mainSess.windowImpl.getTitle()
-                        mainSess.nsWindow.title = if (!value.isNullOrBlank()) "$baseTitle  —  $value" else baseTitle
-                    }
+
+    init {
+        DesktopNativeWidget.onVBlankWidgetsChanged = { syncHostVBlankWatcher() }
+        DesktopNativeWidget.onSurfaceFrameReadyGlobal = { _ ->
+            if (frameReadyPending.compareAndSet(0, 1)) {
+                dispatch_async(dispatch_get_main_queue()) {
+                    frameReadyPending.store(0)
+                    onAnimatorVBlankTick()
                 }
             }
         }
+    }
 
     val activeNsWindow: NSWindow?
         get() = activeSession()?.nsWindow
 
-    private val paintDurationSamplesUs = LongArray(512)
-    private var paintSampleWriteIdx: Int = 0
-    private var paintSampleCount: Int = 0
-    private var totalPaintsCounter: Long = 0L
-    private var stageOnlyPaintsCounter: Long = 0L
-    private var fullWindowPaintsCounter: Long = 0L
+    private inline fun <T> runOnMainSync(crossinline block: () -> T): T {
+        if (NSThread.isMainThread) return block()
+        var result: Result<T>? = null
+        dispatch_sync(dispatch_get_main_queue()) {
+            result = runCatching { block() }
+        }
+        return result!!.getOrThrow()
+    }
 
-    private inline fun runOnMainAppKitThread(crossinline block: () -> Unit) {
-        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled || NSThread.isMainThread) {
-            block()
-        } else {
-            dispatch_async(dispatch_get_main_queue()) {
-                block()
+    private fun centerPanelOnActiveScreen(panel: NSWindow) {
+        val screen = NSScreen.mainScreen ?: panel.screen ?: (NSScreen.screens.firstOrNull() as? NSScreen)
+        if (screen != null) {
+            val (fw, fh) = panel.frame.useContents { size.width to size.height }
+            screen.visibleFrame.useContents {
+                val cx = origin.x + (size.width - fw) * 0.5
+                val cy = origin.y + (size.height - fh) * 0.5
+                panel.setFrame(NSMakeRect(cx, cy, fw, fh), display = false)
             }
+        } else {
+            panel.center()
         }
     }
 
+    // -------------------------------------------------------------------------
+    // App Lifecycle & Event Loop
+    // -------------------------------------------------------------------------
+
     fun prepareEventLoop() {
         ensureAppInitialized()
+        installHooks()
     }
 
     private fun ensureAppInitialized() {
         if (appInitialized) return
-        appInitialized = true
-
         val app = NSApplication.sharedApplication
         syncActivationPolicyForCurrentState()
-
         installApplicationIcon(app)
+        appInitialized = true
+    }
 
-        val appName = resolveApplicationName()
-        MacosMenuBarBridge.installMainMenu(appName, null)
+    private fun installHooks() {
+        if (hooksInstalled) return
+        hooksInstalled = true
 
-        DesktopNativeWidget.registerStageSubtreeClassifier { widget ->
-            MacosStageOverlayRenderUtil.isStageContainer(widget)
-        }
         DesktopNativeWidget.onNativeTreeInvalidated = {
             requestRedraw()
         }
-        DesktopNativeWidget.overlayInvalidationListener = { _ ->
-            requestStageRedraw()
+        DesktopNativeWidget.overlayInvalidationListener = { widget ->
+            if (widget.isInsideIsolatedStageSubtree()) {
+                requestStageRedraw()
+            } else {
+                requestRedraw()
+            }
+        }
+        DesktopNativeWidget.overlayLayoutInvalidationListener = { widget ->
+            if (widget.isInsideIsolatedStageSubtree()) {
+                requestOverlayRelayout(widget)
+            } else {
+                requestRedraw()
+            }
         }
         DesktopNativeWidget.onCursorUpdated = {
-            updateActiveCursor()
-        }
-        MacosGraphicsDrawUtil.onAsyncAssetLoaded = {
-            requestRedraw()
-        }
-        PopupMouseCaptureManager.onActivePopupCountChanged = { _ ->
-            requestRedraw()
-        }
-
-        DesktopDialogWindowNativeImpl.onShowDialogHook = { dialogImpl, ownerWindow ->
-            if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
-                presentDialog(dialogImpl, ownerWindow)
+            MacosAppKitDispatch.onMainOrDefer {
+                refreshActiveCursorsNow()
             }
+        }
+        PointerDragManager.addCursorLockListener { locked, cursor, _ ->
+            MacosAppKitDispatch.onMainOrDefer {
+                for (session in sessions.values.toList()) {
+                    session.rootView.applyDragCursorLock(locked, cursor)
+                }
+                if (!locked) {
+                    refreshActiveCursorsNow()
+                }
+            }
+        }
+        DesktopDialogWindowNativeImpl.onShowDialogHook = { dialogImpl, ownerWindow ->
+            presentDialogWindow(dialogImpl, ownerWindow)
         }
         DesktopDialogWindowNativeImpl.onCloseDialogHook = { dialogImpl ->
-            if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
-                closeDialogSession(dialogImpl)
-            }
+            closeDialogWindow(dialogImpl)
         }
         DesktopDialogWindowNativeImpl.onTitleChangedHook = { dialogImpl, title ->
-            sessions[dialogImpl.nativeWidget.nativePointer]?.nsWindow?.title = title
-        }
-
-        MacosControlRenderUtil.onRequestTextInputFocus = { inputImpl ->
-            focusTextInput(inputImpl)
-        }
-        MacosControlRenderUtil.onRequestSelectPopup = { selectImpl, bounds ->
-            openSelectPopup(selectImpl, bounds)
-        }
-        MacosControlRenderUtil.onRequestDropdownPopup = { dropdownImpl, bounds ->
-            openDropdownPopup(dropdownImpl, bounds)
-        }
-
-        if (localSystemEventMonitor == null) {
-            localSystemEventMonitor = NSEvent.addLocalMonitorForEventsMatchingMask(NSEventMaskSystemDefined) { event ->
-                if (event != null) {
-                    val handled = MacosApplicationNativeImpl.systemDefinedEventHook?.invoke(
-                        event.subtype.toInt(),
-                        event.data1.toInt()
-                    ) ?: false
-                    if (handled) null else event
-                } else {
-                    null
-                }
+            MacosAppKitDispatch.onMainOrDefer {
+                val key = dialogImpl.nativeWidget.nativePointer
+                sessions[key]?.nsWindow?.setTitle(title)
             }
         }
     }
 
-    private fun resolveApplicationName(): String {
-        val fromApp = Application.current?.mainWindow?.getTitle()?.takeIf { it.isNotBlank() }
-        if (fromApp != null) return fromApp
-        val display = NSBundle.mainBundle.objectForInfoDictionaryKey("CFBundleDisplayName") as? String
-        if (!display.isNullOrBlank()) return display
-        val bundleName = NSBundle.mainBundle.objectForInfoDictionaryKey("CFBundleName") as? String
-        if (!bundleName.isNullOrBlank()) return bundleName
-        return NSProcessInfo.processInfo.processName
+    private fun orderedVisibleSessions(): List<MacosWindowSession> {
+        val visible = sessions.values.filter { !it.isClosing && it.isShown && it.nsWindow.isVisible() }
+        if (visible.size <= 1) return visible
+        val keyWin = NSApplication.sharedApplication.keyWindow
+        val active = activeSession()
+        val ordered = ArrayList<MacosWindowSession>(visible.size)
+        visible.firstOrNull { it.nsWindow === keyWin }?.let { ordered.add(it) }
+        if (active != null && active in visible && active !in ordered) {
+            ordered.add(active)
+        }
+        for (i in visible.indices.reversed()) {
+            val s = visible[i]
+            if (s !in ordered) {
+                ordered.add(s)
+            }
+        }
+        return ordered
     }
+
+    private fun isClientPointInsideRootBounds(x: Double, y: Double, rootView: MacosWindowRootView): Boolean =
+        x.isFinite() && y.isFinite() && rootView.bounds.useContents {
+            size.width > 0.0 && size.height > 0.0 &&
+                x >= origin.x && x <= origin.x + size.width &&
+                y >= origin.y && y <= origin.y + size.height
+        }
+
+    internal fun refreshActiveCursorsNow() {
+        val orderedSessions = orderedVisibleSessions()
+        if (orderedSessions.isEmpty()) return
+        if (!visualTestMode) {
+            for (s in orderedSessions) {
+                s.nsWindow.invalidateCursorRectsForView(s.rootView)
+            }
+        }
+        if (visualTestMode) {
+            for (s in orderedSessions) {
+                val lx = s.rootView.lastKnownClientX
+                val ly = s.rootView.lastKnownClientY
+                if (isClientPointInsideRootBounds(lx, ly, s.rootView)) {
+                    s.rootView.updateEffectiveCursorForClientPoint(lx, ly, forceCheckCurrent = true)
+                    return
+                }
+            }
+        }
+        val mouseScreenPt = NSEvent.mouseLocation
+        val topWinNumber = NSWindow.windowNumberAtPoint(mouseScreenPt, belowWindowWithWindowNumber = 0L)
+        if (topWinNumber > 0L) {
+            val topSession = orderedSessions.firstOrNull { it.nsWindow.windowNumber == topWinNumber } ?: return
+            val winPt = topSession.nsWindow.convertPointFromScreen(mouseScreenPt)
+            val (cx, cy) = topSession.rootView.convertPoint(winPt, fromView = null).useContents { x to y }
+            if (isClientPointInsideRootBounds(cx, cy, topSession.rootView)) {
+                topSession.rootView.updateEffectiveCursorForClientPoint(cx, cy, forceCheckCurrent = true)
+            }
+            return
+        }
+        for (s in orderedSessions) {
+            val winPt = s.nsWindow.convertPointFromScreen(mouseScreenPt)
+            val (cx, cy) = s.rootView.convertPoint(winPt, fromView = null).useContents { x to y }
+            if (isClientPointInsideRootBounds(cx, cy, s.rootView)) {
+                s.rootView.updateEffectiveCursorForClientPoint(cx, cy, forceCheckCurrent = true)
+                return
+            }
+        }
+        for (s in orderedSessions) {
+            val lx = s.rootView.lastKnownClientX
+            val ly = s.rootView.lastKnownClientY
+            if (isClientPointInsideRootBounds(lx, ly, s.rootView)) {
+                s.rootView.updateEffectiveCursorForClientPoint(lx, ly, forceCheckCurrent = true)
+                return
+            }
+        }
+    }
+
+    fun runEventLoop() {
+        prepareEventLoop()
+        val app = NSApplication.sharedApplication
+        eventLoopRunning = true
+        if (!appFinishedLaunching) {
+            appFinishedLaunching = true
+            app.finishLaunching()
+        }
+        for (session in sessions.values.toList()) {
+            flushSessionDisplayNow(session, stageOnly = false)
+        }
+        if (visualTestMode) {
+            pumpVisualWindowEvents(durationMs = 32L)
+            eventLoopRunning = false
+            return
+        }
+        app.run()
+        eventLoopRunning = false
+    }
+
+    fun terminateEventLoop() = MacosAppKitDispatch.onMainOrDefer {
+        eventLoopRunning = false
+        (com.nexustools.genericui.animation.Animator.activeScheduler as? MacosAnimationNativeImpl)
+            ?.setHostSurfaceDemand(active = false, preferredRateHz = null)
+        if (hostVBlankWatcherId > 0) {
+            com.nexustools.genericui.animation.Animator.unwatchVBlank(hostVBlankWatcherId)
+            hostVBlankWatcherId = -1
+        }
+        val app = NSApplication.sharedApplication
+        app.stop(null)
+        val dummyEvent = NSEvent.otherEventWithType(
+            type = NSEventTypeApplicationDefined,
+            location = NSMakePoint(0.0, 0.0),
+            modifierFlags = 0uL,
+            timestamp = 0.0,
+            windowNumber = 0L,
+            context = null,
+            subtype = 0,
+            data1 = 0L,
+            data2 = 0L
+        )
+        if (dummyEvent != null) {
+            app.postEvent(dummyEvent, atStart = true)
+        }
+    }
+
+    fun requestApplicationQuit() {
+        val mainWin = sessions.values.firstOrNull { !it.isDialog && it.windowImpl?.isToolModalWindow != true }?.windowImpl
+        if (mainWin != null) {
+            mainWin.closeWindow()
+        } else {
+            terminateEventLoop()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Dock Icon & Screen Helpers
+    // -------------------------------------------------------------------------
+
+    internal fun decodeDrawableToBuffer(drawable: DrawableResource): ImageBuffer? =
+        MacosAppKitAppearance.decodeDrawableToBuffer(drawable)
 
     @OptIn(ExperimentalEncodingApi::class)
-    internal fun decodeDrawableToBuffer(drawable: DrawableResource): ImageBuffer? = when {
-        !drawable.svgSource.isNullOrBlank() -> {
-            AppleSvgCoreGraphicsRasterizer.rasterize(
-                svgBytes = drawable.svgSource!!.encodeToByteArray(),
-                options = ImageDecodeOptions(targetWidth = 512, targetHeight = 512, antialiasing = true)
-            )
-        }
-        !drawable.base64Data.isNullOrBlank() -> {
-            val rawBytes = runCatching { Base64.decode(drawable.base64Data!!.trim()) }.getOrNull()
-            if (rawBytes != null && rawBytes.isNotEmpty()) {
-                val codec = ImageLoader.activeNativeCodec ?: AppleImageIoCodecNativeImpl().also {
-                    ImageLoader.activeNativeCodec = it
-                }
-                codec.decode(
-                    ImageSource.fromBytes(rawBytes),
-                    ImageDecodeOptions(targetWidth = 512, targetHeight = 512, antialiasing = true)
-                )
-            } else {
-                null
-            }
-        }
-        else -> null
-    }
-
     internal fun isAlreadyWrappedAppleSquircleIcon(buffer: ImageBuffer): Boolean {
         val rgba = buffer.asRgba8888()
         val w = rgba.width
@@ -330,29 +472,23 @@ object MacosNativeWindowHost {
 
         val cornerX = (w * 0.02).toInt().coerceIn(0, w - 1)
         val cornerY = (h * 0.02).toInt().coerceIn(0, h - 1)
-        val cornerIdx = (cornerY * w + cornerX) * 4
-        val cornerAlpha = rgba.bytes[cornerIdx + 3].toInt() and 0xFF
-        if (cornerAlpha >= 16) return false
+        val cornerAlpha = rgba.bytes[(cornerY * w + cornerX) * 4 + 3].toInt() and 0xFF
+        if (cornerAlpha > 16) return false
 
         val diagX = (w * 0.11).toInt().coerceIn(0, w - 1)
         val diagY = (h * 0.11).toInt().coerceIn(0, h - 1)
-        val diagIdx = (diagY * w + diagX) * 4
-        val diagAlpha = rgba.bytes[diagIdx + 3].toInt() and 0xFF
-        if (diagAlpha >= 16) return false
+        val diagAlpha = rgba.bytes[(diagY * w + diagX) * 4 + 3].toInt() and 0xFF
+        if (diagAlpha > 32) return false
 
         val tileBorderX = (w * 0.12).toInt().coerceIn(0, w - 1)
         val tileBorderY = (h / 2).coerceIn(0, h - 1)
-        val borderIdx = (tileBorderY * w + tileBorderX) * 4
-        val r = rgba.bytes[borderIdx].toInt() and 0xFF
-        val g = rgba.bytes[borderIdx + 1].toInt() and 0xFF
-        val b = rgba.bytes[borderIdx + 2].toInt() and 0xFF
-        val a = rgba.bytes[borderIdx + 3].toInt() and 0xFF
-        return r >= 245 && g >= 245 && b >= 245 && a >= 240
+        val borderAlpha = rgba.bytes[(tileBorderY * w + tileBorderX) * 4 + 3].toInt() and 0xFF
+        return borderAlpha >= 180
     }
 
     internal fun composeRuntimeDockIconBuffer(source: ImageBuffer): ImageBuffer {
         val rgbaBuffer = source.asRgba8888()
-        if (GenericUI.appleIconExplicitlyProvided) {
+        if (GenericUI.appleIconExplicitlyProvided || isAlreadyWrappedAppleSquircleIcon(rgbaBuffer)) {
             return rgbaBuffer
         }
         val targetSize = maxOf(rgbaBuffer.width, rgbaBuffer.height, 512)
@@ -360,8 +496,7 @@ object MacosNativeWindowHost {
             sourceRgba = rgbaBuffer.bytes,
             sourceWidth = rgbaBuffer.width,
             sourceHeight = rgbaBuffer.height,
-            targetSize = targetSize,
-            fullBleedSquare = false
+            targetSize = targetSize
         )
         return ImageBuffer(
             width = targetSize,
@@ -372,487 +507,307 @@ object MacosNativeWindowHost {
         )
     }
 
-    private fun readNsDataBytes(path: String): ByteArray? {
-        val data = NSData.dataWithContentsOfFile(path) ?: return null
-        val len = data.length.toInt()
-        if (len <= 0) return null
-        val raw = data.bytes ?: return null
-        val out = ByteArray(len)
-        out.usePinned { pinned ->
-            memcpy(pinned.addressOf(0), raw, data.length)
-        }
-        return out
-    }
-
     private fun installApplicationIcon(app: NSApplication) {
         val icnsPath = NSBundle.mainBundle.pathForResource("icon", ofType = "icns")
-            ?: NSBundle.mainBundle.pathForResource("AppIcon", ofType = "icns")
-
-        if (GenericUI.appleIconExplicitlyProvided) {
-            if (icnsPath != null) {
-                val bundleImg = NSImage(contentsOfFile = icnsPath)
-                if (bundleImg != null) {
-                    app.applicationIconImage = bundleImg
-                    return
-                }
-            }
-            val drawable = Resources.getDrawable("icon") ?: Resources.getDrawable("app_icon") ?: return
-            val buf = decodeDrawableToBuffer(drawable)
-            if (buf != null && buf.width > 0 && buf.height > 0) {
-                createNsImageFromRgba(buf.asRgba8888())?.let { nsImg ->
-                    app.applicationIconImage = nsImg
-                }
-            }
-            return
-        }
-
         if (icnsPath != null) {
-            val icnsBytes = readNsDataBytes(icnsPath)
-            val decodedIcns = if (icnsBytes != null && icnsBytes.isNotEmpty()) {
+            val isAppBundle = NSBundle.mainBundle.bundlePath.endsWith(".app", ignoreCase = true)
+            if (isAppBundle) {
+                NSImage(contentsOfFile = icnsPath)?.let { app.setApplicationIconImage(it) }
+                return
+            }
+            val data = NSData.dataWithContentsOfFile(icnsPath)
+            val ptr = data?.bytes
+            if (data != null && ptr != null && data.length.toInt() > 0) {
+                val raw = ByteArray(data.length.toInt())
+                raw.usePinned { pinned ->
+                    platform.posix.memcpy(pinned.addressOf(0), ptr, data.length)
+                }
                 val codec = ImageLoader.activeNativeCodec ?: AppleImageIoCodecNativeImpl().also {
                     ImageLoader.activeNativeCodec = it
                 }
-                runCatching {
-                    codec.decode(
-                        ImageSource.fromBytes(icnsBytes),
-                        ImageDecodeOptions(targetWidth = 512, targetHeight = 512, antialiasing = true)
-                    )
-                }.getOrNull()
-            } else {
-                null
-            }
-            if (decodedIcns != null && decodedIcns.width > 0 && decodedIcns.height > 0) {
-                if (isAlreadyWrappedAppleSquircleIcon(decodedIcns)) {
-                    val isAppBundle = NSBundle.mainBundle.bundlePath.endsWith(".app", ignoreCase = true) &&
-                        NSBundle.mainBundle.objectForInfoDictionaryKey("CFBundleIconFile") != null
-                    if (!isAppBundle) {
-                        NSImage(contentsOfFile = icnsPath)?.let { bundleImg ->
-                            app.applicationIconImage = bundleImg
-                        }
-                    }
-                    return
-                }
-                val wrapped = composeRuntimeDockIconBuffer(decodedIcns)
-                createNsImageFromRgba(wrapped)?.let { nsImg ->
-                    app.applicationIconImage = nsImg
+                val decoded = codec.decode(ImageSource.fromBytes(raw), ImageDecodeOptions())
+                if (decoded != null) {
+                    val wrapped = composeRuntimeDockIconBuffer(decoded)
+                    createNsImageFromBuffer(wrapped)?.let { app.setApplicationIconImage(it) }
                     return
                 }
             }
         }
-
         val drawable = Resources.getDrawable("icon") ?: Resources.getDrawable("app_icon") ?: return
-        val buf = decodeDrawableToBuffer(drawable)
-        if (buf != null && buf.width > 0 && buf.height > 0) {
-            val finalBuffer = composeRuntimeDockIconBuffer(buf)
-            createNsImageFromRgba(finalBuffer)?.let { nsImg ->
-                app.applicationIconImage = nsImg
-            }
-        }
+        val buf = decodeDrawableToBuffer(drawable) ?: return
+        val finalBuffer = composeRuntimeDockIconBuffer(buf)
+        createNsImageFromBuffer(finalBuffer)?.let { app.setApplicationIconImage(it) }
     }
 
-    private fun createNsImageFromRgba(buffer: ImageBuffer): NSImage? {
-        val w = buffer.width
-        val h = buffer.height
-        val rgba = buffer.bytes
-        if (w <= 0 || h <= 0 || rgba.size < w * h * 4) return null
-        val premul = ByteArray(w * h * 4)
-        var i = 0
-        val limit = w * h * 4
-        while (i < limit) {
-            val r = rgba[i].toInt() and 0xFF
-            val g = rgba[i + 1].toInt() and 0xFF
-            val b = rgba[i + 2].toInt() and 0xFF
-            val a = rgba[i + 3].toInt() and 0xFF
-            if (a == 255) {
-                premul[i] = r.toByte()
-                premul[i + 1] = g.toByte()
-                premul[i + 2] = b.toByte()
-                premul[i + 3] = 255.toByte()
-            } else if (a > 0) {
-                premul[i] = ((r * a + 127) / 255).toByte()
-                premul[i + 1] = ((g * a + 127) / 255).toByte()
-                premul[i + 2] = ((b * a + 127) / 255).toByte()
-                premul[i + 3] = a.toByte()
-            }
-            i += 4
-        }
-        val colorSpace = CGColorSpaceCreateDeviceRGB() ?: return null
+    private fun createNsImageFromBuffer(buffer: ImageBuffer): NSImage? {
+        val cg = MacosAppKitAppearance.createCgImageFromBuffer(buffer) ?: return null
         return try {
-            val cgImg = premul.usePinned { pinned ->
-                val ctx = CGBitmapContextCreate(
-                    data = pinned.addressOf(0),
-                    width = w.convert(),
-                    height = h.convert(),
-                    bitsPerComponent = 8.convert(),
-                    bytesPerRow = (w * 4).convert(),
-                    space = colorSpace,
-                    bitmapInfo = CGImageAlphaInfo.kCGImageAlphaPremultipliedLast.value or kCGBitmapByteOrderDefault
-                ) ?: return null
-                try {
-                    CGBitmapContextCreateImage(ctx)
-                } finally {
-                    CGContextRelease(ctx)
-                }
-            } ?: return null
-            try {
-                NSImage(cGImage = cgImg, size = NSMakeSize(w.toDouble(), h.toDouble()))
-            } finally {
-                CGImageRelease(cgImg)
-            }
+            NSImage(cGImage = cg, size = NSMakeSize(buffer.width.toDouble(), buffer.height.toDouble()))
         } finally {
-            CGColorSpaceRelease(colorSpace)
+            platform.CoreGraphics.CGImageRelease(cg)
         }
     }
 
-    fun runEventLoop() {
-        ensureAppInitialized()
-        if (eventLoopRunning) return
-        eventLoopRunning = true
-        lastFrameTickMs = monotonicTimeMs()
+    private fun primaryScreenMaxY(): Double {
+        val primary = (NSScreen.screens.firstOrNull() as? NSScreen) ?: NSScreen.mainScreen
+        return primary?.frame?.useContents { origin.y + size.height } ?: 1080.0
+    }
 
-        val timer = NSTimer.scheduledTimerWithTimeInterval(
-            interval = 1.0 / 60.0,
-            repeats = true
-        ) { _ ->
-            onFrameTimerTick()
-        }
-        NSRunLoop.currentRunLoop.addTimer(timer, forMode = NSRunLoopCommonModes)
-        frameTimer = timer
-
-        syncActivationPolicyForCurrentState()
-        val app = NSApplication.sharedApplication
-        app.finishLaunching()
-        MacosSystemTrayNativeImpl.syncAllTrayIcons()
-        if (sessions.isNotEmpty()) {
-            app.activateIgnoringOtherApps(true)
-        }
-        requestRedraw()
-        onFrameTimerTick()
-
-        if (visualTestMode) {
-            pumpVisualWindowEvents(48L)
-            return
-        }
-
-        try {
-            app.run()
-        } finally {
-            eventLoopRunning = false
-            frameTimer?.invalidate()
-            frameTimer = null
-            restoreHiddenCursors()
+    internal fun cocoaFrameToDesktopTopLeft(frame: CValue<NSRect>): Pair<Int, Int> {
+        val maxY = primaryScreenMaxY()
+        return frame.useContents {
+            origin.x.roundToInt() to (maxY - (origin.y + size.height)).roundToInt()
         }
     }
 
-    fun terminateEventLoop() {
-        frameTimer?.invalidate()
-        frameTimer = null
-        restoreHiddenCursors()
-        if (!eventLoopRunning) return
-        eventLoopRunning = false
-        NSApplication.sharedApplication.stop(null)
-        CFRunLoopGetMain()?.let { CFRunLoopWakeUp(it) }
-    }
-
-    fun requestApplicationQuit() {
-        val appInstance = Application.current
-        if (appInstance != null) {
-            GenericUiThreading.runOnLogic {
-                appInstance.exit(0)
-            }
-            return
-        }
-        val mainWin = sessions.values.firstOrNull { it.windowImpl != null && !it.windowImpl.isToolModalWindow }?.windowImpl
-        if (mainWin != null) {
-            GenericUiThreading.runOnLogic {
-                mainWin.closeWindow()
-            }
-        } else {
-            terminateEventLoop()
-        }
-    }
-
-    private fun invalidateSessionWindow(session: MacosWindowSession) {
-        session.pendingFullPaint = true
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    private fun invalidateSessionStageOnly(session: MacosWindowSession) {
-        val stage = session.renderedStageBounds
-        if (stage == null || stage.width <= 0 || stage.height <= 0 || session.pendingFullPaint) {
-            invalidateSessionWindow(session)
-            return
-        }
-        session.canvasView.setNeedsDisplayInRect(
-            NSMakeRect(
-                stage.x.toDouble(),
-                stage.y.toDouble(),
-                stage.width.toDouble(),
-                stage.height.toDouble()
+    internal fun cocoaFrameToDesktopTopLeftRect(frame: CValue<NSRect>): Rect {
+        val maxY = primaryScreenMaxY()
+        return frame.useContents {
+            Rect(
+                x = origin.x.roundToInt(),
+                y = (maxY - (origin.y + size.height)).roundToInt(),
+                width = size.width.roundToInt(),
+                height = size.height.roundToInt()
             )
-        )
-    }
-
-    private fun isWidgetInsideStage(session: MacosWindowSession, widget: DesktopNativeWidget?): Boolean {
-        if (widget == null) return false
-        val stageWidget = session.renderedStageWidget ?: return false
-        return stageWidget.containsNativeWidget(widget)
-    }
-
-    fun requestRedraw() {
-        redrawRequested = true
-        if (!appInitialized || !MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
-        if (!NSThread.isMainThread) {
-            if (redrawDispatchScheduled.compareAndSet(0, 1)) {
-                dispatch_async(dispatch_get_main_queue()) {
-                    redrawDispatchScheduled.value = 0
-                    for (session in sessions.values) {
-                        invalidateSessionWindow(session)
-                    }
-                }
-            }
-            return
-        }
-        for (session in sessions.values) {
-            invalidateSessionWindow(session)
         }
     }
 
-    fun requestStageRedraw() {
-        stageRedrawRequested = true
-        if (!appInitialized || !MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
-        if (!NSThread.isMainThread) {
-            if (stageRedrawDispatchScheduled.compareAndSet(0, 1)) {
-                dispatch_async(dispatch_get_main_queue()) {
-                    stageRedrawDispatchScheduled.value = 0
-                    for (session in sessions.values) {
-                        invalidateSessionStageOnly(session)
-                    }
-                }
-            }
-            return
-        }
-        for (session in sessions.values) {
-            invalidateSessionStageOnly(session)
-        }
-    }
+    internal fun desktopTopLeftToCocoaTopLeft(x: Number, y: Number): CValue<platform.Foundation.NSPoint> =
+        NSMakePoint(x.toDouble(), primaryScreenMaxY() - y.toDouble())
 
-    fun syncThemeAppearance(mode: ThemeMode) {
-        if (!appInitialized) return
-        runOnMainAppKitThread {
-            val effective = SystemThemeDetector.resolveTheme(mode)
-            val appearanceName = if (effective == ThemeMode.DARK) NSAppearanceNameDarkAqua else NSAppearanceNameAqua
-            val appearance = NSAppearance.appearanceNamed(appearanceName)
-            for (session in sessions.values) {
-                session.nsWindow.appearance = appearance
-                session.canvasView.setNeedsDisplay(true)
-            }
-            redrawRequested = true
-        }
-    }
+    internal fun desktopTopLeftRectToCocoaRect(x: Number, y: Number, width: Double, height: Double): CValue<NSRect> =
+        NSMakeRect(x.toDouble(), primaryScreenMaxY() - y.toDouble() - height, width, height)
 
     fun getPrimaryMonitorBounds(): Rect? {
-        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return null
         val screen = (NSScreen.screens.firstOrNull() as? NSScreen) ?: NSScreen.mainScreen ?: return null
-        var w = 0
-        var h = 0
-        screen.frame.useContents {
-            w = size.width.roundToInt()
-            h = size.height.roundToInt()
-        }
-        return if (w > 0 && h > 0) Rect(0, 0, w, h) else null
+        return cocoaFrameToDesktopTopLeftRect(screen.visibleFrame)
     }
 
     fun isWindowRectOnScreen(rect: Rect): Boolean {
-        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return true
         val screens = NSScreen.screens
-        if (screens.isEmpty()) return true
-        val primary = (screens.firstOrNull() as? NSScreen) ?: NSScreen.mainScreen ?: return true
-        val primaryH = primary.frame.useContents { size.height }
-        var checked = 0
-        for (item in screens) {
-            val scr = item as? NSScreen ?: continue
-            var sx = 0
-            var sy = 0
-            var sw = 0
-            var sh = 0
-            scr.visibleFrame.useContents {
-                sx = origin.x.roundToInt()
-                sy = (primaryH - (origin.y + size.height)).roundToInt()
-                sw = size.width.roundToInt()
-                sh = size.height.roundToInt()
-            }
-            if (sw > 0 && sh > 0) {
-                checked++
-                if (MainWindowSavedState.intersectsVisibleArea(rect, Rect(sx, sy, sw, sh))) {
-                    return true
+        for (obj in screens) {
+            val screen = obj as? NSScreen ?: continue
+            val visible = cocoaFrameToDesktopTopLeftRect(screen.visibleFrame)
+            val overlapX = rect.x < visible.right && rect.right > visible.x
+            val overlapY = rect.y < visible.bottom && rect.bottom > visible.y
+            if (overlapX && overlapY) return true
+        }
+        return false
+    }
+
+    // -------------------------------------------------------------------------
+    // Theme & Appearance
+    // -------------------------------------------------------------------------
+
+    fun syncThemeAppearance(mode: ThemeMode) = MacosAppKitDispatch.onMainOrDefer {
+        val effective = if (mode == ThemeMode.AUTO) {
+            MacosApplicationNativeImpl.detectMacosSystemTheme()
+        } else {
+            mode
+        }
+        val name = if (effective == ThemeMode.DARK) NSAppearanceNameDarkAqua else NSAppearanceNameAqua
+        activeAppearanceName = name
+        val appearance = NSAppearance.appearanceNamed(name)
+        val winBg = MacosAppKitAppearance.toNsColor(
+            if (effective == ThemeMode.DARK) com.nexustools.genericui.style.color.RgbaColor(24, 26, 31, 255)
+            else com.nexustools.genericui.style.color.RgbaColor(244, 245, 248, 255)
+        )
+        NSApplication.sharedApplication.setAppearance(appearance)
+        fun notifyTreeTheme(impl: com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<*>) {
+            impl.notifyHostThemeChanged()
+            if (impl is com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl<*>) {
+                for (itemImpl in impl.materializedItemsSnapshot().values) {
+                    if (itemImpl is com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<*>) {
+                        notifyTreeTheme(itemImpl)
+                    }
+                }
+            } else if (impl is com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>) {
+                for (child in impl.getLogicalChildren()) {
+                    if (child is com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<*>) {
+                        notifyTreeTheme(child)
+                    }
                 }
             }
         }
-        return checked == 0
-    }
-
-    private fun primaryScreenFullHeight(): Double {
-        val primary = (NSScreen.screens.firstOrNull() as? NSScreen) ?: NSScreen.mainScreen ?: return 0.0
-        return primary.frame.useContents { size.height }
-    }
-
-    private fun applyWindowOriginTopLeft(nsWindow: NSWindow, x: Int, y: Int) {
-        val primaryH = primaryScreenFullHeight()
-        if (primaryH <= 0.0) return
-        val frameH = nsWindow.frame.useContents { size.height }
-        val appKitY = primaryH - y.toDouble() - frameH
-        nsWindow.setFrameOrigin(NSMakePoint(x.toDouble(), appKitY))
-    }
-
-    private fun computeWindowOriginTopLeft(nsWindow: NSWindow): Pair<Int, Int>? {
-        val primaryH = primaryScreenFullHeight()
-        if (primaryH <= 0.0) return null
-        var outX = 0
-        var outY = 0
-        nsWindow.frame.useContents {
-            outX = origin.x.roundToInt()
-            outY = (primaryH - (origin.y + size.height)).roundToInt()
+        for (session in sessions.values) {
+            session.nsWindow.setAppearance(appearance)
+            session.nsWindow.setBackgroundColor(winBg)
+            session.rootView.setWantsLayer(true)
+            session.rootView.layer?.backgroundColor = winBg.CGColor
+            val host = session.hostContainer()
+            host?.nativeWidget?.attributes?.put("darkTheme", effective == ThemeMode.DARK)
+            if (host != null) {
+                notifyTreeTheme(host)
+            }
+            session.needsRelayout = true
+            session.needsRedisplay = true
         }
-        return outX to outY
+        requestRedraw()
     }
 
-    fun presentWindow(windowImpl: MacosWindowNativeImpl) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { presentWindow(windowImpl) }
-            return
-        }
-        if (!windowImpl.isVisible()) return
-        ensureAppInitialized()
+    // -------------------------------------------------------------------------
+    // Window Presentation & Sync
+    // -------------------------------------------------------------------------
+
+    fun presentWindow(windowImpl: MacosWindowNativeImpl) = runOnMainSync {
+        prepareEventLoop()
         val key = windowImpl.nativeWidget.nativePointer
         val existing = sessions[key]
         if (existing != null) {
-            syncActivationPolicyForCurrentState()
-            existing.hidingAfterFullscreenExit = false
-            existing.lastStageActivityTimeMs = monotonicTimeMs()
-            existing.overlayHudAlpha = 1f
-            val wantFs = windowImpl.isFullscreen()
-            if (wantFs) {
-                clearWindowContentAspectRatio(existing.nsWindow)
-            }
-            requestWindowFullscreen(existing, wantFs, deferToggleToNextTurn = wantFs)
+            existing.windowImpl = windowImpl
             syncWindowProperties(windowImpl)
-            if (!wantFs && windowImpl.getWindowState() == WindowState.NORMAL && windowImpl.hasExplicitWindowPosition()) {
-                val pos = windowImpl.getWindowPosition()
-                applyWindowOriginTopLeft(existing.nsWindow, pos.x.toInt(), pos.y.toInt())
-            }
-            applyWindowLevel(existing.nsWindow, windowImpl, existing)
+            existing.layoutWindowTree(force = true)
             existing.nsWindow.makeKeyAndOrderFront(null)
-            existing.nsWindow.makeFirstResponder(existing.canvasView)
-            NSApplication.sharedApplication.activateIgnoringOtherApps(true)
+            existing.isShown = true
+            (existing.nsWindow as? MacosHostWindow)?.syncSquareWindowCorners(
+                enabled = windowImpl.isUndecorated() && !existing.activeFullscreen && !windowImpl.isToolModalWindow,
+                forceRefresh = true
+            )
+            scheduleDeferredSquareCornerRefresh(existing)
             activeKeyWindowId = key
-            existing.canvasView.setNeedsDisplay(true)
-            return
+            syncActivationPolicyForCurrentState()
+            return@runOnMainSync
         }
 
-        val winSize = windowImpl.getWindowSize()
-        val initW = winSize.width.coerceAtLeast(if (windowImpl.isUndecorated()) 64 else 320).toDouble()
-        val initH = winSize.height.coerceAtLeast(if (windowImpl.isUndecorated()) 64 else 240).toDouble()
+        val size = windowImpl.getWindowSize()
+        val pos = windowImpl.getWindowPosition()
+        val initW = size.width.toDouble().coerceAtLeast(160.0)
+        val initH = size.height.toDouble().coerceAtLeast(120.0)
+        val contentRect = desktopTopLeftRectToCocoaRect(pos.x, pos.y, initW, initH)
+        val chromeMode = resolveChromeMode(windowImpl)
+        val isNativeOverlayBar = chromeMode == CHROME_MODE_NATIVE_OVERLAY_TITLEBAR
+        val isUndecorated = windowImpl.isUndecorated()
+        val styleMask = computeStyleMask(windowImpl, chromeMode, isUndecorated)
 
-        val initialChromeMode = resolveTitleBarChromeMode(windowImpl)
-        val styleMask = computeWindowStyleMask(windowImpl, initialChromeMode)
-        val nsWindow = NSWindow(
-            contentRect = NSMakeRect(0.0, 0.0, initW, initH),
+        val nsWindow = MacosHostWindow(
+            contentRect = contentRect,
             styleMask = styleMask,
             backing = NSBackingStoreBuffered,
-            defer = false
+            defer = false,
+            isToolModal = windowImpl.isToolModalWindow,
+            isUndecoratedHostWindow = isUndecorated && !isNativeOverlayBar
         )
-        nsWindow.releasedWhenClosed = false
-        if (!windowImpl.isToolModalWindow && !windowImpl.isUndecorated()) {
-            nsWindow.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary
-        }
+        nsWindow.isNativeOverlayTitleBarHostWindow = isNativeOverlayBar
+        nsWindow.styleMask = styleMask
+        nsWindow.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary
+        nsWindow.setAcceptsMouseMovedEvents(true)
+        nsWindow.setReleasedWhenClosed(false)
 
-        val canvasView = MacosCanvasView(windowKey = key, frameRect = NSMakeRect(0.0, 0.0, initW, initH))
+        val rootView = MacosWindowRootView(
+            windowKey = key,
+            frameRect = NSMakeRect(0.0, 0.0, initW, initH)
+        )
+        nsWindow.setContentView(rootView)
+
         val delegate = MacosWindowDelegate(windowKey = key, isDialog = false)
+        nsWindow.setDelegate(delegate)
+
         val session = MacosWindowSession(
             windowKey = key,
             nsWindow = nsWindow,
-            canvasView = canvasView,
+            rootView = rootView,
             delegate = delegate,
+            isDialog = false,
             windowImpl = windowImpl
         )
-        session.appliedTitleBarChromeMode = initialChromeMode
-        session.lastStageActivityTimeMs = monotonicTimeMs()
-        val initialFullscreen = windowImpl.isFullscreen()
-        if (initialFullscreen) {
-            clearWindowContentAspectRatio(nsWindow)
+        nsWindow.onMaximizedStateChanged = { maximizedNow ->
+            val activeSession = sessions[key]
+            val activeWin = activeSession?.windowImpl
+            if (activeSession != null && activeWin != null && !activeSession.isClosing) {
+                val (cw, ch) = activeSession.currentClientSize()
+                activeWin.notifyHostResizedFromOs(
+                    widthPx = cw,
+                    heightPx = ch,
+                    fullscreenNow = activeSession.activeFullscreen,
+                    maximizedNow = maximizedNow
+                )
+                refreshDeferredBackdropUnderlays(activeSession.rootView)
+                activeSession.needsRelayout = true
+                activeSession.layoutWindowTree(force = true)
+            }
         }
+        wireRootViewCallbacks(session)
         sessions[key] = session
-        syncActivationPolicyForCurrentState()
-
-        nsWindow.contentView = canvasView
-        nsWindow.delegate = delegate
-
-        applyAppearanceToWindow(nsWindow)
-        if (initialFullscreen) {
-            requestWindowFullscreen(session, targetFullscreen = true, deferToggleToNextTurn = true)
+        (windowImpl.nativeWidget as? MacosViewHandle)?.let { handle ->
+            handle.nsWindow = nsWindow
+            handle.nsView = rootView
+            handle.hostInvalidateHook = { stageOnly ->
+                if (stageOnly) {
+                    session.needsStageOnlyRedisplay = true
+                    requestStageRedraw()
+                } else {
+                    session.needsRelayout = true
+                    session.needsRedisplay = true
+                    requestRedraw()
+                }
+            }
+            handle.hostRelayoutHook = {
+                session.needsRelayout = true
+                requestRedraw()
+            }
         }
+
         syncWindowProperties(windowImpl)
         if (windowImpl.hasExplicitWindowPosition()) {
-            val pos = windowImpl.getWindowPosition()
-            applyWindowOriginTopLeft(nsWindow, pos.x.toInt(), pos.y.toInt())
+            nsWindow.setFrameTopLeftPoint(desktopTopLeftToCocoaTopLeft(pos.x, pos.y))
         } else {
             nsWindow.center()
         }
+        session.layoutWindowTree(force = true)
+        session.presentStageSurfaces(forceRefresh = true)
 
-        val ownerImpl = windowImpl.ownerWindow as? MacosWindowNativeImpl
-        if (ownerImpl != null && !windowImpl.isUndecorated()) {
-            sessions[ownerImpl.nativeWidget.nativePointer]?.nsWindow?.addChildWindow(nsWindow, ordered = NSWindowAbove)
+        if (windowImpl.nativeWidget.visible) {
+            if (windowImpl.isToolModalWindow) {
+                nsWindow.setLevel(NSModalPanelWindowLevel)
+            }
+            nsWindow.makeKeyAndOrderFront(null)
+            session.isShown = true
+            nsWindow.syncSquareWindowCorners(
+                enabled = windowImpl.isUndecorated() && !session.activeFullscreen && !windowImpl.isToolModalWindow,
+                forceRefresh = true
+            )
+            scheduleDeferredSquareCornerRefresh(session)
+            val (initX, initY) = cocoaFrameToDesktopTopLeft(nsWindow.frame)
+            windowImpl.notifyHostMovedFromOs(initX, initY)
+            if (windowImpl.isFullscreen()) {
+                syncFullscreen(windowImpl, true)
+            }
         }
-
-        val menuBar = windowImpl.getAttachedMenuBarImpl()
-        if (menuBar != null || !windowImpl.isToolModalWindow) {
-            val appTitle = windowImpl.getTitle().ifBlank { resolveApplicationName() }
-            MacosMenuBarBridge.installMainMenu(appTitle, menuBar)
-        }
-
-        nsWindow.makeKeyAndOrderFront(null)
-        nsWindow.makeFirstResponder(canvasView)
-        NSApplication.sharedApplication.activateIgnoringOtherApps(true)
         activeKeyWindowId = key
-
-        onNativeWindowDidResize(key, isDialog = false)
-        canvasView.setNeedsDisplay(true)
+        syncMenuBar(windowImpl, windowImpl.getAttachedMenuBarImpl())
+        syncActivationPolicyForCurrentState()
+        syncHostVBlankWatcher()
     }
 
-    private fun presentDialog(
+    private fun presentDialogWindow(
         dialogImpl: DesktopDialogWindowNativeImpl<*>,
-        ownerWindow: DesktopWindowNativeImpl<*>?
-    ) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { presentDialog(dialogImpl, ownerWindow) }
-            return
-        }
-        ensureAppInitialized()
+        ownerWindowImpl: DesktopWindowNativeImpl<*>?
+    ) = runOnMainSync {
+        if (!dialogImpl.isVisible() || dialogImpl.isDisposed) return@runOnMainSync
+        prepareEventLoop()
         val key = dialogImpl.nativeWidget.nativePointer
+        val ownerKey = (ownerWindowImpl as? DesktopWindowNativeImpl<*>)?.nativeWidget?.nativePointer
         val existing = sessions[key]
         if (existing != null) {
-            existing.nsWindow.title = dialogImpl.getTitle()
+            existing.dialogImpl = dialogImpl
+            existing.ownerWindowKey = ownerKey
+            syncDialogProperties(existing)
+            if (ownerKey == null) {
+                centerPanelOnActiveScreen(existing.nsWindow)
+            }
+            existing.layoutWindowTree(force = true)
             existing.nsWindow.makeKeyAndOrderFront(null)
-            existing.nsWindow.makeFirstResponder(existing.canvasView)
-            existing.canvasView.setNeedsDisplay(true)
-            return
+            if (ownerKey == null) {
+                centerPanelOnActiveScreen(existing.nsWindow)
+            }
+            existing.isShown = true
+            activeKeyWindowId = key
+            syncActivationPolicyForCurrentState()
+            return@runOnMainSync
         }
 
-        val ownerSession = (ownerWindow as? MacosWindowNativeImpl)?.let { sessions[it.nativeWidget.nativePointer] }
-            ?: sessions.values.firstOrNull { it.windowImpl != null }
-        val maxW = ownerSession?.canvasView?.bounds?.useContents { size.width.toInt() - 64 }?.coerceAtLeast(360) ?: 860
-        val maxH = ownerSession?.canvasView?.bounds?.useContents { size.height.toInt() - 64 }?.coerceAtLeast(260) ?: 680
-
-        val hasExplicit = dialogImpl.nativeWidget.attributes["hasExplicitBounds"] == true
-        val intrinsic = if (hasExplicit) {
-            com.nexustools.genericui.geometry.Size(dialogImpl.boundsWidth, dialogImpl.boundsHeight)
-        } else {
-            MacosWorkspaceLayoutRenderUtil.measureDialogIntrinsicSize(dialogImpl.nativeWidget, maxW, maxH)
-        }
-        val dlgW = intrinsic.width.coerceAtLeast(320).toDouble()
-        val dlgH = intrinsic.height.coerceAtLeast(180).toDouble()
-
+        val dlgW = dialogImpl.boundsWidth.toDouble().coerceAtLeast(240.0)
+        val dlgH = dialogImpl.boundsHeight.toDouble().coerceAtLeast(160.0)
         val mask = NSWindowStyleMaskTitled or NSWindowStyleMaskClosable or NSWindowStyleMaskResizable
         val panel = NSPanel(
             contentRect = NSMakeRect(0.0, 0.0, dlgW, dlgH),
@@ -860,2365 +815,1832 @@ object MacosNativeWindowHost {
             backing = NSBackingStoreBuffered,
             defer = false
         )
-        panel.releasedWhenClosed = false
-        panel.title = dialogImpl.getTitle()
-        panel.floatingPanel = false
-        panel.hidesOnDeactivate = false
-        panel.contentMinSize = NSMakeSize(300.0, 160.0)
+        panel.setLevel(NSModalPanelWindowLevel)
+        panel.setHidesOnDeactivate(false)
+        panel.setCanHide(false)
+        panel.setAcceptsMouseMovedEvents(true)
+        panel.setReleasedWhenClosed(false)
+        panel.setTitle(dialogImpl.getTitle())
 
-        val canvasView = MacosCanvasView(windowKey = key, frameRect = NSMakeRect(0.0, 0.0, dlgW, dlgH))
+        val rootView = MacosWindowRootView(
+            windowKey = key,
+            frameRect = NSMakeRect(0.0, 0.0, dlgW, dlgH)
+        )
+        panel.setContentView(rootView)
+
         val delegate = MacosWindowDelegate(windowKey = key, isDialog = true)
+        panel.setDelegate(delegate)
+
         val session = MacosWindowSession(
             windowKey = key,
             nsWindow = panel,
-            canvasView = canvasView,
+            rootView = rootView,
             delegate = delegate,
+            isDialog = true,
             dialogImpl = dialogImpl,
-            ownerWindowKey = ownerSession?.windowKey
+            ownerWindowKey = ownerKey
         )
-        session.lastStageActivityTimeMs = monotonicTimeMs()
+        wireRootViewCallbacks(session)
         sessions[key] = session
-        syncActivationPolicyForCurrentState()
-
-        panel.contentView = canvasView
-        panel.delegate = delegate
-        applyAppearanceToWindow(panel)
-
-        if (ownerSession != null) {
-            val ownerFrame = ownerSession.nsWindow.frame
-            val panelFrame = panel.frame
-            val originX = ownerFrame.useContents { origin.x + (size.width - panelFrame.useContents { size.width }) * 0.5 }
-            val originY = ownerFrame.useContents { origin.y + (size.height - panelFrame.useContents { size.height }) * 0.5 }
-            panel.setFrameOrigin(NSMakePoint(originX, originY))
-            ownerSession.nsWindow.addChildWindow(panel, ordered = NSWindowAbove)
-        } else {
-            panel.center()
+        (dialogImpl.nativeWidget as? MacosViewHandle)?.let { handle ->
+            handle.nsWindow = panel
+            handle.nsView = rootView
+            handle.hostInvalidateHook = { _ ->
+                session.needsRelayout = true
+                session.needsRedisplay = true
+                requestRedraw()
+            }
         }
 
+        syncDialogProperties(session)
+        val ownerNsWin = ownerKey?.let { sessions[it]?.nsWindow }
+        if (ownerNsWin != null) {
+            val (pw, ph) = session.nsWindow.frame.useContents { size.width to size.height }
+            ownerNsWin.frame.useContents {
+                val cx = origin.x + (size.width - pw) * 0.5
+                val cy = origin.y + (size.height - ph) * 0.5
+                panel.setFrame(NSMakeRect(cx, cy, pw, ph), display = false)
+            }
+            ownerNsWin.addChildWindow(panel, ordered = NSWindowAbove)
+        } else {
+            centerPanelOnActiveScreen(panel)
+        }
+
+        session.layoutWindowTree(force = true)
         panel.makeKeyAndOrderFront(null)
-        panel.makeFirstResponder(canvasView)
+        if (ownerNsWin == null) {
+            centerPanelOnActiveScreen(panel)
+        }
+        session.isShown = true
         activeKeyWindowId = key
-        canvasView.setNeedsDisplay(true)
-        requestRedraw()
-    }
-
-    private fun closeDialogSession(dialogImpl: DesktopDialogWindowNativeImpl<*>) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { closeDialogSession(dialogImpl) }
-            return
-        }
-        val key = dialogImpl.nativeWidget.nativePointer
-        val session = sessions.remove(key) ?: return
-        clearFocusedWidgetInSession(session)
-        session.nsWindow.delegate = null
-        val ownerSession = session.ownerWindowKey?.let { sessions[it] }
-        ownerSession?.nsWindow?.removeChildWindow(session.nsWindow)
-        session.nsWindow.orderOut(null)
-        if (ownerSession != null) {
-            ownerSession.nsWindow.makeKeyAndOrderFront(null)
-            ownerSession.nsWindow.makeFirstResponder(ownerSession.canvasView)
-            activeKeyWindowId = ownerSession.windowKey
-        }
-        requestRedraw()
-    }
-
-    fun syncWindowAlwaysOnTop(windowImpl: MacosWindowNativeImpl) {
-        runOnMainAppKitThread {
-            val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@runOnMainAppKitThread
-            applyWindowLevel(session.nsWindow, windowImpl)
-        }
-    }
-
-    fun syncWindowAspectRatio(windowImpl: MacosWindowNativeImpl) {
-        runOnMainAppKitThread {
-            val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@runOnMainAppKitThread
-            applyWindowAspectRatio(session, windowImpl)
-        }
-    }
-
-    private fun applyWindowLevel(
-        nsWindow: NSWindow,
-        windowImpl: MacosWindowNativeImpl,
-        session: MacosWindowSession? = sessions[windowImpl.nativeWidget.nativePointer]
-    ) {
-        val isNativeFs = (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        val inFullscreenOrTransition = isNativeFs ||
-            windowImpl.isFullscreen() ||
-            (session?.isFullscreenTransitionInFlight == true) ||
-            (session?.targetFullscreen == true)
-        val shouldFloat = !inFullscreenOrTransition &&
-            (windowImpl.isAlwaysOnTop() || (windowImpl.isToolModalWindow && windowImpl.alwaysOnTopOfOwner))
-        if (shouldFloat) {
-            if (nsWindow.level < NSFloatingWindowLevel) {
-                nsWindow.level = NSFloatingWindowLevel
-            }
-        } else if (nsWindow.level <= NSFloatingWindowLevel) {
-            nsWindow.level = NSNormalWindowLevel
-        }
-    }
-
-    internal fun clearWindowContentAspectRatio(nsWindow: NSWindow) {
-        nsWindow.contentResizeIncrements = NSMakeSize(1.0, 1.0)
-    }
-
-    private fun applyWindowAspectRatio(session: MacosWindowSession, windowImpl: MacosWindowNativeImpl) {
-        val nsWindow = session.nsWindow
-        val isNativeFs = (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        val isNormal = windowImpl.getWindowState() == WindowState.NORMAL &&
-            !windowImpl.isFullscreen() &&
-            !isNativeFs &&
-            !session.isFullscreenTransitionInFlight &&
-            !session.programmaticMaximized &&
-            !nsWindow.zoomed
-        val ratio = windowImpl.getAspectRatio()
-        if (isNormal && ratio != null && ratio.isFinite() && ratio > 0.0) {
-            var curW = 0.0
-            var curH = 0.0
-            nsWindow.contentAspectRatio.useContents {
-                curW = width
-                curH = height
-            }
-            if (abs(curW - ratio) > 1e-4 || abs(curH - 1.0) > 1e-4) {
-                nsWindow.contentAspectRatio = NSMakeSize(ratio, 1.0)
-            }
-        } else {
-            clearWindowContentAspectRatio(nsWindow)
-        }
-    }
-
-    fun syncWindowProperties(windowImpl: MacosWindowNativeImpl) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncWindowProperties(windowImpl) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        val nsWindow = session.nsWindow
-        val isNativeFs = (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        if (!isNativeFs && !session.isFullscreenTransitionInFlight) {
-            syncUnifiedTitleBarChrome(session, force = true)
-        }
-        nsWindow.title = windowImpl.getTitle()
-        applyWindowLevel(nsWindow, windowImpl, session)
-        applyWindowAspectRatio(session, windowImpl)
-        syncWindowSize(windowImpl)
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    private fun applyTitleBarAppearanceForMode(nsWindow: NSWindow, mode: Int) {
-        when (mode) {
-            CHROME_MODE_SEAMLESS_STACKED_NAVBAR -> {
-                nsWindow.titlebarAppearsTransparent = true
-                nsWindow.titleVisibility = NSWindowTitleVisible
-            }
-            CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR -> {
-                nsWindow.titlebarAppearsTransparent = true
-                nsWindow.titleVisibility = NSWindowTitleHidden
-            }
-            else -> {
-                nsWindow.titlebarAppearsTransparent = false
-                nsWindow.titleVisibility = NSWindowTitleVisible
-            }
-        }
-    }
-
-    private fun applyMinContentSizeForMode(session: MacosWindowSession, mode: Int) {
-        val windowImpl = session.windowImpl ?: return
-        val minSz = windowImpl.getMinWindowSize() ?: return
-        val minInsetH = if (mode != CHROME_MODE_STANDARD) {
-            session.titleBarInsetTopPx.takeIf { it in 20..56 } ?: CUSTOM_TITLEBAR_INSET_PX
-        } else {
-            0
-        }
-        val minBaseW = if (windowImpl.isUndecorated()) 64 else 200
-        val minBaseH = if (windowImpl.isUndecorated()) 64 else 140
-        session.nsWindow.contentMinSize = NSMakeSize(
-            minSz.width.coerceAtLeast(minBaseW).toDouble(),
-            (minSz.height.coerceAtLeast(minBaseH) + minInsetH).toDouble()
-        )
-    }
-
-    private fun syncUnifiedTitleBarChrome(session: MacosWindowSession, force: Boolean = false) {
-        val windowImpl = session.windowImpl ?: return
-        val nsWindow = session.nsWindow
-        val isFs = (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        if (isFs || session.isFullscreenTransitionInFlight) {
-            if (isFs) {
-                session.appliedTitleBarChromeMode = -1
-            }
-            return
-        }
-        val mode = resolveTitleBarChromeMode(windowImpl)
-        val previousMode = session.appliedTitleBarChromeMode
-        val previousMask = nsWindow.styleMask
-        val nextMask = computeWindowStyleMask(windowImpl, mode)
-        val maskChanged = previousMask != nextMask
-        val modeChanged = previousMode != mode
-
-        if (force || modeChanged || maskChanged) {
-            var savedX = 0.0
-            var savedY = 0.0
-            var savedW = 0.0
-            var savedH = 0.0
-            nsWindow.frame.useContents {
-                savedX = origin.x
-                savedY = origin.y
-                savedW = size.width
-                savedH = size.height
-            }
-
-            session.appliedTitleBarChromeMode = mode
-            session.isApplyingChromeGeometryTransition = true
-            try {
-                if (maskChanged) {
-                    nsWindow.styleMask = nextMask
-                }
-                applyTitleBarAppearanceForMode(nsWindow, mode)
-                applyMinContentSizeForMode(session, mode)
-                if ((maskChanged || (previousMode >= 0 && modeChanged)) &&
-                    savedX.isFinite() && savedY.isFinite() &&
-                    savedW.isFinite() && savedH.isFinite() &&
-                    savedW > 0.0 && savedH > 0.0
-                ) {
-                    nsWindow.setFrame(NSMakeRect(savedX, savedY, savedW, savedH), display = false)
-                }
-                var expectedW = 0.0
-                var expectedH = 0.0
-                nsWindow.contentRectForFrameRect(nsWindow.frame).useContents {
-                    expectedW = size.width
-                    expectedH = size.height
-                }
-                var curCanvasW = 0.0
-                var curCanvasH = 0.0
-                session.canvasView.bounds.useContents {
-                    curCanvasW = size.width
-                    curCanvasH = size.height
-                }
-                if (expectedW.isFinite() && expectedH.isFinite() &&
-                    expectedW > 0.0 && expectedH > 0.0 &&
-                    (abs(curCanvasW - expectedW) > 0.5 || abs(curCanvasH - expectedH) > 0.5)
-                ) {
-                    session.canvasView.setFrameSize(NSMakeSize(expectedW, expectedH))
-                }
-            } finally {
-                session.isApplyingChromeGeometryTransition = false
-            }
-        }
-
-        if (mode != CHROME_MODE_STANDARD) {
-            val frameH = nsWindow.frame.useContents { size.height }
-            val layoutH = nsWindow.contentLayoutRect.useContents { size.height }
-            val measuredInset = (frameH - layoutH).roundToInt()
-            session.titleBarInsetTopPx = if (measuredInset in 20..56) measuredInset else CUSTOM_TITLEBAR_INSET_PX
-        } else {
-            session.titleBarInsetTopPx = 0
-        }
-
-        if (maskChanged || (previousMode >= 0 && modeChanged)) {
-            val newViewW = session.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
-            val newViewH = session.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
-            windowImpl.syncHostClientSizeFromChromeTransition(newViewW, newViewH)
-            invalidateSessionWindow(session)
-        }
-    }
-
-    fun syncWindowTitle(windowImpl: MacosWindowNativeImpl, title: String) {
-        if (windowImpl.isDisposed) return
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncWindowTitle(windowImpl, title) }
-            return
-        }
-        if (windowImpl.isDisposed) return
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        session.nsWindow.title = title
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    fun syncWindowSize(windowImpl: MacosWindowNativeImpl) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncWindowSize(windowImpl) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        val nsWindow = session.nsWindow
-        val activeMode = if (session.appliedTitleBarChromeMode >= 0) {
-            session.appliedTitleBarChromeMode
-        } else {
-            resolveTitleBarChromeMode(windowImpl)
-        }
-        applyMinContentSizeForMode(session, activeMode)
-        if (session.isFullscreenTransitionInFlight || (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL) return
-        val target = windowImpl.getWindowSize()
-        val curW = session.canvasView.bounds.useContents { size.width.roundToInt() }
-        val curH = session.canvasView.bounds.useContents { size.height.roundToInt() }
-        if (abs(curW - target.width) > 1 || abs(curH - target.height) > 1) {
-            nsWindow.setContentSize(NSMakeSize(target.width.toDouble(), target.height.toDouble()))
-        }
-    }
-
-    fun syncWindowPosition(windowImpl: MacosWindowNativeImpl) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncWindowPosition(windowImpl) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        val nsWindow = session.nsWindow
-        if (session.isFullscreenTransitionInFlight ||
-            (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL ||
-            windowImpl.isFullscreen() ||
-            windowImpl.getWindowState() != WindowState.NORMAL
-        ) {
-            return
-        }
-        if (windowImpl.hasExplicitWindowPosition()) {
-            val pos = windowImpl.getWindowPosition()
-            applyWindowOriginTopLeft(nsWindow, pos.x.toInt(), pos.y.toInt())
-        }
-    }
-
-    fun syncWindowState(windowImpl: MacosWindowNativeImpl) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncWindowState(windowImpl) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        val nsWindow = session.nsWindow
-        when (windowImpl.getWindowState()) {
-            WindowState.MINIMIZED -> {
-                session.programmaticMaximized = false
-                if (!nsWindow.miniaturized) nsWindow.miniaturize(null)
-            }
-            WindowState.MAXIMIZED -> {
-                session.programmaticMaximized = true
-                clearWindowContentAspectRatio(nsWindow)
-                if (nsWindow.miniaturized) nsWindow.deminiaturize(null)
-                NSScreen.mainScreen?.visibleFrame?.let { visibleRect ->
-                    nsWindow.setFrame(visibleRect, display = true)
-                }
-            }
-            WindowState.FULLSCREEN -> {
-                session.programmaticMaximized = false
-                clearWindowContentAspectRatio(nsWindow)
-                syncFullscreen(windowImpl, true)
-            }
-            WindowState.NORMAL -> {
-                session.programmaticMaximized = false
-                if (nsWindow.miniaturized) nsWindow.deminiaturize(null)
-                if (nsWindow.zoomed) nsWindow.zoom(null)
-                syncFullscreen(windowImpl, false)
-                applyWindowAspectRatio(session, windowImpl)
-            }
-        }
-    }
-
-    fun startSystemMove(windowImpl: MacosWindowNativeImpl) {
-        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
-        if (!NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { startSystemMove(windowImpl) }
-            return
-        }
-        val key = windowImpl.nativeWidget.nativePointer
-        val session = sessions[key] ?: return
-        if ((session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL) return
-        val dragEvent = lastLeftMouseDownEventByWindowKey[key]
-            ?: NSApplication.sharedApplication.currentEvent()?.takeIf {
-                it.type == NSEventTypeLeftMouseDown || it.type == NSEventTypeLeftMouseDragged
-            }
-        if (dragEvent != null) {
-            session.pressedRegion = null
-            session.pressedWidget = null
-            session.nsWindow.performWindowDragWithEvent(dragEvent)
-        }
-    }
-
-    private fun requestWindowFullscreen(
-        session: MacosWindowSession,
-        targetFullscreen: Boolean,
-        deferToggleToNextTurn: Boolean = false
-    ) {
-        val nsWindow = session.nsWindow
-        val nowMs = monotonicTimeMs()
-        if (session.isFullscreenTransitionInFlight && (nowMs - session.fullscreenTransitionStartedMs) > 2500.0) {
-            session.isFullscreenTransitionInFlight = false
-        }
-        val currentlyFullscreen = (nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        if (session.isFullscreenTransitionInFlight) {
-            session.pendingTargetFullscreen = if (session.targetFullscreen != targetFullscreen) targetFullscreen else null
-            return
-        }
-        if (targetFullscreen == currentlyFullscreen) {
-            session.targetFullscreen = currentlyFullscreen
-            session.pendingTargetFullscreen = null
-            session.windowImpl?.let {
-                applyWindowLevel(nsWindow, it, session)
-                applyWindowAspectRatio(session, it)
-            }
-            return
-        }
-        clearWindowContentAspectRatio(nsWindow)
-        if (nsWindow.level <= NSFloatingWindowLevel && nsWindow.level > NSNormalWindowLevel) {
-            nsWindow.level = NSNormalWindowLevel
-        }
-        session.targetFullscreen = targetFullscreen
-        session.isFullscreenTransitionInFlight = true
-        session.fullscreenTransitionStartedMs = nowMs
-        session.pendingTargetFullscreen = null
-        if (deferToggleToNextTurn) {
-            dispatch_async(dispatch_get_main_queue()) {
-                val liveSession = sessions[session.windowKey] ?: return@dispatch_async
-                val liveWin = liveSession.windowImpl
-                val liveNowFullscreen = (liveSession.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-                if (liveSession.hidingAfterFullscreenExit || (liveWin != null && !liveWin.isVisible())) {
-                    liveSession.pendingTargetFullscreen = null
-                    if (!liveNowFullscreen) {
-                        liveSession.isFullscreenTransitionInFlight = false
-                        liveSession.targetFullscreen = false
-                        liveSession.hidingAfterFullscreenExit = false
-                        liveSession.nsWindow.orderOut(null)
-                        return@dispatch_async
-                    }
-                    liveSession.hidingAfterFullscreenExit = true
-                    liveSession.targetFullscreen = false
-                }
-                if (liveSession.targetFullscreen != liveNowFullscreen) {
-                    clearWindowContentAspectRatio(liveSession.nsWindow)
-                    if (liveSession.nsWindow.level <= NSFloatingWindowLevel && liveSession.nsWindow.level > NSNormalWindowLevel) {
-                        liveSession.nsWindow.level = NSNormalWindowLevel
-                    }
-                    liveSession.fullscreenTransitionStartedMs = monotonicTimeMs()
-                    liveSession.nsWindow.toggleFullScreen(null)
-                } else {
-                    liveSession.isFullscreenTransitionInFlight = false
-                }
-            }
-        } else {
-            nsWindow.toggleFullScreen(null)
-        }
-    }
-
-    fun syncFullscreen(windowImpl: MacosWindowNativeImpl, fullscreen: Boolean) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncFullscreen(windowImpl, fullscreen) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        if (!windowImpl.isVisible()) {
-            val currentlyFullscreen = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-            if (!fullscreen && (currentlyFullscreen || session.isFullscreenTransitionInFlight || session.targetFullscreen)) {
-                session.hidingAfterFullscreenExit = true
-                requestWindowFullscreen(session, false)
-            } else if (!session.isFullscreenTransitionInFlight) {
-                session.targetFullscreen = fullscreen
-                session.pendingTargetFullscreen = null
-            }
-            return
-        }
-        requestWindowFullscreen(session, fullscreen)
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    fun syncMenuBar(windowImpl: MacosWindowNativeImpl, menuBarImpl: MenuBarNativeImpl<*>?) {
-        if (!appInitialized) return
-        runOnMainAppKitThread {
-            val appTitle = windowImpl.getTitle().ifBlank { resolveApplicationName() }
-            MacosMenuBarBridge.installMainMenu(appTitle, menuBarImpl)
-        }
-    }
-
-    fun syncWindowVisibility(windowImpl: MacosWindowNativeImpl, visible: Boolean) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncWindowVisibility(windowImpl, visible) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer]
-        if (visible) {
-            if (session == null) {
-                presentWindow(windowImpl)
-            } else {
-                session.hidingAfterFullscreenExit = false
-                session.lastStageActivityTimeMs = monotonicTimeMs()
-                session.overlayHudAlpha = 1f
-                val wantFs = windowImpl.isFullscreen()
-                if (wantFs) {
-                    clearWindowContentAspectRatio(session.nsWindow)
-                }
-                requestWindowFullscreen(session, wantFs, deferToggleToNextTurn = wantFs)
-                syncWindowProperties(windowImpl)
-                if (!wantFs && windowImpl.getWindowState() == WindowState.NORMAL && windowImpl.hasExplicitWindowPosition()) {
-                    val pos = windowImpl.getWindowPosition()
-                    applyWindowOriginTopLeft(session.nsWindow, pos.x.toInt(), pos.y.toInt())
-                }
-                applyWindowLevel(session.nsWindow, windowImpl, session)
-                session.nsWindow.makeKeyAndOrderFront(null)
-                session.nsWindow.makeFirstResponder(session.canvasView)
-                NSApplication.sharedApplication.activateIgnoringOtherApps(true)
-                activeKeyWindowId = session.windowKey
-                session.canvasView.setNeedsDisplay(true)
-            }
-        } else if (session != null) {
-            val currentlyFullscreen = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-            if (currentlyFullscreen || session.isFullscreenTransitionInFlight || session.targetFullscreen) {
-                session.hidingAfterFullscreenExit = true
-                requestWindowFullscreen(session, false)
-            } else {
-                session.hidingAfterFullscreenExit = false
-                session.nsWindow.orderOut(null)
-            }
-        }
-    }
-
-    fun syncWindowOpacity(windowImpl: MacosWindowNativeImpl, opacity: Float) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { syncWindowOpacity(windowImpl, opacity) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        session.nsWindow.alphaValue = opacity.coerceIn(0f, 1f).toDouble()
-    }
-
-    fun bringWindowToFront(windowImpl: MacosWindowNativeImpl) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { bringWindowToFront(windowImpl) }
-            return
-        }
-        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return
-        session.nsWindow.makeKeyAndOrderFront(null)
-        activeKeyWindowId = session.windowKey
-    }
-
-    fun onWindowClosed(windowImpl: MacosWindowNativeImpl) {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { onWindowClosed(windowImpl) }
-            return
-        }
-        val key = windowImpl.nativeWidget.nativePointer
-        lastLeftMouseDownEventByWindowKey.remove(key)
-        val session = sessions.remove(key) ?: return
-        clearFocusedWidgetInSession(session)
-        session.nsWindow.delegate = null
-        val ownerSession = (windowImpl.ownerWindow as? MacosWindowNativeImpl)?.let { sessions[it.nativeWidget.nativePointer] }
-        ownerSession?.nsWindow?.removeChildWindow(session.nsWindow)
-        session.nsWindow.orderOut(null)
-
-        val hasRemainingMainWindow = sessions.values.any { it.windowImpl != null && !it.windowImpl.isToolModalWindow }
-        if (!hasRemainingMainWindow && !windowImpl.isToolModalWindow && !visualTestMode) {
-            if (MacosSystemTrayNativeImpl.hasActiveTray()) {
-                syncActivationPolicyForCurrentState()
-            } else {
-                val app = Application.current
-                if (app != null) {
-                    app.exit(0)
-                } else {
-                    terminateEventLoop()
-                }
-            }
-        }
-    }
-
-    internal fun syncActivationPolicyForCurrentState() {
-        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
-        val applyPolicy = {
-            val hasVisibleMainWindow = sessions.values.any { it.windowImpl != null && !it.windowImpl.isToolModalWindow }
-            val desiredPolicy = if (!hasVisibleMainWindow && MacosSystemTrayNativeImpl.hasActiveTray()) {
-                NSApplicationActivationPolicy.NSApplicationActivationPolicyAccessory
-            } else {
-                NSApplicationActivationPolicy.NSApplicationActivationPolicyRegular
-            }
-            NSApplication.sharedApplication.setActivationPolicy(desiredPolicy)
-        }
-        if (NSThread.isMainThread) {
-            applyPolicy()
-        } else {
-            dispatch_async(dispatch_get_main_queue()) { applyPolicy() }
-        }
-    }
-
-    internal fun onTrayDisposed(hasRemainingActiveTrays: Boolean) {
-        if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
-        val hasRemainingMainWindow = sessions.values.any { it.windowImpl != null && !it.windowImpl.isToolModalWindow }
-        if (!hasRemainingActiveTrays && !hasRemainingMainWindow && eventLoopRunning && !visualTestMode) {
-            val app = Application.current
-            if (app != null) {
-                GenericUiThreading.runOnLogic { app.exit(0) }
-            } else {
-                terminateEventLoop()
-            }
-            return
-        }
         syncActivationPolicyForCurrentState()
     }
 
-    internal fun onNativeWindowShouldClose(windowKey: Long, isDialog: Boolean): Boolean {
-        val session = sessions[windowKey] ?: return true
-        if (isDialog) {
-            val dlg = session.dialogImpl ?: return true
-            GenericUiThreading.runOnLogic {
-                dlg.closeDialog()
-            }
-            return false
+    private fun syncDialogProperties(session: MacosWindowSession) {
+        val dlg = session.dialogImpl ?: return
+        session.nsWindow.setTitle(dlg.getTitle())
+        val dlgW = dlg.boundsWidth.toDouble().coerceAtLeast(240.0)
+        val dlgH = dlg.boundsHeight.toDouble().coerceAtLeast(160.0)
+        val curSize = session.currentClientSize()
+        if (curSize.first != dlgW.roundToInt() || curSize.second != dlgH.roundToInt()) {
+            session.nsWindow.setContentSize(NSMakeSize(dlgW, dlgH))
         }
-        val win = session.windowImpl ?: return true
-        GenericUiThreading.runOnLogic {
-            win.closeWindow()
+        activeAppearanceName?.let { name ->
+            session.nsWindow.setAppearance(NSAppearance.appearanceNamed(name))
         }
-        return false
     }
 
-    internal fun onNativeWindowDidResize(windowKey: Long, isDialog: Boolean) {
-        val session = sessions[windowKey] ?: return
-        if (session.isApplyingChromeGeometryTransition) return
-        val w = session.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
-        val h = session.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
-        if (isDialog) {
-            session.dialogImpl?.nativeWidget?.bounds = Rect(0, 0, w, h)
-        } else {
-            val win = session.windowImpl
-            if (win != null) {
-                val nativeIsFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-                val expectedFs = session.pendingTargetFullscreen ?: session.targetFullscreen
-                val effectiveIsFs = when {
-                    !win.isVisible() -> win.isFullscreen()
-                    session.isFullscreenTransitionInFlight || session.pendingTargetFullscreen != null -> expectedFs
-                    else -> nativeIsFs
-                }
-                val nativeZoomed = session.nsWindow.zoomed
-                if (nativeZoomed != session.lastKnownZoomed) {
-                    session.lastKnownZoomed = nativeZoomed
-                    if (!nativeZoomed) {
-                        session.programmaticMaximized = false
-                    }
-                }
-                val effectiveMaximized = !effectiveIsFs && (nativeZoomed || session.programmaticMaximized)
-                if (!nativeIsFs && !session.isFullscreenTransitionInFlight) {
-                    syncUnifiedTitleBarChrome(session)
-                }
-                applyWindowAspectRatio(session, win)
-                val origin = if (
-                    win.isVisible() &&
-                    !effectiveIsFs &&
-                    !effectiveMaximized &&
-                    !nativeIsFs &&
-                    !session.isFullscreenTransitionInFlight
+    internal fun closeDialogWindow(dialogImpl: DesktopDialogWindowNativeImpl<*>) = runOnMainSync {
+        val key = dialogImpl.nativeWidget.nativePointer
+        val session = sessions.remove(key)
+        if (session != null) {
+            session.isClosing = true
+            session.isShown = false
+            val ownerNsWin = session.nsWindow.parentWindow
+                ?: session.ownerWindowKey?.let { sessions[it]?.nsWindow }
+            ownerNsWin?.removeChildWindow(session.nsWindow)
+            clearSessionRootViewCallbacks(session)
+            session.nsWindow.setDelegate(null)
+            session.nsWindow.orderOut(null)
+            session.nsWindow.close()
+        }
+        (dialogImpl.nativeWidget as? MacosViewHandle)?.let { handle ->
+            handle.nsWindow = null
+            handle.nsView = null
+            handle.hostInvalidateHook = null
+            handle.hostRelayoutHook = null
+        }
+        if (activeKeyWindowId == key) {
+            activeKeyWindowId = sessions.keys.firstOrNull()
+        }
+        syncActivationPolicyForCurrentState()
+        if (!hasAnyRemainingVisiblePresentationWindow() && eventLoopRunning) {
+            terminateEventLoop()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Floating Dock Window Panels (Multi-Window Mode)
+    // -------------------------------------------------------------------------
+
+    internal fun presentDockWindow(dockImpl: DesktopDockWindowNativeImpl<*>) = runOnMainSync {
+        prepareEventLoop()
+        val key = dockImpl.nativeWidget.nativePointer
+        val existing = sessions[key]
+        if (existing != null) {
+            existing.dockWindowImpl = dockImpl
+            syncDockWindowProperties(dockImpl)
+            existing.layoutWindowTree(force = true)
+            existing.nsWindow.orderFront(null)
+            existing.isShown = true
+            return@runOnMainSync
+        }
+
+        val b = dockImpl.nativeWidget.bounds
+        val w = b.width.coerceAtLeast(220).toDouble()
+        val h = b.height.coerceAtLeast(180).toDouble()
+        val mask = NSWindowStyleMaskTitled or
+            NSWindowStyleMaskClosable or
+            NSWindowStyleMaskResizable or
+            NSWindowStyleMaskUtilityWindow
+        val panel = NSPanel(
+            contentRect = NSMakeRect(b.x.toDouble(), b.y.toDouble(), w, h),
+            styleMask = mask,
+            backing = NSBackingStoreBuffered,
+            defer = false
+        )
+        panel.setFloatingPanel(true)
+        panel.setLevel(NSFloatingWindowLevel)
+        panel.setReleasedWhenClosed(false)
+        panel.setAcceptsMouseMovedEvents(true)
+        panel.setTitle(dockImpl.nativeWidget.attributes["title"] as? String ?: "")
+
+        val rootView = MacosWindowRootView(windowKey = key, frameRect = NSMakeRect(0.0, 0.0, w, h))
+        panel.setContentView(rootView)
+        val delegate = MacosWindowDelegate(windowKey = key, isDialog = false)
+        panel.setDelegate(delegate)
+
+        val ownerKey = (dockImpl.ownerWindow as? DesktopWindowNativeImpl<*>)?.nativeWidget?.nativePointer
+        val session = MacosWindowSession(
+            windowKey = key,
+            nsWindow = panel,
+            rootView = rootView,
+            delegate = delegate,
+            isDialog = false,
+            dockWindowImpl = dockImpl,
+            ownerWindowKey = ownerKey
+        )
+        wireRootViewCallbacks(session)
+        sessions[key] = session
+        (dockImpl.nativeWidget as? MacosViewHandle)?.let { handle ->
+            handle.nsWindow = panel
+            handle.nsView = rootView
+        }
+        ownerKey?.let { sessions[it]?.nsWindow?.addChildWindow(panel, ordered = NSWindowAbove) }
+        session.layoutWindowTree(force = true)
+        panel.orderFront(null)
+        session.isShown = true
+    }
+
+    internal fun syncDockWindowProperties(dockImpl: DesktopDockWindowNativeImpl<*>) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[dockImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val title = dockImpl.nativeWidget.attributes["title"] as? String
+        if (title != null) {
+            session.nsWindow.setTitle(title)
+        }
+        val b = dockImpl.nativeWidget.bounds
+        if (b.width > 0 && b.height > 0) {
+            session.nsWindow.setContentSize(NSMakeSize(b.width.toDouble(), b.height.toDouble()))
+            session.needsRelayout = true
+        }
+    }
+
+    internal fun closeDockWindow(dockImpl: DesktopDockWindowNativeImpl<*>) = runOnMainSync {
+        val key = dockImpl.nativeWidget.nativePointer
+        val session = sessions.remove(key) ?: return@runOnMainSync
+        session.isClosing = true
+        val ownerNsWin = session.ownerWindowKey?.let { sessions[it]?.nsWindow }
+        ownerNsWin?.removeChildWindow(session.nsWindow)
+        session.nsWindow.setDelegate(null)
+        session.nsWindow.orderOut(null)
+        session.nsWindow.close()
+        session.isShown = false
+    }
+
+    private fun wireRootViewCallbacks(session: MacosWindowSession) {
+        val rv = session.rootView
+        rv.onNeedsRelayout = {
+            if (!session.isClosing && !session.isSyncingSize) {
+                val (cw, ch) = session.currentClientSize()
+                if (cw != session.lastLaidOutWidth ||
+                    ch != session.lastLaidOutHeight ||
+                    DesktopNativeWidget.globalLayoutMutationVersion != session.lastMutationVersion
                 ) {
-                    computeWindowOriginTopLeft(session.nsWindow)
-                } else {
-                    null
-                }
-                GenericUiThreading.runOnLogic {
-                    if (origin != null) {
-                        win.notifyHostMovedFromOs(origin.first, origin.second)
-                    }
-                    win.notifyHostResizedFromOs(w, h, effectiveIsFs, effectiveMaximized)
+                    session.needsRelayout = true
+                    session.layoutWindowTree(force = false)
                 }
             }
         }
-        invalidateSessionWindow(session)
+        rv.onUndecoratedEdgeMouseDown = { event -> handleUndecoratedEdgeMouseDown(session, event) }
+        rv.onUndecoratedEdgeMouseDragged = { event -> handleUndecoratedEdgeMouseDragged(session, event) }
+        rv.onUndecoratedEdgeMouseUp = { _ -> handleUndecoratedEdgeMouseUp(session) }
+        rv.onWindowMouseMoved = { _, clientY ->
+            val winImpl = session.windowImpl
+            if (winImpl != null &&
+                !session.activeFullscreen &&
+                !winImpl.isFullscreen() &&
+                !winImpl.isToolModalWindow &&
+                (session.nsWindow as? MacosHostWindow)?.isTransitioningFullscreen != true
+            ) {
+                val barHandle = findNativeOverlayTitleBarHandle(winImpl, requireActive = false)
+                if (barHandle != null) {
+                    syncNativeOverlayTitleBarHoverPin(
+                        session = session,
+                        barHandle = barHandle,
+                        barVisible = session.lastSyncedNativeTitleBarVisible ?: true,
+                        pointerClientY = clientY
+                    )
+                }
+            }
+        }
+        rv.onWindowMouseExited = {
+            val winImpl = session.windowImpl
+            if (winImpl != null && !session.activeFullscreen && !winImpl.isFullscreen() && !winImpl.isToolModalWindow) {
+                val barHandle = findNativeOverlayTitleBarHandle(winImpl, requireActive = false)
+                if (barHandle != null) {
+                    val movedIntoNativeTitleBar = if (!visualTestMode &&
+                        session.lastSyncedNativeTitleBarVisible == true
+                    ) {
+                        val barH = (barHandle.bounds.height.takeIf { it > 0 } ?: CUSTOM_TITLEBAR_INSET_PX).toDouble()
+                        val mousePt = NSEvent.mouseLocation
+                        val topWinNumber = NSWindow.windowNumberAtPoint(mousePt, belowWindowWithWindowNumber = 0L)
+                        if (topWinNumber == session.nsWindow.windowNumber) {
+                            val (mx, my) = mousePt.useContents { x to y }
+                            session.nsWindow.frame.useContents {
+                                val topY = origin.y + size.height
+                                mx in origin.x..(origin.x + size.width) && my in (topY - barH)..topY
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                    if (movedIntoNativeTitleBar) {
+                        syncNativeOverlayTitleBarHoverPin(
+                            session = session,
+                            barHandle = barHandle,
+                            barVisible = true,
+                            pointerClientY = 0.0
+                        )
+                    } else {
+                        syncNativeOverlayTitleBarHoverPin(
+                            session = session,
+                            barHandle = barHandle,
+                            barVisible = false,
+                            pointerClientY = -1.0
+                        )
+                    }
+                }
+            }
+        }
+        rv.onWindowKeyDown = { event -> dispatchWindowKeyEvent(session, event, isDown = true) }
+        rv.onWindowKeyUp = { event -> dispatchWindowKeyEvent(session, event, isDown = false) }
     }
 
-    internal fun onNativeWindowDidMove(windowKey: Long, isDialog: Boolean) {
-        if (isDialog) return
-        val session = sessions[windowKey] ?: return
-        if (session.isApplyingChromeGeometryTransition || session.isFullscreenTransitionInFlight) return
+    private fun findTopStackedNavbarImpl(windowImpl: MacosWindowNativeImpl): com.nexustools.genericui.macos.impl.MacosNavbarNativeImpl? {
+        if (windowImpl.getFullscreenElement() != null || windowImpl.isUndecorated()) return null
+        if (windowImpl.getTitleBarInstructions() != null) return null
+        val attached = windowImpl.nativeWidget.attributes["navBar"] as? com.nexustools.genericui.macos.impl.MacosNavbarNativeImpl
+        if (attached != null && attached.nativeWidget.visible && !attached.isDisposed) {
+            return attached
+        }
+        fun searchTop(
+            container: com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>,
+            depth: Int
+        ): com.nexustools.genericui.macos.impl.MacosNavbarNativeImpl? {
+            if (depth > 8) return null
+            for (child in container.getLogicalChildren()) {
+                if (child !is com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<*> || !child.nativeWidget.visible) continue
+                if (child.nativeWidget.bounds.y > 4) continue
+                if (child is com.nexustools.genericui.macos.impl.MacosNavbarNativeImpl) return child
+                if (child is com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>) {
+                    val found = searchTop(child, depth + 1)
+                    if (found != null) return found
+                }
+            }
+            return null
+        }
+        return searchTop(windowImpl, 0)
+    }
+
+    internal fun findNativeOverlayTitleBarHandle(
+        windowImpl: MacosWindowNativeImpl,
+        requireActive: Boolean = false
+    ): MacosViewHandle? {
+        if (windowImpl.isToolModalWindow) return null
+        fun search(
+            container: DesktopBaseContainerNativeImpl<*>,
+            depth: Int
+        ): MacosViewHandle? {
+            if (depth > 10) return null
+            for (child in container.getLogicalChildren()) {
+                if (child !is DesktopBaseNativeImpl<*> || child.isDisposed) continue
+                val w = child.nativeWidget
+                val role = (w.attributes[DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE] as? String)?.trim()?.lowercase()
+                val nativeControls = w.attributes["data-native-titlebar-controls"]
+                    ?.toString()
+                    ?.equals("true", ignoreCase = true) == true
+                val enabledByAttr = w.attributes["data-titlebar-enabled"]
+                    ?.toString()
+                    ?.equals("false", ignoreCase = true) != true
+                val disabledByActiveAttr = w.attributes["data-titlebar-active"]
+                    ?.toString()
+                    ?.equals("false", ignoreCase = true) == true
+                if (role == DesktopStageOverlaySpec.ROLE_WINDOW_TITLE_BAR &&
+                    nativeControls &&
+                    enabledByAttr &&
+                    (!requireActive || !disabledByActiveAttr)
+                ) {
+                    return w as? MacosViewHandle
+                }
+                if (child is DesktopBaseContainerNativeImpl<*>) {
+                    val found = search(child, depth + 1)
+                    if (found != null) return found
+                }
+            }
+            return null
+        }
+        return search(windowImpl, 0)
+    }
+
+    private fun clearNativeOverlayTitleBarHoverPin(session: MacosWindowSession) {
+        val winImpl = session.windowImpl ?: return
+        val wasSessionPinned = session.nativeTitleBarHoverPinned
+        session.nativeTitleBarHoverPinned = false
+        findNativeOverlayTitleBarHandle(winImpl, requireActive = false)?.let { barHandle ->
+            val barReportsPinned = barHandle.attributes["data-native-titlebar-hover-pinned"]?.toString() == "true"
+            if (wasSessionPinned || barReportsPinned) {
+                val barImpl = barHandle.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+                if (barImpl != null && !barImpl.isDisposed) {
+                    barImpl.dispatchPointerLeave(PointerEvent())
+                }
+            }
+        }
+    }
+
+    private fun resolveChromeMode(windowImpl: MacosWindowNativeImpl): Int {
+        if (!windowImpl.isFullscreen() && findNativeOverlayTitleBarHandle(windowImpl, requireActive = false) != null) {
+            return CHROME_MODE_NATIVE_OVERLAY_TITLEBAR
+        }
+        val explicitTitleBar = windowImpl.getTitleBarInstructions()
+        if (explicitTitleBar != null) return CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR
+        val hasStackedNavbar = findTopStackedNavbarImpl(windowImpl) != null ||
+            windowImpl.nativeWidget.attributes["hasSeamlessStackedNavbar"] == true
+        return if (hasStackedNavbar) CHROME_MODE_SEAMLESS_STACKED_NAVBAR else CHROME_MODE_STANDARD
+    }
+
+    internal fun syncUnifiedTitleBarChrome(session: MacosWindowSession) {
         val win = session.windowImpl ?: return
-        if (!win.isVisible()) return
-        val nativeIsFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        if (nativeIsFs || win.isFullscreen() || session.targetFullscreen ||
-            session.pendingTargetFullscreen == true || session.programmaticMaximized ||
-            session.nsWindow.zoomed || win.getWindowState() != WindowState.NORMAL
+        val nsWin = session.nsWindow
+        val undecorated = win.isUndecorated()
+        val fsElement = win.getFullscreenElement()
+        val mutVer = DesktopNativeWidget.globalLayoutMutationVersion
+        val existingNav = session.attachedUnifiedNavbar
+        if (mutVer == session.lastChromeSyncMutationVersion &&
+            fsElement === session.lastChromeFullscreenElement &&
+            undecorated == session.lastChromeUndecorated &&
+            session.activeFullscreen == session.lastChromeActiveFullscreen &&
+            nsWin.styleMask == session.lastChromeWindowStyleMask &&
+            (existingNav == null || (existingNav.nativeWidget.visible && !existingNav.isDisposed))
         ) {
             return
         }
-        val origin = computeWindowOriginTopLeft(session.nsWindow) ?: return
-        GenericUiThreading.runOnLogic {
-            win.notifyHostMovedFromOs(origin.first, origin.second)
-        }
-    }
-
-    internal fun onNativeWindowWillUseStandardFrame(windowKey: Long, isDialog: Boolean, window: NSWindow) {
-        if (isDialog) return
-        // Never query `window.zoomed` here: `-[NSWindow isZoomed]` calls `_standardFrameForScreen`,
-        // which invokes `windowWillUseStandardFrame:defaultFrame:` recursively until stack overflow.
-    }
-
-    internal fun onNativeWindowShouldZoom(windowKey: Long, isDialog: Boolean, window: NSWindow) {
-        if (isDialog) return
-        val session = sessions[windowKey] ?: return
-        if (!session.lastKnownZoomed && !session.programmaticMaximized) {
-            clearWindowContentAspectRatio(window)
-        }
-    }
-
-    internal fun onNativeWindowMiniaturized(windowKey: Long, isDialog: Boolean, miniaturized: Boolean) {
-        if (isDialog) return
-        val session = sessions[windowKey] ?: return
-        val win = session.windowImpl ?: return
-        if (!miniaturized) {
-            applyWindowAspectRatio(session, win)
-        }
-        val restoredState = when {
-            (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL -> WindowState.FULLSCREEN
-            session.nsWindow.zoomed || session.programmaticMaximized -> WindowState.MAXIMIZED
-            else -> WindowState.NORMAL
-        }
-        GenericUiThreading.runOnLogic {
-            win.notifyHostMiniaturizedFromOs(miniaturized, restoredState)
-        }
-    }
-
-    internal fun onNativeWindowFocusChanged(windowKey: Long, isDialog: Boolean, focused: Boolean) {
-        val session = sessions[windowKey] ?: return
-        if (focused) {
-            activeKeyWindowId = windowKey
-        }
-        if (!isDialog) {
-            val win = session.windowImpl ?: return
-            GenericUiThreading.runOnLogic {
-                win.dispatchFocusChanged(focused)
-            }
-        }
-        invalidateSessionWindow(session)
-    }
-
-    internal fun onNativeWindowFullscreenWillChange(
-        windowKey: Long,
-        isDialog: Boolean,
-        enteringFullscreen: Boolean
-    ) {
-        if (isDialog) return
-        val session = sessions[windowKey] ?: return
-        clearWindowContentAspectRatio(session.nsWindow)
-        if (session.nsWindow.level <= NSFloatingWindowLevel && session.nsWindow.level > NSNormalWindowLevel) {
-            session.nsWindow.level = NSNormalWindowLevel
-        }
-        session.targetFullscreen = enteringFullscreen
-        session.isFullscreenTransitionInFlight = true
-        session.fullscreenTransitionStartedMs = monotonicTimeMs()
-    }
-
-    internal fun onNativeWindowFullscreenFailed(windowKey: Long, isDialog: Boolean) {
-        if (isDialog) return
-        val session = sessions[windowKey] ?: return
-        session.isFullscreenTransitionInFlight = false
-        val nativeFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        session.targetFullscreen = nativeFs
-        session.pendingTargetFullscreen = null
-        val win = session.windowImpl
-        if ((session.hidingAfterFullscreenExit || win?.isVisible() == false) && !nativeFs) {
-            session.hidingAfterFullscreenExit = false
-            session.nsWindow.orderOut(null)
-        } else if (win != null) {
-            applyWindowLevel(session.nsWindow, win, session)
-            applyWindowAspectRatio(session, win)
-        }
-        invalidateSessionWindow(session)
-    }
-
-    internal fun onNativeWindowFullscreenChanged(windowKey: Long, isDialog: Boolean, fullscreen: Boolean) {
-        if (isDialog) return
-        val session = sessions[windowKey] ?: return
-        val win = session.windowImpl ?: return
-        session.isFullscreenTransitionInFlight = false
-        session.targetFullscreen = fullscreen
-        if (!fullscreen) {
-            if (!win.isVisible() || session.hidingAfterFullscreenExit) {
-                session.hidingAfterFullscreenExit = false
-                session.pendingTargetFullscreen = null
-                session.nsWindow.orderOut(null)
-                invalidateSessionWindow(session)
-                return
-            }
-        } else {
-            clearWindowContentAspectRatio(session.nsWindow)
-            var expectedW = 0.0
-            var expectedH = 0.0
-            session.nsWindow.contentRectForFrameRect(session.nsWindow.frame).useContents {
-                expectedW = size.width
-                expectedH = size.height
-            }
-            var curW = 0.0
-            var curH = 0.0
-            session.canvasView.bounds.useContents {
-                curW = size.width
-                curH = size.height
-            }
-            if (expectedW.isFinite() && expectedH.isFinite() &&
-                expectedW > 0.0 && expectedH > 0.0 &&
-                (abs(curW - expectedW) > 0.5 || abs(curH - expectedH) > 0.5)
-            ) {
-                session.canvasView.setFrameSize(NSMakeSize(expectedW, expectedH))
-            }
-            if (!win.isVisible() || session.hidingAfterFullscreenExit) {
-                session.hidingAfterFullscreenExit = true
-                requestWindowFullscreen(session, false, deferToggleToNextTurn = true)
-                return
-            }
-        }
-        val w = session.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
-        val h = session.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
-        val pendingTarget = session.pendingTargetFullscreen
-        session.pendingTargetFullscreen = null
-        if (pendingTarget != null && pendingTarget != fullscreen) {
-            requestWindowFullscreen(session, pendingTarget, deferToggleToNextTurn = true)
-        } else {
-            val effectiveMax = !fullscreen && (session.nsWindow.zoomed || session.programmaticMaximized)
-            GenericUiThreading.runOnLogic {
-                win.notifyHostResizedFromOs(w, h, fullscreen, effectiveMax)
-            }
-            if (!fullscreen) {
-                dispatch_async(dispatch_get_main_queue()) {
-                    val liveSession = sessions[windowKey] ?: return@dispatch_async
-                    val liveWin = liveSession.windowImpl ?: return@dispatch_async
-                    if (liveSession.isFullscreenTransitionInFlight ||
-                        (liveSession.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL ||
-                        !liveWin.isVisible()
-                    ) {
-                        return@dispatch_async
-                    }
-                    syncUnifiedTitleBarChrome(liveSession, force = true)
-                    applyWindowLevel(liveSession.nsWindow, liveWin, liveSession)
-                    applyWindowAspectRatio(liveSession, liveWin)
-                    val ratio = liveWin.getAspectRatio()
-                    if (ratio != null && !liveSession.programmaticMaximized && !liveSession.nsWindow.zoomed) {
-                        val curViewW = liveSession.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
-                        val curViewH = liveSession.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
-                        val curViewSize = Size(curViewW, curViewH)
-                        if (!WindowAspectRatioHelper.matchesAspectRatio(curViewSize, ratio, tolerancePx = 2)) {
-                            val screen = liveSession.nsWindow.screen ?: NSScreen.mainScreen
-                            var maxContentW = curViewW
-                            var maxContentH = curViewH
-                            if (screen != null) {
-                                liveSession.nsWindow.contentRectForFrameRect(screen.visibleFrame).useContents {
-                                    if (size.width > 64.0 && size.height > 64.0) {
-                                        maxContentW = size.width.toInt()
-                                        maxContentH = size.height.toInt()
-                                    }
-                                }
-                            }
-                            val bounded = Size(
-                                curViewW.coerceAtMost(maxContentW),
-                                curViewH.coerceAtMost(maxContentH)
-                            )
-                            val clamped = WindowAspectRatioHelper.clampClientSize(bounded, ratio, liveWin.getMinWindowSize())
-                            val fitW = clamped.width.coerceAtMost(maxContentW)
-                            val fitH = clamped.height.coerceAtMost(maxContentH)
-                            liveSession.nsWindow.setContentSize(NSMakeSize(fitW.toDouble(), fitH.toDouble()))
-                        }
-                    }
-                    invalidateSessionWindow(liveSession)
-                }
-            }
-        }
-        invalidateSessionWindow(session)
-    }
-
-    private fun pollSystemThemeIfChanged(nowMs: Double, force: Boolean = false) {
-        if (!force && lastObservedSystemTheme != null && (nowMs - lastThemePollMs) < 400.0) {
-            return
-        }
-        lastThemePollMs = nowMs
-        val detected = SystemThemeDetector.detectSystemTheme()
-        val prev = lastObservedSystemTheme
-        lastObservedSystemTheme = detected
-        if (prev != null && prev != detected) {
-            val appMode = Application.current?.getThemeMode() ?: ThemeMode.AUTO
-            if (appMode.isAuto) {
-                val appearanceName = if (detected == ThemeMode.DARK) NSAppearanceNameDarkAqua else NSAppearanceNameAqua
-                val appearance = NSAppearance.appearanceNamed(appearanceName)
-                for (session in sessions.values) {
-                    session.nsWindow.appearance = appearance
-                    invalidateSessionWindow(session)
-                }
-                redrawRequested = true
-            }
-            GenericUiThreading.runOnLogic {
-                SystemThemeDetector.notifySystemThemeChanged(detected)
-            }
-            GenericUiThreading.flushAllQueues()
-        }
-    }
-
-    private fun onFrameTimerTick() {
-        val nowMs = monotonicTimeMs()
-        val elapsedMs = (nowMs - lastFrameTickMs).coerceIn(1.0, 250.0)
-        lastFrameTickMs = nowMs
-
-        pollSystemThemeIfChanged(nowMs)
-
-        if (NSThread.isMainThread) {
-            GenericUiThreading.activeDispatcher.drainUiQueue()
-        } else {
-            GenericUiThreading.flushAllQueues()
-        }
-
-        val vblankWidgets = DesktopNativeWidget.activeVBlankWidgetsSnapshot()
-        if (vblankWidgets.isNotEmpty()) {
-            for (widget in vblankWidgets) {
-                if (!widget.disposed && widget.visible) {
-                    widget.vblankDispatch?.invoke(nowMs)
-                }
-            }
-            if (NSThread.isMainThread) {
-                GenericUiThreading.activeDispatcher.drainUiQueue()
-            } else {
-                GenericUiThreading.flushAllQueues()
-            }
-        }
-
-        val checkSpinnerTick = (nowMs - lastSpinnerRedrawMs) >= 66.0
-        if (checkSpinnerTick) {
-            lastSpinnerRedrawMs = nowMs
-        }
-
-        val nonOverlayVer = DesktopNativeWidget.globalNonOverlayMutationVersion
-        val reqFull = redrawRequested
-        val reqStage = stageRedrawRequested
-        redrawRequested = false
-        stageRedrawRequested = false
-
-        for (session in sessions.values) {
-            var fullDirty = reqFull || session.pendingFullPaint || session.lastRenderedNonOverlayVersion != nonOverlayVer
-            var stageDirty = reqStage
-
-            if (session.windowImpl != null) {
-                val prevMode = session.appliedTitleBarChromeMode
-                val prevInset = session.titleBarInsetTopPx
-                syncUnifiedTitleBarChrome(session)
-                if (session.appliedTitleBarChromeMode != prevMode || session.titleBarInsetTopPx != prevInset) {
-                    fullDirty = true
-                }
-            }
-
-            val rootWidget = session.dialogImpl?.nativeWidget ?: session.windowImpl?.nativeWidget
-            if (rootWidget != null) {
-                val swapSum = sumInteractiveSurfaceSwaps(rootWidget)
-                if (swapSum != session.lastRenderedSurfaceSwapSum) {
-                    session.lastRenderedSurfaceSwapSum = swapSum
-                    stageDirty = true
-                }
-                if (!fullDirty && checkSpinnerTick && containsVisibleSpinner(rootWidget)) {
-                    val stageWidget = session.renderedStageWidget
-                    if (stageWidget != null && containsVisibleSpinner(stageWidget)) {
-                        stageDirty = true
-                    } else {
-                        fullDirty = true
-                    }
-                }
-            }
-
-            if (updateStageHudFade(session, nowMs, elapsedMs)) {
-                stageDirty = true
-            }
-
-            if (fullDirty) {
-                invalidateSessionWindow(session)
-            } else if (stageDirty) {
-                invalidateSessionStageOnly(session)
-            }
-        }
-    }
-
-    private fun updateStageHudFade(session: MacosWindowSession, nowMs: Double, dtMs: Double): Boolean {
-        val stageBounds = session.renderedStageBounds
-        if (stageBounds == null) {
-            var changed = false
-            if (session.overlayHudAlpha < 1f) {
-                session.overlayHudAlpha = 1f
-                changed = true
-            }
-            if (session.isStageCursorHidden) {
-                NSCursor.unhide()
-                session.isStageCursorHidden = false
-            }
-            return changed
-        }
-
-        val stageWidget = session.renderedStageWidget
-        val overlayWidget = if (stageWidget != null) {
-            MacosStageOverlayRenderUtil.findStageOverlayInSubtree(stageWidget, 4)
+        val hasNativeOverlayTitleBar = !session.activeFullscreen &&
+            !win.isFullscreen() &&
+            fsElement == null &&
+            findNativeOverlayTitleBarHandle(win, requireActive = false) != null
+        val stackedNav = if (!hasNativeOverlayTitleBar && !undecorated && !session.activeFullscreen && fsElement == null) {
+            findTopStackedNavbarImpl(win)
         } else {
             null
         }
-        val activitySeq = overlayWidget?.attributes?.get("stageActivitySeq")?.toString().orEmpty()
-        if (activitySeq.isNotEmpty() && activitySeq != session.lastStageActivitySeq) {
-            session.lastStageActivitySeq = activitySeq
-            session.lastStageActivityTimeMs = nowMs
+        val prevNav = session.attachedUnifiedNavbar
+        if (prevNav != null && prevNav !== stackedNav) {
+            prevNav.setUnifiedWithMacosTitlebar(false)
         }
-        val stagePlayingAttr = overlayWidget?.attributes?.get("stagePlaying")
-        val isPausedStage = stagePlayingAttr == false || stagePlayingAttr == "false"
-        val pointerLeftHidden = overlayWidget?.attributes?.get("hudPointerLeftHidden") == "true" && !session.isPointerInside
+        session.attachedUnifiedNavbar = stackedNav
+        stackedNav?.setUnifiedWithMacosTitlebar(true)
 
-        val keepVisible = PopupMouseCaptureManager.hasActivePopup ||
-            PointerDragManager.isDragging ||
-            session.focusedWidget != null ||
-            isPausedStage ||
-            (!pointerLeftHidden && (nowMs - session.lastStageActivityTimeMs) < STAGE_HUD_IDLE_HIDE_MS)
-
-        val targetAlpha = if (keepVisible) 1f else 0f
-        val step = (dtMs / 220.0).toFloat().coerceIn(0.01f, 1f)
-        val prevAlpha = session.overlayHudAlpha
-        session.overlayHudAlpha = when {
-            abs(prevAlpha - targetAlpha) <= step -> targetAlpha
-            prevAlpha < targetAlpha -> (prevAlpha + step).coerceAtMost(1f)
-            else -> (prevAlpha - step).coerceAtLeast(0f)
+        val hadSeamlessAttr = win.nativeWidget.attributes["hasSeamlessStackedNavbar"] == true
+        val nowSeamless = stackedNav != null
+        if (hadSeamlessAttr != nowSeamless) {
+            win.nativeWidget.attributes["hasSeamlessStackedNavbar"] = nowSeamless
         }
-
-        val pointerOverStage = session.isPointerInside &&
-            stageBounds.contains(session.lastMouseX.roundToInt(), session.lastMouseY.roundToInt())
-        val shouldHideCursor = !keepVisible && session.overlayHudAlpha <= 0.02f && pointerOverStage
-        if (shouldHideCursor && !session.isStageCursorHidden) {
-            NSCursor.hide()
-            session.isStageCursorHidden = true
-        } else if (!shouldHideCursor && session.isStageCursorHidden) {
-            NSCursor.unhide()
-            session.isStageCursorHidden = false
+        val chromeMode = resolveChromeMode(win)
+        val desiredMask = computeStyleMask(win, chromeMode, undecorated)
+        val needsTitleVisible = chromeMode != CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR &&
+            chromeMode != CHROME_MODE_NATIVE_OVERLAY_TITLEBAR &&
+            !undecorated
+        val maskMismatch = !session.activeFullscreen &&
+            (nsWin as? MacosHostWindow)?.isTransitioningFullscreen != true &&
+            nsWin.styleMask != desiredMask
+        val titleVisMismatch = !session.activeFullscreen &&
+            chromeMode != CHROME_MODE_NATIVE_OVERLAY_TITLEBAR &&
+            (nsWin as? MacosHostWindow)?.isTransitioningFullscreen != true &&
+            ((needsTitleVisible && nsWin.titleVisibility != NSWindowTitleVisible) ||
+                (!needsTitleVisible && nsWin.titleVisibility != NSWindowTitleHidden))
+        if (hadSeamlessAttr != nowSeamless ||
+            hasNativeOverlayTitleBar != session.lastChromeNativeOverlayTitleBar ||
+            maskMismatch ||
+            titleVisMismatch
+        ) {
+            syncWindowProperties(win)
         }
-
-        return abs(session.overlayHudAlpha - prevAlpha) > 0.001f
-    }
-
-    private fun restoreHiddenCursors() {
-        for (session in sessions.values) {
-            if (session.isStageCursorHidden) {
-                NSCursor.unhide()
-                session.isStageCursorHidden = false
-            }
-        }
-    }
-
-    private fun sumInteractiveSurfaceSwaps(node: DesktopNativeWidget): Long {
-        if (!node.visible || node.disposed) return 0L
-        var sum = node.interactiveSurfaceSpec?.swapCount?.invoke() ?: 0L
-        for (child in node.children) {
-            sum += sumInteractiveSurfaceSwaps(child)
-        }
-        return sum
-    }
-
-    private fun containsVisibleSpinner(node: DesktopNativeWidget): Boolean {
-        if (!node.visible || node.disposed) return false
-        if (node.attributes["nativeImpl"] is DesktopSpinnerNativeImpl<*>) return true
-        for (child in node.children) {
-            if (containsVisibleSpinner(child)) return true
-        }
-        return false
-    }
-
-    internal fun drawWindow(windowKey: Long, dirtyRect: CValue<NSRect>) {
-        val session = sessions[windowKey] ?: return
-        val cgContext = NSGraphicsContext.currentContext?.CGContext ?: return
-        var dx = 0
-        var dy = 0
-        var dw = 0
-        var dh = 0
-        dirtyRect.useContents {
-            dx = origin.x.toInt()
-            dy = origin.y.toInt()
-            dw = size.width.roundToInt()
-            dh = size.height.roundToInt()
-        }
-        renderSessionIntoContext(
-            session = session,
-            cgContext = cgContext,
-            dirtyX = dx,
-            dirtyY = dy,
-            dirtyW = dw,
-            dirtyH = dh,
-            allowStageFastPath = true,
-            recordMetrics = true
-        )
-    }
-
-    private fun renderSessionIntoContext(
-        session: MacosWindowSession,
-        cgContext: CGContextRef,
-        dirtyX: Int,
-        dirtyY: Int,
-        dirtyW: Int,
-        dirtyH: Int,
-        allowStageFastPath: Boolean,
-        recordMetrics: Boolean
-    ) {
-        val startUs = if (recordMetrics) monotonicTimeUs() else 0L
-
-        val viewW = session.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
-        val viewH = session.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
-        val scale = session.nsWindow.backingScaleFactor.coerceAtLeast(1.0)
-
-        val appInstance = Application.current
-        val themeConfig = appInstance?.getThemeConfig() ?: ThemeConfig.DEFAULT
-        val darkMode = isEffectiveDarkMode(themeConfig)
-        val palette = MacosThemePalette.resolve(darkMode)
-
-        val isFullscreen = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-        val winImpl = session.windowImpl
-        val dialogImpl = session.dialogImpl
-        val chromeMode = if (winImpl != null && !isFullscreen && !winImpl.isFullscreen()) {
-            resolveTitleBarChromeMode(winImpl)
-        } else {
-            CHROME_MODE_STANDARD
-        }
-        val customInset = if (chromeMode != CHROME_MODE_STANDARD) {
-            session.titleBarInsetTopPx.takeIf { it > 0 } ?: CUSTOM_TITLEBAR_INSET_PX
+        val topInset = if (stackedNav != null && !undecorated && !session.activeFullscreen && fsElement == null) {
+            val contentH = nsWin.contentRectForFrameRect(nsWin.frame).useContents { size.height }
+            val layoutH = nsWin.contentLayoutRect.useContents { size.height }
+            val measured = (contentH - layoutH).toInt()
+            if (measured in 18..64) measured else 28
         } else {
             0
         }
-        val explicitCustomTb = chromeMode == CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR
-
-        val titleBarWidgets = if (winImpl != null) collectTitleBarWidgets(winImpl) else emptySet()
-        val renderCtx = MacosRenderContext(
-            cgContext = cgContext,
-            windowKey = session.windowKey,
-            viewport = Rect(0, 0, viewW, viewH),
-            backingScale = scale,
-            darkMode = darkMode,
-            themeConfig = themeConfig,
-            palette = palette,
-            customTitleBarInsetTop = customInset,
-            explicitCustomTitleBar = explicitCustomTb,
-            titleBarWidgets = titleBarWidgets,
-            focusedWidget = session.focusedWidget,
-            hoveredWidget = session.hoveredWidget,
-            pressedWidget = session.pressedWidget,
-            overlayHudAlpha = session.overlayHudAlpha
-        )
-
-        val nonOverlayVer = DesktopNativeWidget.globalNonOverlayMutationVersion
-        val prevStageWidget = session.renderedStageWidget
-        val prevStageBounds = session.renderedStageBounds
-        val canUseStageFastPath = allowStageFastPath &&
-            !session.pendingFullPaint &&
-            dialogImpl == null &&
-            winImpl != null &&
-            !PopupMouseCaptureManager.hasActivePopup &&
-            session.lastRenderedNonOverlayVersion == nonOverlayVer &&
-            prevStageWidget != null &&
-            prevStageWidget.visible &&
-            !prevStageWidget.disposed &&
-            prevStageBounds != null &&
-            prevStageBounds.width > 0 &&
-            prevStageBounds.height > 0 &&
-            session.stageHitRegionStartIdx >= 0 &&
-            session.stageHitRegionEndIdx >= session.stageHitRegionStartIdx &&
-            session.stageHitRegionEndIdx <= session.hitRegions.size &&
-            dirtyW > 0 &&
-            dirtyH > 0 &&
-            dirtyX >= prevStageBounds.x - 2 &&
-            dirtyY >= prevStageBounds.y - 2 &&
-            (dirtyX + dirtyW) <= prevStageBounds.right + 2 &&
-            (dirtyY + dirtyH) <= prevStageBounds.bottom + 2
-
-        if (canUseStageFastPath && prevStageWidget != null && prevStageBounds != null) {
-            MacosWorkspaceLayoutRenderUtil.renderStageSubtreeOnly(renderCtx, prevStageWidget, prevStageBounds)
-
-            val oldHits = session.hitRegions
-            val newStageHits = renderCtx.hitRegions
-            val hStart = session.stageHitRegionStartIdx
-            val hEnd = session.stageHitRegionEndIdx
-            val splicedHits = ArrayList<MacosHitRegion>(oldHits.size - (hEnd - hStart) + newStageHits.size)
-            for (i in 0 until hStart) splicedHits.add(oldHits[i])
-            splicedHits.addAll(newStageHits)
-            for (i in hEnd until oldHits.size) splicedHits.add(oldHits[i])
-            session.hitRegions = splicedHits
-            session.stageHitRegionEndIdx = hStart + newStageHits.size
-
-            val sStart = session.stageScrollRegionStartIdx
-            val sEnd = session.stageScrollRegionEndIdx
-            if (sStart >= 0 && sEnd >= sStart && sEnd <= session.scrollRegions.size) {
-                val oldScrolls = session.scrollRegions
-                val newStageScrolls = renderCtx.scrollRegions
-                val splicedScrolls = ArrayList<MacosScrollRegion>(oldScrolls.size - (sEnd - sStart) + newStageScrolls.size)
-                for (i in 0 until sStart) splicedScrolls.add(oldScrolls[i])
-                splicedScrolls.addAll(newStageScrolls)
-                for (i in sEnd until oldScrolls.size) splicedScrolls.add(oldScrolls[i])
-                session.scrollRegions = splicedScrolls
-                session.stageScrollRegionEndIdx = sStart + newStageScrolls.size
-            }
-
-            session.lastRenderedTreeVersion = DesktopNativeWidget.globalTreeMutationVersion
-            if (sessions.size <= 1) {
-                stageRedrawRequested = false
-            }
-            if (recordMetrics) {
-                recordPaintMetricUs((monotonicTimeUs() - startUs).coerceAtLeast(1L), stageOnly = true)
-            }
-            return
-        }
-
-        if (dialogImpl != null) {
-            MacosWorkspaceLayoutRenderUtil.renderDialogWindow(renderCtx, dialogImpl)
-        } else if (winImpl != null) {
-            val fsElem = (winImpl.getFullscreenElement()?.nativeWidget as? DesktopNativeWidget)
-                ?.takeIf { winImpl.isFullscreen() }
-            MacosWorkspaceLayoutRenderUtil.renderMainWindow(renderCtx, winImpl, fsElem)
-        }
-
-        if (allowStageFastPath) {
-            session.hitRegions = renderCtx.hitRegions
-            session.scrollRegions = renderCtx.scrollRegions
-            session.renderedStageWidget = renderCtx.renderedStageWidget
-            session.renderedStageBounds = renderCtx.renderedStageBounds
-            session.stageHitRegionStartIdx = renderCtx.stageHitRegionStartIdx
-            session.stageHitRegionEndIdx = renderCtx.stageHitRegionEndIdx
-            session.stageScrollRegionStartIdx = renderCtx.stageScrollRegionStartIdx
-            session.stageScrollRegionEndIdx = renderCtx.stageScrollRegionEndIdx
-            session.lastRenderedTreeVersion = DesktopNativeWidget.globalTreeMutationVersion
-            session.lastRenderedNonOverlayVersion = nonOverlayVer
-            session.pendingFullPaint = false
-            if (!sessions.values.any { it.pendingFullPaint }) {
-                redrawRequested = false
-                stageRedrawRequested = false
-            }
-        }
-
-        if (recordMetrics) {
-            recordPaintMetricUs((monotonicTimeUs() - startUs).coerceAtLeast(1L), stageOnly = false)
-        }
+        session.titleBarInsetTopPx = topInset
+        session.lastChromeSyncMutationVersion = DesktopNativeWidget.globalLayoutMutationVersion
+        session.lastChromeFullscreenElement = fsElement
+        session.lastChromeUndecorated = undecorated
+        session.lastChromeActiveFullscreen = session.activeFullscreen
+        session.lastChromeNativeOverlayTitleBar = hasNativeOverlayTitleBar
+        session.lastChromeWindowStyleMask = nsWin.styleMask
     }
 
-    private fun recordPaintMetricUs(durationUs: Long, stageOnly: Boolean) {
-        totalPaintsCounter++
-        if (stageOnly) {
-            stageOnlyPaintsCounter++
-        } else {
-            fullWindowPaintsCounter++
-        }
-        paintDurationSamplesUs[paintSampleWriteIdx] = durationUs
-        paintSampleWriteIdx = (paintSampleWriteIdx + 1) % paintDurationSamplesUs.size
-        if (paintSampleCount < paintDurationSamplesUs.size) {
-            paintSampleCount++
-        }
-    }
-
-    private fun collectTitleBarWidgets(windowImpl: MacosWindowNativeImpl): Set<DesktopNativeWidget> {
-        val tb = windowImpl.getTitleBarInstructions() ?: return emptySet()
-        val all = tb.leadingComponents + tb.centerComponents + tb.trailingComponents
-        if (all.isEmpty()) return emptySet()
-        val set = LinkedHashSet<DesktopNativeWidget>(all.size)
-        for (c in all) {
-            val w = c.nativeImpl?.nativeWidget as? DesktopNativeWidget ?: continue
-            set.add(w)
-        }
-        return set
-    }
-
-    private fun isEffectiveDarkMode(themeConfig: ThemeConfig): Boolean {
-        val appTheme = Application.current?.getThemeMode() ?: themeConfig.mode
-        return SystemThemeDetector.resolveTheme(appTheme) == ThemeMode.DARK
-    }
-
-    private fun applyAppearanceToWindow(nsWindow: NSWindow) {
-        val themeConfig = Application.current?.getThemeConfig() ?: ThemeConfig.DEFAULT
-        val dark = isEffectiveDarkMode(themeConfig)
-        nsWindow.appearance = NSAppearance.appearanceNamed(
-            if (dark) NSAppearanceNameDarkAqua else NSAppearanceNameAqua
-        )
-    }
-
-    private fun resolveTitleBarChromeMode(windowImpl: MacosWindowNativeImpl): Int {
-        if (windowImpl.isUndecorated()) return CHROME_MODE_STANDARD
-        if (windowImpl.isToolModalWindow) return CHROME_MODE_STANDARD
-        if (windowImpl.isFullscreen() && windowImpl.getFullscreenElement() != null) return CHROME_MODE_STANDARD
-        if (windowImpl.getTitleBarInstructions()?.customTitleBar == true) return CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR
-        if (hasTopNavbar(windowImpl)) return CHROME_MODE_SEAMLESS_STACKED_NAVBAR
-        return CHROME_MODE_STANDARD
-    }
-
-    private fun computeWindowStyleMask(
+    private fun computeStyleMask(
         windowImpl: MacosWindowNativeImpl,
-        chromeMode: Int = resolveTitleBarChromeMode(windowImpl)
+        chromeMode: Int,
+        undecorated: Boolean
     ): ULong {
-        if (windowImpl.isUndecorated()) {
-            return NSWindowStyleMaskBorderless or NSWindowStyleMaskResizable
+        if (chromeMode == CHROME_MODE_NATIVE_OVERLAY_TITLEBAR) {
+            var mask = NSWindowStyleMaskTitled or
+                NSWindowStyleMaskClosable or
+                NSWindowStyleMaskResizable or
+                NSWindowStyleMaskFullSizeContentView
+            if (windowImpl.minimizable) {
+                mask = mask or NSWindowStyleMaskMiniaturizable
+            }
+            return mask
+        }
+        if (undecorated) {
+            return UNDECORATED_WINDOWED_STYLE_MASK
         }
         var mask = NSWindowStyleMaskTitled or NSWindowStyleMaskClosable or NSWindowStyleMaskResizable
-        val tb = windowImpl.getTitleBarInstructions()
-        val allowMin = if (windowImpl.isToolModalWindow) windowImpl.minimizable else (tb?.showMinimizeButton ?: true)
-        if (allowMin) {
+        if (windowImpl.minimizable) {
             mask = mask or NSWindowStyleMaskMiniaturizable
         }
         if (chromeMode != CHROME_MODE_STANDARD) {
             mask = mask or NSWindowStyleMaskFullSizeContentView
         }
-        if (windowImpl.isToolModalWindow) {
-            mask = mask or NSWindowStyleMaskUtilityWindow
-        }
         return mask
     }
 
-    // =========================================================================
-    // Mouse, Drag, Scroll, & Popup Handling
-    // =========================================================================
-
-    internal fun onMouseDown(windowKey: Long, event: NSEvent, button: Int) {
-        val session = sessions[windowKey] ?: return
-        if (button == 0) {
-            lastLeftMouseDownEventByWindowKey[windowKey] = event
+    fun syncWindowProperties(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val nsWin = session.nsWindow
+        syncingChromeSessionKey = session.windowKey
+        try {
+            val chromeMode = resolveChromeMode(windowImpl)
+            val isNativeOverlayBar = chromeMode == CHROME_MODE_NATIVE_OVERLAY_TITLEBAR
+            val undecorated = windowImpl.isUndecorated()
+            val pureBorderless = undecorated && !isNativeOverlayBar
+            val desiredMask = computeStyleMask(windowImpl, chromeMode, undecorated)
+            val hostWin = nsWin as? MacosHostWindow
+            val isTransitioningFs = hostWin?.isTransitioningFullscreen == true
+            val preserveNativeOverlayDuringFs = (session.activeFullscreen || isTransitioningFs) &&
+                hostWin?.isNativeOverlayTitleBarHostWindow == true
+            val effectiveNativeOverlayFlag = isNativeOverlayBar || preserveNativeOverlayDuringFs
+            if (hostWin != null) {
+                hostWin.isNativeOverlayTitleBarHostWindow = effectiveNativeOverlayFlag
+                hostWin.isUndecoratedHostWindow = pureBorderless && !preserveNativeOverlayDuringFs
+                hostWin.isToolModal = windowImpl.isToolModalWindow
+            }
+            session.rootView.isUndecoratedChrome = pureBorderless && !session.activeFullscreen && !preserveNativeOverlayDuringFs
+            val maskChanged = !session.activeFullscreen && !isTransitioningFs && nsWin.styleMask != desiredMask
+            if (maskChanged) {
+                val savedFrame = nsWin.frame
+                nsWin.setStyleMask(desiredMask)
+                nsWin.setFrame(savedFrame, display = false)
+                hostWin?.invalidateNativeOverlayTitleBarChromeCache()
+            }
+            val wantsSquareCorners = undecorated &&
+                !session.activeFullscreen &&
+                !isTransitioningFs &&
+                !windowImpl.isToolModalWindow
+            hostWin?.syncSquareWindowCorners(enabled = wantsSquareCorners, forceRefresh = maskChanged)
+            if (isNativeOverlayBar && !session.activeFullscreen) {
+                nsWin.setOpaque(true)
+                syncNativeOverlayTitleBarForSession(session)
+            } else if (pureBorderless && !session.activeFullscreen && !preserveNativeOverlayDuringFs) {
+                hostWin?.applyUndecoratedChromeAttributes() ?: run {
+                    nsWin.setTitlebarAppearsTransparent(true)
+                    nsWin.setTitleVisibility(NSWindowTitleHidden)
+                }
+                hostWin?.hideStandardWindowButtons()
+            } else if (session.activeFullscreen && (undecorated || preserveNativeOverlayDuringFs)) {
+                hostWin?.applyFullscreenMenuBarHoverChrome(windowImpl.getTitle())
+            } else {
+                nsWin.setOpaque(true)
+                val showMinimize = windowImpl.minimizable
+                val enableMinimize = !session.activeFullscreen && windowImpl.minimizable
+                when (chromeMode) {
+                    CHROME_MODE_STANDARD -> {
+                        nsWin.setTitlebarAppearsTransparent(false)
+                        nsWin.setTitleVisibility(NSWindowTitleVisible)
+                        nsWin.setTitlebarSeparatorStyle(platform.AppKit.NSTitlebarSeparatorStyle.NSTitlebarSeparatorStyleAutomatic)
+                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize)
+                    }
+                    CHROME_MODE_SEAMLESS_STACKED_NAVBAR -> {
+                        nsWin.setTitlebarAppearsTransparent(true)
+                        nsWin.setTitleVisibility(NSWindowTitleVisible)
+                        nsWin.setTitlebarSeparatorStyle(platform.AppKit.NSTitlebarSeparatorStyle.NSTitlebarSeparatorStyleNone)
+                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize)
+                    }
+                    else -> {
+                        nsWin.setTitlebarAppearsTransparent(true)
+                        nsWin.setTitleVisibility(NSWindowTitleHidden)
+                        nsWin.setTitlebarSeparatorStyle(platform.AppKit.NSTitlebarSeparatorStyle.NSTitlebarSeparatorStyleNone)
+                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize)
+                    }
+                }
+            }
+            val winBg = MacosAppKitAppearance.toNsColor(
+                if (MacosAppKitAppearance.isDarkTheme(windowImpl.nativeWidget)) {
+                    com.nexustools.genericui.style.color.RgbaColor(24, 26, 31, 255)
+                } else {
+                    com.nexustools.genericui.style.color.RgbaColor(244, 245, 248, 255)
+                }
+            )
+            nsWin.setBackgroundColor(winBg)
+            session.rootView.setWantsLayer(true)
+            session.rootView.layer?.backgroundColor = winBg.CGColor
+            if (!isNativeOverlayBar) {
+                syncWindowTitle(windowImpl, windowImpl.getTitle())
+            }
+            syncWindowAlwaysOnTop(windowImpl)
+            syncWindowAspectRatio(windowImpl)
+            syncCustomTitleBarOverlay(session, windowImpl, chromeMode, undecorated || isNativeOverlayBar)
+            hostWin?.syncContentViewFillsWindowFrame()
+            activeAppearanceName?.let { nsWin.setAppearance(NSAppearance.appearanceNamed(it)) }
+        } finally {
+            syncingChromeSessionKey = 0L
         }
-        val (x, y) = toViewCoords(session, event)
-        handlePointerDownAt(
-            session = session,
-            x = x,
-            y = y,
-            button = button,
-            clickCount = safeClickCount(event, 1),
-            modifierFlags = event.modifierFlags,
-            rawEvent = event
-        )
     }
 
-    private fun handlePointerDownAt(
-        session: MacosWindowSession,
-        x: Float,
-        y: Float,
-        button: Int,
-        clickCount: Int,
-        modifierFlags: ULong = 0UL,
-        rawEvent: NSEvent? = null
-    ) {
-        activeKeyWindowId = session.windowKey
-        session.lastMouseX = x
-        session.lastMouseY = y
-        session.isPointerInside = true
-        notifyStageActivityIfInside(session, x, y)
-
-        val hit = findTopHitRegion(session, x, y)
-        val hitWidget = hit?.widget
-
-        if (!hit?.isTextInput.orFalse() && session.focusedWidget != null && session.focusedWidget !== hitWidget) {
-            clearFocusedWidgetInSession(session)
+    internal fun syncAllNativeOverlayTitleBars() {
+        for (session in sessions.values.toList()) {
+            if (!session.isClosing && (session.nsWindow as? MacosHostWindow)?.isNativeOverlayTitleBarHostWindow == true) {
+                syncNativeOverlayTitleBarForSession(session)
+            }
         }
+    }
 
-        val interceptedByPopup = DesktopNativeWidget.interceptPopupPointerDown(x, y, hitWidget)
-        if (interceptedByPopup) {
-            session.pressedRegion = null
-            session.pressedWidget = null
-            invalidateSessionWindow(session)
+    internal fun syncNativeOverlayTitleBarForSession(session: MacosWindowSession) {
+        val winImpl = session.windowImpl ?: return
+        val hostWin = session.nsWindow as? MacosHostWindow ?: return
+        if (!hostWin.isNativeOverlayTitleBarHostWindow) return
+        if (session.activeFullscreen || winImpl.isFullscreen() || (hostWin.styleMask and NSWindowStyleMaskFullScreen) != 0uL) {
+            hostWin.syncNativeOverlayTitleBarChrome(
+                visible = true,
+                alpha = 1.0,
+                showClose = true,
+                showMinimize = winImpl.minimizable,
+                showMaximize = true,
+                showTitle = true,
+                titleText = formatEffectiveWindowTitle(winImpl.getTitle())
+            )
+            session.lastSyncedNativeTitleBarVisible = true
+            session.lastSyncedNativeTitleBarAlpha = 1.0
+            clearNativeOverlayTitleBarHoverPin(session)
             return
         }
+        val barHandle = findNativeOverlayTitleBarHandle(winImpl, requireActive = false) ?: return
+        var effectiveVisible = barHandle.attributes["data-titlebar-active"]
+            ?.toString()
+            ?.equals("false", ignoreCase = true) != true
+        var accumulatedAlpha = 1.0
+        var cur: DesktopNativeWidget? = barHandle
+        var steps = 0
+        while (effectiveVisible && cur != null && cur !== winImpl.nativeWidget && steps < 32) {
+            steps++
+            if (!cur.visible || cur.attributes["visibilityHidden"] == true) {
+                effectiveVisible = false
+                break
+            }
+            val view = (cur as? MacosViewHandle)?.nsView
+                ?: (cur.attributes["macosMountedSurfaceView"] as? NSView)
+            if (view != null) {
+                if (view.isHidden()) {
+                    effectiveVisible = false
+                    break
+                }
+                val viewAlpha = view.alphaValue.coerceIn(0.0, 1.0)
+                val widgetAlpha = cur.opacity.toDouble().coerceIn(0.0, 1.0)
+                accumulatedAlpha *= min(viewAlpha, widgetAlpha)
+            } else {
+                accumulatedAlpha *= cur.opacity.toDouble().coerceIn(0.0, 1.0)
+            }
+            cur = cur.parentWidget
+        }
+        val effectiveAlpha = if (effectiveVisible) accumulatedAlpha.coerceIn(0.0, 1.0) else 0.0
+        val finalVisible = effectiveVisible && effectiveAlpha > 0.004
 
-        // Native custom-titlebar window drag / double-click zoom when clicking empty titlebar/navbar area
-        // or dragging empty surface of an undecorated floating window
-        if (button == 0 && hit == null && session.windowImpl != null) {
-            val isFs = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0UL
-            if (session.windowImpl.isUndecorated()) {
-                if (!isFs && rawEvent != null) {
-                    session.nsWindow.performWindowDragWithEvent(rawEvent)
-                }
-                return
-            }
-            val chromeMode = resolveTitleBarChromeMode(session.windowImpl)
-            val inset = session.titleBarInsetTopPx.takeIf { it > 0 } ?: CUSTOM_TITLEBAR_INSET_PX
-            val dragHeight = when (chromeMode) {
-                CHROME_MODE_SEAMLESS_STACKED_NAVBAR -> inset + MacosNavigationRenderUtil.NAVBAR_HEIGHT_PX
-                CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR -> if (hasTopNavbar(session.windowImpl)) {
-                    maxOf(inset, MacosNavigationRenderUtil.NAVBAR_HEIGHT_PX)
+        val showClose = barHandle.attributes["data-titlebar-show-close"]?.toString()?.equals("false", ignoreCase = true) != true
+        val showMinimize = (barHandle.attributes["data-titlebar-show-minimize"]?.toString()?.equals("false", ignoreCase = true) != true) &&
+            winImpl.minimizable
+        val showMaximize = barHandle.attributes["data-titlebar-show-maximize"]?.toString()?.equals("false", ignoreCase = true) != true
+        val showTitle = barHandle.attributes["data-titlebar-show-title"]?.toString()?.equals("false", ignoreCase = true) != true
+        val rawTitle = (barHandle.attributes["data-titlebar-title"] as? String)?.takeIf { it.isNotEmpty() }
+            ?: winImpl.getTitle()
+        val effectiveTitle = formatEffectiveWindowTitle(rawTitle)
+
+        val titleBarHidNow = hostWin.syncNativeOverlayTitleBarChrome(
+            visible = finalVisible,
+            alpha = effectiveAlpha,
+            showClose = showClose,
+            showMinimize = showMinimize,
+            showMaximize = showMaximize,
+            showTitle = showTitle,
+            titleText = effectiveTitle
+        )
+        session.lastSyncedNativeTitleBarVisible = finalVisible
+        session.lastSyncedNativeTitleBarAlpha = effectiveAlpha
+        syncNativeOverlayTitleBarHoverPin(session, barHandle, barVisible = finalVisible)
+        if (titleBarHidNow) {
+            refreshActiveCursorsNow()
+        }
+    }
+
+    internal fun isBlockingPopupChildWindow(w: NSWindow, mousePt: CValue<NSPoint>): Boolean {
+        if (!w.isVisible() || w.alphaValue <= 0.01) return false
+        if (w.level >= NSPopUpMenuWindowLevel) return true
+        val (mx, my) = mousePt.useContents { x to y }
+        return w.frame.useContents {
+            mx >= origin.x && mx <= origin.x + size.width &&
+                my >= origin.y && my <= origin.y + size.height
+        }
+    }
+
+    private fun refreshDeferredBackdropUnderlays(view: NSView) {
+        when (view) {
+            is MacosContainerView -> view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
+            is MacosStyledContainerView -> view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
+            is MacosStyledComponentView -> view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
+            is MacosStyledButtonControl -> view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
+        }
+        for (sub in view.subviews) {
+            val child = sub as? NSView ?: continue
+            refreshDeferredBackdropUnderlays(child)
+        }
+    }
+
+    private fun syncNativeOverlayTitleBarHoverPin(
+        session: MacosWindowSession,
+        barHandle: MacosViewHandle,
+        barVisible: Boolean,
+        pointerClientY: Double? = null
+    ) {
+        val mousePt = NSEvent.mouseLocation
+        val hoveredNow = if (session.isClosing ||
+            !session.isShown ||
+            !session.nsWindow.isVisible() ||
+            session.activeFullscreen ||
+            (session.nsWindow as? MacosHostWindow)?.isTransitioningFullscreen == true
+        ) {
+            false
+        } else {
+            val hasPopupChild = session.nsWindow.childWindows?.any { cw ->
+                val w = cw as? NSWindow
+                w != null &&
+                    sessions.values.none { it.nsWindow === w } &&
+                    isBlockingPopupChildWindow(w, mousePt)
+            } == true
+            if (hasPopupChild) {
+                true
+            } else if (!barVisible) {
+                false
+            } else {
+                val barH = (barHandle.bounds.height.takeIf { it > 0 } ?: CUSTOM_TITLEBAR_INSET_PX).toDouble()
+                if (pointerClientY != null) {
+                    pointerClientY in 0.0..barH
                 } else {
-                    inset + 8
+                    val topWinNumber = NSWindow.windowNumberAtPoint(mousePt, belowWindowWithWindowNumber = 0L)
+                    if (topWinNumber > 0L && topWinNumber != session.nsWindow.windowNumber) {
+                        false
+                    } else {
+                        val (mx, my) = mousePt.useContents { x to y }
+                        session.nsWindow.frame.useContents {
+                            val topY = origin.y + size.height
+                            mx in origin.x..(origin.x + size.width) && my in (topY - barH)..topY
+                        }
+                    }
                 }
-                else -> 0
             }
-            if (!isFs && dragHeight > 0 && y >= 0f && y <= dragHeight.toFloat()) {
-                if (clickCount >= 2) {
+        }
+        val barReportsPinned = barHandle.attributes["data-native-titlebar-hover-pinned"]?.toString() == "true"
+        if (hoveredNow != session.nativeTitleBarHoverPinned || (!hoveredNow && barReportsPinned)) {
+            session.nativeTitleBarHoverPinned = hoveredNow
+            val barImpl = barHandle.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+            if (barImpl != null && !barImpl.isDisposed) {
+                if (hoveredNow) {
+                    barImpl.dispatchPointerEnter(PointerEvent())
+                } else {
+                    barImpl.dispatchPointerLeave(PointerEvent())
+                }
+            }
+        }
+    }
+
+    private fun formatEffectiveWindowTitle(title: String): String =
+        if (visualTestMode && !visualTestBannerText.isNullOrBlank()) {
+            "$title — $visualTestBannerText"
+        } else {
+            title
+        }
+
+    private fun syncCustomTitleBarOverlay(
+        session: MacosWindowSession,
+        windowImpl: MacosWindowNativeImpl,
+        chromeMode: Int,
+        undecorated: Boolean
+    ) {
+        if (undecorated || chromeMode != CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR) {
+            session.titleBarView?.removeFromSuperview()
+            session.titleBarView = null
+            session.rootView.titleBarOverlayView = null
+            return
+        }
+        val (w, _) = session.currentClientSize()
+        val tb = session.titleBarView ?: MacosTitleBarView(
+            owner = null,
+            frameRect = NSMakeRect(0.0, 0.0, w.toDouble(), CUSTOM_TITLEBAR_INSET_PX.toDouble())
+        ).also { created ->
+            session.titleBarView = created
+            session.rootView.titleBarOverlayView = created
+            session.rootView.addSubview(created)
+        }
+        tb.setFrame(NSMakeRect(0.0, 0.0, w.toDouble(), CUSTOM_TITLEBAR_INSET_PX.toDouble()))
+    }
+
+    fun syncWindowAlwaysOnTop(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val level = when {
+            windowImpl.isAlwaysOnTop() || windowImpl.isToolModalWindow -> NSFloatingWindowLevel
+            else -> platform.AppKit.NSNormalWindowLevel
+        }
+        session.nsWindow.setLevel(level)
+    }
+
+    fun syncWindowAspectRatio(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val hostWin = session.nsWindow as? MacosHostWindow
+        val isNormalState = windowImpl.getWindowState() == WindowState.NORMAL &&
+            !windowImpl.isFullscreen() &&
+            !session.activeFullscreen &&
+            !session.nsWindow.isZoomed() &&
+            hostWin?.isTransitioningFullscreen != true &&
+            hostWin?.isAnimatingMaximize != true &&
+            hostWin?.isPerformingNativeZoom != true
+        val ratio = if (isNormalState) windowImpl.getAspectRatio() else null
+        if (ratio != null && ratio > 0.0) {
+            session.nsWindow.setContentAspectRatio(NSMakeSize(ratio, 1.0))
+        } else {
+            clearWindowContentAspectRatio(session.nsWindow)
+        }
+    }
+
+    internal fun clearWindowContentAspectRatio(nsWindow: NSWindow) {
+        nsWindow.setContentAspectRatio(NSMakeSize(0.0, 0.0))
+        nsWindow.setResizeIncrements(NSMakeSize(1.0, 1.0))
+    }
+
+    fun syncWindowTitle(windowImpl: MacosWindowNativeImpl, title: String) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val effectiveTitle = if (visualTestMode && !visualTestBannerText.isNullOrBlank()) {
+            "$title — $visualTestBannerText"
+        } else {
+            title
+        }
+        session.nsWindow.setTitle(effectiveTitle)
+    }
+
+    fun syncWindowSize(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val winSize = windowImpl.getWindowSize()
+        val w = winSize.width.toDouble().coerceAtLeast(160.0)
+        val h = winSize.height.toDouble().coerceAtLeast(120.0)
+        val minSize = windowImpl.getMinWindowSize()
+        if (minSize != null) {
+            session.nsWindow.setContentMinSize(NSMakeSize(minSize.width.toDouble(), minSize.height.toDouble()))
+        }
+        val (beforeW, beforeH) = session.currentClientSize()
+        if (beforeW != w.roundToInt() || beforeH != h.roundToInt()) {
+            session.isSyncingSize = true
+            try {
+                val (oldX, oldTopY) = session.nsWindow.frame.useContents {
+                    origin.x to (origin.y + size.height)
+                }
+                val (frameW, frameH) = session.nsWindow.frameRectForContentRect(NSMakeRect(0.0, 0.0, w, h)).useContents {
+                    size.width to size.height
+                }
+                session.nsWindow.setFrame(NSMakeRect(oldX, oldTopY - frameH, frameW, frameH), display = false)
+            } finally {
+                session.isSyncingSize = false
+            }
+        }
+        val (cw, ch) = session.currentClientSize()
+        val mutVer = DesktopNativeWidget.globalLayoutMutationVersion
+        if (session.needsRelayout ||
+            session.lastLaidOutWidth != cw ||
+            session.lastLaidOutHeight != ch ||
+            session.lastMutationVersion != mutVer
+        ) {
+            session.needsRelayout = true
+            session.needsRedisplay = true
+            session.layoutWindowTree(force = true)
+            if (redrawRequested && sessions.values.none { it.needsRelayout }) {
+                redrawRequested = false
+            }
+        }
+    }
+
+    fun syncWindowPosition(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val pos = windowImpl.getWindowPosition()
+        session.nsWindow.setFrameTopLeftPoint(desktopTopLeftToCocoaTopLeft(pos.x, pos.y))
+    }
+
+    fun syncWindowState(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val hostWin = session.nsWindow as? MacosHostWindow
+        when (windowImpl.getWindowState()) {
+            WindowState.MINIMIZED -> session.nsWindow.miniaturize(null)
+            WindowState.MAXIMIZED -> {
+                if (hostWin != null) {
+                    hostWin.setMaximized(true)
+                } else if (!session.nsWindow.isZoomed()) {
                     session.nsWindow.zoom(null)
-                } else if (rawEvent != null) {
-                    session.nsWindow.performWindowDragWithEvent(rawEvent)
-                }
-                return
-            }
-        }
-
-        if (button == 2) {
-            if (hit?.onContextMenu != null) {
-                GenericUiThreading.runOnLogic {
-                    hit.onContextMenu.invoke(x, y)
-                }
-                invalidateSessionWindow(session)
-            }
-            return
-        }
-
-        session.pressedRegion = hit
-        session.pressedWidget = hitWidget
-        val ptrEvent = buildPointerEventFromFlags(modifierFlags, x, y, button = button, buttonsMask = 1 shl button, clickCount = clickCount)
-
-        GenericUiThreading.runOnLogic {
-            if (hit != null) {
-                hit.onPress?.invoke(x - hit.left, y - hit.top, x, y, button, clickCount)
-            }
-            dispatchWidgetPointerDown(hitWidget, ptrEvent)
-        }
-        if (hitWidget != null && isWidgetInsideStage(session, hitWidget)) {
-            invalidateSessionStageOnly(session)
-        } else {
-            invalidateSessionWindow(session)
-        }
-    }
-
-    internal fun onMouseDragged(windowKey: Long, event: NSEvent, button: Int) {
-        val session = sessions[windowKey] ?: return
-        val (x, y) = toViewCoords(session, event)
-        handlePointerDraggedAt(
-            session = session,
-            x = x,
-            y = y,
-            button = button,
-            clickCount = safeClickCount(event, 1),
-            modifierFlags = event.modifierFlags
-        )
-    }
-
-    private fun handlePointerDraggedAt(
-        session: MacosWindowSession,
-        x: Float,
-        y: Float,
-        button: Int,
-        clickCount: Int = 1,
-        modifierFlags: ULong = 0UL
-    ) {
-        session.lastMouseX = x
-        session.lastMouseY = y
-        notifyStageActivityIfInside(session, x, y)
-
-        val ptrEvent = buildPointerEventFromFlags(modifierFlags, x, y, button = button, buttonsMask = 1 shl button, clickCount = clickCount)
-        val pressed = session.pressedRegion
-        GenericUiThreading.runOnLogic {
-            if (pressed != null) {
-                pressed.onDrag?.invoke(x - pressed.left, y - pressed.top, x, y)
-            }
-            PointerDragManager.notifyGlobalPointerMove(ptrEvent)
-            dispatchWidgetPointerMove(pressed?.widget, ptrEvent)
-        }
-        if (pressed?.widget != null && isWidgetInsideStage(session, pressed.widget)) {
-            invalidateSessionStageOnly(session)
-        } else {
-            invalidateSessionWindow(session)
-        }
-    }
-
-    internal fun onMouseUp(windowKey: Long, event: NSEvent, button: Int) {
-        if (button == 0) {
-            lastLeftMouseDownEventByWindowKey.remove(windowKey)
-        }
-        val session = sessions[windowKey] ?: return
-        val (x, y) = toViewCoords(session, event)
-        handlePointerUpAt(
-            session = session,
-            x = x,
-            y = y,
-            button = button,
-            clickCount = safeClickCount(event, 1),
-            modifierFlags = event.modifierFlags
-        )
-    }
-
-    private fun handlePointerUpAt(
-        session: MacosWindowSession,
-        x: Float,
-        y: Float,
-        button: Int,
-        clickCount: Int = 1,
-        modifierFlags: ULong = 0UL
-    ) {
-        session.lastMouseX = x
-        session.lastMouseY = y
-        notifyStageActivityIfInside(session, x, y)
-
-        val pressed = session.pressedRegion
-        val prevPressedWidget = session.pressedWidget
-        session.pressedRegion = null
-        session.pressedWidget = null
-
-        val hitNow = findTopHitRegion(session, x, y)
-        val ptrEvent = buildPointerEventFromFlags(modifierFlags, x, y, button = button, buttonsMask = 0, clickCount = clickCount)
-
-        val swallowedUp = DesktopNativeWidget.interceptPopupPointerUp(x, y, hitNow?.widget)
-        GenericUiThreading.runOnLogic {
-            if (pressed != null) {
-                val inside = pressed.contains(x.roundToInt(), y.roundToInt())
-                pressed.onRelease?.invoke(x - pressed.left, y - pressed.top, x, y, inside)
-            }
-            val wasDragging = PointerDragManager.notifyGlobalPointerUp(ptrEvent)
-            dispatchWidgetPointerUp(pressed?.widget ?: hitNow?.widget, ptrEvent)
-
-            if (!swallowedUp && button == 0) {
-                val swallowedClick = DesktopNativeWidget.interceptPopupClick(x, y, hitNow?.widget)
-                if (!swallowedClick && pressed != null && hitNow?.widget === pressed.widget) {
-                    if (clickCount >= 2 && pressed.onDoubleClick != null) {
-                        pressed.onDoubleClick.invoke()
-                    } else if (!wasDragging || pressed.onDrag == null) {
-                        pressed.onClick?.invoke()
-                    }
                 }
             }
-        }
-        updateSessionHoverWithFlags(session, x, y, modifierFlags)
-        val stageLocalRelease = !swallowedUp &&
-            (prevPressedWidget == null || isWidgetInsideStage(session, prevPressedWidget)) &&
-            (hitNow?.widget == null || isWidgetInsideStage(session, hitNow.widget)) &&
-            (prevPressedWidget != null || hitNow?.widget != null)
-        if (stageLocalRelease) {
-            invalidateSessionStageOnly(session)
-        } else {
-            invalidateSessionWindow(session)
-        }
-    }
-
-    internal fun onMouseMoved(windowKey: Long, event: NSEvent) {
-        val session = sessions[windowKey] ?: return
-        val (x, y) = toViewCoords(session, event)
-        handlePointerMovedAt(session, x, y, event.modifierFlags)
-    }
-
-    private fun handlePointerMovedAt(
-        session: MacosWindowSession,
-        x: Float,
-        y: Float,
-        modifierFlags: ULong = 0UL
-    ) {
-        val moved = abs(x - session.lastMouseX) > 0.5f || abs(y - session.lastMouseY) > 0.5f
-        session.lastMouseX = x
-        session.lastMouseY = y
-        session.isPointerInside = true
-        if (moved) {
-            notifyStageActivityIfInside(session, x, y)
-        }
-        updateSessionHoverWithFlags(session, x, y, modifierFlags)
-    }
-
-    internal fun onMouseEntered(windowKey: Long, event: NSEvent) {
-        val session = sessions[windowKey] ?: return
-        session.isPointerInside = true
-        val (x, y) = toViewCoords(session, event)
-        session.lastMouseX = x
-        session.lastMouseY = y
-        notifyStageActivityIfInside(session, x, y)
-        updateSessionHoverWithFlags(session, x, y, event.modifierFlags)
-    }
-
-    internal fun onMouseExited(windowKey: Long) {
-        val session = sessions[windowKey] ?: return
-        session.isPointerInside = false
-        if (session.isStageCursorHidden) {
-            NSCursor.unhide()
-            session.isStageCursorHidden = false
-        }
-        val prevHovered = session.hoveredWidget
-        if (prevHovered != null) {
-            session.hoveredRegion = null
-            session.hoveredWidget = null
-            val exitEvt = PointerEvent(x = session.lastMouseX, y = session.lastMouseY)
-            GenericUiThreading.runOnLogic {
-                dispatchAncestorHoverTransition(prevHovered, null, exitEvt)
-            }
-            if (isWidgetInsideStage(session, prevHovered)) {
-                invalidateSessionStageOnly(session)
-            } else {
-                invalidateSessionWindow(session)
-            }
-        }
-        if (session.lastAppliedCursorKey != "arrow") {
-            session.lastAppliedCursorKey = "arrow"
-            NSCursor.arrowCursor.set()
-        }
-    }
-
-    internal fun onScrollWheel(windowKey: Long, event: NSEvent) {
-        val session = sessions[windowKey] ?: return
-        val (x, y) = toViewCoords(session, event)
-        val rawDy = event.scrollingDeltaY
-        val deltaPx = if (event.hasPreciseScrollingDeltas) {
-            (-rawDy).toFloat()
-        } else {
-            (-rawDy * 28.0).toFloat()
-        }
-        handleScrollWheelAt(session, x, y, deltaPx)
-    }
-
-    private fun handleScrollWheelAt(
-        session: MacosWindowSession,
-        x: Float,
-        y: Float,
-        deltaPx: Float
-    ) {
-        notifyStageActivityIfInside(session, x, y)
-        if (abs(deltaPx) < 0.05f) return
-
-        val xi = x.roundToInt()
-        val yi = y.roundToInt()
-        val regions = session.scrollRegions
-        for (i in regions.indices.reversed()) {
-            val r = regions[i]
-            if (r.contains(xi, yi)) {
-                var consumed = false
-                GenericUiThreading.runOnLogic {
-                    consumed = r.onScrollBy(deltaPx)
-                }
-                if (consumed) {
-                    if (isWidgetInsideStage(session, r.widget)) {
-                        invalidateSessionStageOnly(session)
-                    } else {
-                        invalidateSessionWindow(session)
-                    }
-                    return
+            WindowState.NORMAL -> {
+                if (session.nsWindow.isMiniaturized()) session.nsWindow.deminiaturize(null)
+                if (hostWin != null) {
+                    hostWin.setMaximized(false)
+                } else if (session.nsWindow.isZoomed()) {
+                    session.nsWindow.zoom(null)
                 }
             }
+            WindowState.FULLSCREEN -> syncFullscreen(windowImpl, true)
         }
     }
 
-    private fun updateSessionHoverWithFlags(
+    private fun findSessionByWindow(win: NSWindow?): MacosWindowSession? {
+        if (win == null) return null
+        return sessions.values.firstOrNull { it.nsWindow === win }
+    }
+
+    internal fun recordLeftMouseDownEvent(win: NSWindow?, event: NSEvent) {
+        findSessionByWindow(win)?.lastLeftMouseDownEvent = event
+    }
+
+    internal fun clearLeftMouseDownEvent(win: NSWindow?) {
+        findSessionByWindow(win)?.lastLeftMouseDownEvent = null
+    }
+
+    internal fun hasRecordedLeftMouseDownEvent(win: NSWindow?): Boolean =
+        findSessionByWindow(win)?.lastLeftMouseDownEvent != null
+
+    internal fun isNativeTitleBarHoverPinned(win: NSWindow?): Boolean =
+        findSessionByWindow(win)?.nativeTitleBarHoverPinned == true
+
+    internal fun resolveSystemMoveDragEventForWindow(
+        win: NSWindow?,
+        currentEvent: NSEvent? = NSApplication.sharedApplication.currentEvent
+    ): NSEvent? = findSessionByWindow(win)?.let { resolveSystemMoveDragEvent(it, currentEvent) }
+
+    internal fun resolveSystemMoveDragEvent(
         session: MacosWindowSession,
-        x: Float,
-        y: Float,
-        modifierFlags: ULong = 0UL
-    ) {
-        val hit = findTopHitRegion(session, x, y)
-        val nextWidget = hit?.widget
-        val prevWidget = session.hoveredWidget
-        session.hoveredRegion = hit
-
-        if (nextWidget !== prevWidget) {
-            session.hoveredWidget = nextWidget
-            val ptrEvt = buildPointerEventFromFlags(modifierFlags, x, y, button = 0, buttonsMask = 0, clickCount = 0)
-            GenericUiThreading.runOnLogic {
-                dispatchAncestorHoverTransition(prevWidget, nextWidget, ptrEvt)
-            }
-            val stageOnlyHover = (prevWidget == null || isWidgetInsideStage(session, prevWidget)) &&
-                (nextWidget == null || isWidgetInsideStage(session, nextWidget))
-            if (stageOnlyHover) {
-                invalidateSessionStageOnly(session)
-            } else {
-                invalidateSessionWindow(session)
-            }
-        } else if (nextWidget != null) {
-            val ptrEvt = buildPointerEventFromFlags(modifierFlags, x, y, button = 0, buttonsMask = 0, clickCount = 0)
-            GenericUiThreading.runOnLogic {
-                dispatchWidgetPointerMove(nextWidget, ptrEvt)
+        currentEvent: NSEvent? = NSApplication.sharedApplication.currentEvent
+    ): NSEvent? {
+        if (currentEvent != null &&
+            currentEvent.type == NSEventTypeLeftMouseDown &&
+            currentEvent.window === session.nsWindow
+        ) {
+            return currentEvent
+        }
+        session.lastLeftMouseDownEvent?.let { recorded ->
+            if (recorded.type == NSEventTypeLeftMouseDown && recorded.window === session.nsWindow) {
+                return recorded
             }
         }
-
-        // Enforce Zero Default Tooltips (AGENTS.md §12): only set toolTip when explicitly assigned
-        val explicitTip = hit?.tooltip?.takeIf { it.isNotEmpty() }
-        if (session.canvasView.toolTip != explicitTip) {
-            session.canvasView.toolTip = explicitTip
-        }
-
-        applyCursorForRegion(session, hit)
-    }
-
-    private fun dispatchAncestorHoverTransition(
-        prevWidget: DesktopNativeWidget?,
-        nextWidget: DesktopNativeWidget?,
-        event: PointerEvent
-    ) {
-        val nextAncestors = HashSet<DesktopNativeWidget>(12)
-        var curNext = nextWidget
-        while (curNext != null) {
-            nextAncestors.add(curNext)
-            curNext = curNext.parentWidget
-        }
-
-        val prevAncestors = HashSet<DesktopNativeWidget>(12)
-        var curPrev = prevWidget
-        while (curPrev != null) {
-            prevAncestors.add(curPrev)
-            if (curPrev !in nextAncestors) {
-                (curPrev.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>)?.dispatchPointerLeave(event)
-            }
-            curPrev = curPrev.parentWidget
-        }
-
-        val entered = ArrayList<DesktopNativeWidget>(8)
-        curNext = nextWidget
-        while (curNext != null) {
-            if (curNext !in prevAncestors) {
-                entered.add(curNext)
-            }
-            curNext = curNext.parentWidget
-        }
-        for (i in entered.indices.reversed()) {
-            (entered[i].attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>)?.dispatchPointerEnter(event)
-        }
-    }
-
-    private fun updateActiveCursor() {
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !NSThread.isMainThread) {
-            dispatch_async(dispatch_get_main_queue()) { updateActiveCursor() }
-            return
-        }
-        val key = activeKeyWindowId ?: return
-        val session = sessions[key] ?: return
-        applyCursorForRegion(session, session.hoveredRegion)
-    }
-
-    private fun applyCursorForRegion(session: MacosWindowSession, region: MacosHitRegion?) {
-        if (session.isStageCursorHidden) return
-        val rawCss = region?.cursorCss ?: (region?.widget?.attributes?.get("cursor") as? String)
-        val customCursor = region?.widget?.attributes?.get("customCursor") as? CssCustomCursor
-        val (cursorKey, cursor) = MacosCursorTranslator.resolveCursor(
-            rawCss = rawCss,
-            customCursor = customCursor,
-            isTextInput = region?.isTextInput == true
-        )
-        if (session.lastAppliedCursorKey != cursorKey) {
-            session.lastAppliedCursorKey = cursorKey
-            session.canvasView.activeCursor = cursor
-            session.nsWindow.invalidateCursorRectsForView(session.canvasView)
-            cursor.set()
-        }
-    }
-
-    private fun notifyStageActivityIfInside(session: MacosWindowSession, x: Float, y: Float) {
-        val stage = session.renderedStageBounds ?: return
-        if (stage.contains(x.roundToInt(), y.roundToInt())) {
-            session.lastStageActivityTimeMs = monotonicTimeMs()
-            if (session.isStageCursorHidden) {
-                NSCursor.unhide()
-                session.isStageCursorHidden = false
-            }
-            if (session.overlayHudAlpha < 1f) {
-                invalidateSessionStageOnly(session)
-            }
-        }
-    }
-
-    private fun findTopHitRegion(session: MacosWindowSession, x: Float, y: Float): MacosHitRegion? {
-        val xi = x.roundToInt()
-        val yi = y.roundToInt()
-        val list = session.hitRegions
-        for (i in list.indices.reversed()) {
-            val r = list[i]
-            if (r.contains(xi, yi)) return r
+        if (currentEvent != null &&
+            currentEvent.type == NSEventTypeLeftMouseDragged &&
+            currentEvent.window === session.nsWindow
+        ) {
+            return currentEvent
         }
         return null
     }
 
-    private fun hasTopNavbar(windowImpl: MacosWindowNativeImpl): Boolean {
-        val explicit = (windowImpl.nativeWidget.attributes["navBar"] as? DesktopBaseNativeImpl<*>)?.nativeWidget
-        if (explicit != null && explicit.visible && !explicit.disposed) return true
-        return MacosWorkspaceLayoutRenderUtil.hasTopNavbarInSubtree(windowImpl.nativeWidget)
-    }
-
-    private fun toViewCoords(session: MacosWindowSession, event: NSEvent): Pair<Float, Float> {
-        val pt = session.canvasView.convertPoint(event.locationInWindow, fromView = null)
-        return pt.useContents { x.toFloat() to y.toFloat() }
-    }
-
-    private fun safeClickCount(event: NSEvent, defaultCount: Int = 0): Int {
-        return when (event.type) {
-            NSEventTypeLeftMouseDown,
-            NSEventTypeLeftMouseUp,
-            NSEventTypeRightMouseDown,
-            NSEventTypeRightMouseUp,
-            NSEventTypeOtherMouseDown,
-            NSEventTypeOtherMouseUp,
-            NSEventTypeLeftMouseDragged,
-            NSEventTypeRightMouseDragged,
-            NSEventTypeOtherMouseDragged -> event.clickCount.toInt().coerceAtLeast(1)
-            else -> defaultCount
+    internal fun performWindowDragWithCursorLock(win: NSWindow, event: NSEvent) {
+        val dragSession = PointerDragManager.startWindowMoveDrag(lockedCursor = CssCursor.DEFAULT)
+        try {
+            win.performWindowDragWithEvent(event)
+        } finally {
+            clearLeftMouseDownEvent(win)
+            dragSession.dispose()
+            refreshActiveCursorsNow()
         }
     }
 
-    private fun buildPointerEventFromFlags(
-        flags: ULong,
-        x: Float,
-        y: Float,
-        button: Int,
-        buttonsMask: Int,
-        clickCount: Int
-    ): PointerEvent {
-        return PointerEvent(
-            x = x,
-            y = y,
-            screenX = x,
-            screenY = y,
-            button = button,
-            buttonsMask = buttonsMask,
-            shiftKey = (flags and NSEventModifierFlagShift) != 0UL,
-            ctrlKey = (flags and NSEventModifierFlagControl) != 0UL,
-            altKey = (flags and NSEventModifierFlagOption) != 0UL,
-            metaKey = (flags and NSEventModifierFlagCommand) != 0UL,
-            clickCount = clickCount
+    fun startSystemMove(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        val dragEvent = resolveSystemMoveDragEvent(session) ?: return@onMainOrDefer
+        performWindowDragWithCursorLock(session.nsWindow, dragEvent)
+    }
+
+    fun syncFullscreen(windowImpl: MacosWindowNativeImpl, fullscreen: Boolean) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        if (session.isClosing) return@onMainOrDefer
+        val currentlyFullscreen = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0uL
+        if (fullscreen != currentlyFullscreen) {
+            session.nsWindow.toggleFullScreen(null)
+        }
+        session.needsRelayout = true
+        session.layoutWindowTree(force = true)
+    }
+
+    fun syncMenuBar(windowImpl: MacosWindowNativeImpl, menuBarImpl: MenuBarNativeImpl<*>?) = MacosAppKitDispatch.onMainOrDefer {
+        val desktopMenuBar = menuBarImpl as? com.nexustools.genericui.desktop.shell.DesktopMenuBarNativeImpl<*>
+        val appTitle = windowImpl.getTitle().ifBlank { "GenericUI" }
+        MacosMenuBarBridge.installMainMenu(appTitle, desktopMenuBar)
+    }
+
+    private fun scheduleDeferredSquareCornerRefresh(session: MacosWindowSession) {
+        val windowKey = session.windowKey
+        val refresh: () -> Unit = {
+            val activeSession = sessions[windowKey]
+            val activeWin = activeSession?.windowImpl
+            if (activeSession != null && activeWin != null &&
+                !activeSession.isClosing && activeSession.isShown && !activeSession.activeFullscreen
+            ) {
+                (activeSession.nsWindow as? MacosHostWindow)?.syncSquareWindowCorners(
+                    enabled = activeWin.isUndecorated() && !activeWin.isToolModalWindow,
+                    forceRefresh = true
+                )
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), refresh)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60_000_000L), dispatch_get_main_queue(), refresh)
+    }
+
+    fun syncWindowVisibility(windowImpl: MacosWindowNativeImpl, visible: Boolean) = runOnMainSync {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@runOnMainSync
+        if (visible) {
+            session.nsWindow.makeKeyAndOrderFront(null)
+            session.isShown = true
+            (session.nsWindow as? MacosHostWindow)?.syncSquareWindowCorners(
+                enabled = windowImpl.isUndecorated() && !session.activeFullscreen && !windowImpl.isToolModalWindow,
+                forceRefresh = true
+            )
+            scheduleDeferredSquareCornerRefresh(session)
+        } else {
+            session.nsWindow.orderOut(null)
+            session.isShown = false
+        }
+        syncActivationPolicyForCurrentState()
+    }
+
+    fun syncWindowOpacity(windowImpl: MacosWindowNativeImpl, opacity: Float) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        session.nsWindow.setAlphaValue(opacity.coerceIn(0f, 1f).toDouble())
+    }
+
+    fun bringWindowToFront(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val session = sessions[windowImpl.nativeWidget.nativePointer] ?: return@onMainOrDefer
+        session.nsWindow.makeKeyAndOrderFront(null)
+        if (!shouldSuppressDockIconForTestProcess()) {
+            NSApplication.sharedApplication.activateIgnoringOtherApps(true)
+        }
+        activeKeyWindowId = session.windowKey
+    }
+
+    private fun clearSessionRootViewCallbacks(session: MacosWindowSession) {
+        val rv = session.rootView
+        rv.onNeedsRelayout = null
+        rv.onUndecoratedEdgeMouseDown = null
+        rv.onUndecoratedEdgeMouseDragged = null
+        rv.onUndecoratedEdgeMouseUp = null
+        rv.onWindowMouseMoved = null
+        rv.onWindowMouseExited = null
+        rv.onWindowKeyDown = null
+        rv.onWindowKeyUp = null
+    }
+
+    fun onWindowClosed(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
+        val key = windowImpl.nativeWidget.nativePointer
+        val session = sessions.remove(key) ?: return@onMainOrDefer
+        session.isClosing = true
+        session.isShown = false
+        session.lastLeftMouseDownEvent = null
+        resetUndecoratedResizeState(session)
+        (session.nsWindow as? MacosHostWindow)?.let { hostWin ->
+            hostWin.isClosingWindow = true
+            hostWin.onMaximizedStateChanged = null
+        }
+        val ownerNsWin = session.nsWindow.parentWindow
+            ?: session.ownerWindowKey?.let { sessions[it]?.nsWindow }
+        ownerNsWin?.removeChildWindow(session.nsWindow)
+        clearSessionRootViewCallbacks(session)
+        (windowImpl.nativeWidget as? MacosViewHandle)?.let { handle ->
+            handle.nsWindow = null
+            handle.nsView = null
+            handle.hostInvalidateHook = null
+            handle.hostRelayoutHook = null
+        }
+        session.nsWindow.setDelegate(null)
+        session.nsWindow.orderOut(null)
+        session.nsWindow.close()
+        if (activeKeyWindowId == key) {
+            activeKeyWindowId = sessions.keys.firstOrNull()
+        }
+        syncActivationPolicyForCurrentState()
+        if (!hasAnyRemainingVisiblePresentationWindow() && eventLoopRunning) {
+            terminateEventLoop()
+        }
+    }
+
+    internal fun shouldSuppressDockIconForTestProcess(): Boolean {
+        if (visualTestMode) return true
+        val info = NSProcessInfo.processInfo
+        val name = info.processName
+        if (name == "test.kexe" || name.endsWith("Test.kexe")) return true
+        for (arg in info.arguments) {
+            val s = arg as? String ?: continue
+            if (s.startsWith("--ktest_")) return true
+        }
+        return false
+    }
+
+    internal fun computeProductionActivationPolicy(
+        hasVisibleWindow: Boolean = hasAnyRemainingVisiblePresentationWindow()
+    ): NSApplicationActivationPolicy = if (hasVisibleWindow) {
+        NSApplicationActivationPolicy.NSApplicationActivationPolicyRegular
+    } else {
+        NSApplicationActivationPolicy.NSApplicationActivationPolicyAccessory
+    }
+
+    internal fun syncActivationPolicyForCurrentState() {
+        val app = NSApplication.sharedApplication
+        val desiredPolicy = if (shouldSuppressDockIconForTestProcess()) {
+            NSApplicationActivationPolicy.NSApplicationActivationPolicyAccessory
+        } else {
+            computeProductionActivationPolicy()
+        }
+        if (app.activationPolicy() != desiredPolicy) {
+            app.setActivationPolicy(desiredPolicy)
+        }
+    }
+
+    internal fun onTrayDisposed(hasRemainingActiveTrays: Boolean) {
+        syncActivationPolicyForCurrentState()
+        if (!hasRemainingActiveTrays && !hasAnyRemainingVisiblePresentationWindow()) {
+            terminateEventLoop()
+        }
+    }
+
+    private fun hasAnyRemainingVisiblePresentationWindow(): Boolean =
+        sessions.values.any { it.isShown && !it.isClosing && it.nsWindow.isVisible() }
+
+    internal fun hasAnyVisiblePresentationWindowForTest(): Boolean =
+        hasAnyRemainingVisiblePresentationWindow()
+
+    // -------------------------------------------------------------------------
+    // Window Delegate Notifications
+    // -------------------------------------------------------------------------
+
+    internal fun onNativeWindowShouldClose(windowKey: Long, isDialog: Boolean): Boolean {
+        val session = sessions[windowKey] ?: return true
+        val dock = session.dockWindowImpl
+        if (dock != null) {
+            dock.hideDockWindow()
+            return false
+        }
+        val dlg = session.dialogImpl
+        if (dlg != null) {
+            dlg.closeDialog()
+            return false
+        }
+        val win = session.windowImpl ?: return true
+        win.closeWindow()
+        return false
+    }
+
+    internal fun onNativeWindowWillClose(windowKey: Long, isDialog: Boolean) {
+        val session = sessions.remove(windowKey) ?: return
+        session.isClosing = true
+        session.isShown = false
+        resetUndecoratedResizeState(session)
+        (session.nsWindow as? MacosHostWindow)?.let { hostWin ->
+            hostWin.isClosingWindow = true
+            hostWin.onMaximizedStateChanged = null
+        }
+        val ownerNsWin = session.nsWindow.parentWindow
+            ?: session.ownerWindowKey?.let { sessions[it]?.nsWindow }
+        ownerNsWin?.removeChildWindow(session.nsWindow)
+        clearSessionRootViewCallbacks(session)
+        session.nsWindow.setDelegate(null)
+        session.nsWindow.orderOut(null)
+        if (activeKeyWindowId == windowKey) {
+            activeKeyWindowId = sessions.keys.firstOrNull()
+        }
+        val dlg = session.dialogImpl
+        val win = session.windowImpl
+        (dlg?.nativeWidget as? MacosViewHandle ?: win?.nativeWidget as? MacosViewHandle)?.let { handle ->
+            handle.nsWindow = null
+            handle.nsView = null
+            handle.hostInvalidateHook = null
+            handle.hostRelayoutHook = null
+        }
+        if (dlg != null && dlg.isVisible()) {
+            dlg.closeDialog()
+        } else if (win != null && !win.isDisposed) {
+            win.closeWindow()
+        }
+        syncActivationPolicyForCurrentState()
+        if (!hasAnyRemainingVisiblePresentationWindow() && eventLoopRunning) {
+            terminateEventLoop()
+        }
+    }
+
+    internal fun onNativeWindowDidResize(windowKey: Long, isDialog: Boolean) {
+        val session = sessions[windowKey] ?: return
+        if (syncingChromeSessionKey == windowKey || session.isClosing || session.isSyncingSize) return
+        val hostWin = session.nsWindow as? MacosHostWindow
+        val (w, h) = session.currentClientSize()
+        // Do not overwrite Window.lastWindowedNormalSize or fight AppKit aspect-ratio enforcement
+        // during fullscreen transitions, native zoom animations, maximize animations, or live drag resize;
+        // completion callbacks dispatch the settled size once done.
+        val deferOsResizeCallback = hostWin?.isTransitioningFullscreen == true ||
+            hostWin?.isAnimatingMaximize == true ||
+            hostWin?.isPerformingNativeZoom == true ||
+            session.rootView.isInNativeLiveResize
+        if (!deferOsResizeCallback) {
+            session.windowImpl?.notifyHostResizedFromOs(
+                widthPx = w,
+                heightPx = h,
+                fullscreenNow = session.activeFullscreen,
+                maximizedNow = session.nsWindow.isZoomed()
+            )
+        }
+        session.layoutWindowTree(force = false)
+    }
+
+    internal fun onNativeWindowDidMove(windowKey: Long, isDialog: Boolean) {
+        val session = sessions[windowKey] ?: return
+        if (session.isClosing || session.isSyncingSize) return
+        val hostWin = session.nsWindow as? MacosHostWindow
+        if (hostWin?.isTransitioningFullscreen == true ||
+            session.activeFullscreen ||
+            hostWin?.isAnimatingMaximize == true ||
+            hostWin?.isPerformingNativeZoom == true ||
+            session.nsWindow.isZoomed()
+        ) {
+            return
+        }
+        val (topLeftX, topLeftY) = cocoaFrameToDesktopTopLeft(session.nsWindow.frame)
+        session.windowImpl?.notifyHostMovedFromOs(topLeftX, topLeftY)
+    }
+
+    internal fun onNativeWindowShouldZoom(windowKey: Long, isDialog: Boolean, window: NSWindow) {
+        val session = sessions[windowKey] ?: return
+        session.needsRelayout = true
+    }
+
+    internal fun onNativeWindowMiniaturized(windowKey: Long, isDialog: Boolean, miniaturized: Boolean) {
+        val session = sessions[windowKey] ?: return
+        val win = session.windowImpl ?: return
+        win.notifyHostMiniaturizedFromOs(miniaturized = miniaturized)
+        if (!miniaturized) {
+            (session.nsWindow as? MacosHostWindow)?.restoreUndecoratedStyleMaskIfNeeded()
+            syncWindowProperties(win)
+        }
+    }
+
+    internal fun onNativeWindowFocusChanged(windowKey: Long, isDialog: Boolean, focused: Boolean) {
+        val session = sessions[windowKey] ?: return
+        if (session.isClosing) return
+        if (focused) {
+            activeKeyWindowId = windowKey
+        } else {
+            resetUndecoratedResizeState(session)
+            val forcedKeyInTest = visualTestMode &&
+                (session.nsWindow as? MacosHostWindow)?.forceActiveKeyAppearanceForCapture == true
+            if (!forcedKeyInTest) {
+                session.rootView.clearLastAppliedCursor()
+                if (MacosCursorTranslator.isHiddenCursor(NSCursor.currentCursor)) {
+                    NSCursor.arrowCursor.set()
+                }
+            }
+        }
+        if (session.lastDispatchedFocus == focused) return
+        session.lastDispatchedFocus = focused
+        session.windowImpl?.dispatchFocusChanged(focused)
+    }
+
+    internal fun onNativeWindowFullscreenWillChange(windowKey: Long, isDialog: Boolean, enteringFullscreen: Boolean) {
+        val session = sessions[windowKey] ?: return
+        val win = session.windowImpl ?: return
+        syncingChromeSessionKey = windowKey
+        try {
+            clearNativeOverlayTitleBarHoverPin(session)
+            val isNativeOverlay = (session.nsWindow as? MacosHostWindow)?.isNativeOverlayTitleBarHostWindow == true
+            val isUndec = !isNativeOverlay && (session.preFullscreenWasUndecorated || win.isUndecorated())
+            if (enteringFullscreen) {
+                session.preFullscreenWasUndecorated = isUndec
+                session.rootView.isUndecoratedChrome = false
+                resetUndecoratedResizeState(session)
+                session.nsWindow.invalidateCursorRectsForView(session.rootView)
+            }
+            (session.nsWindow as? MacosHostWindow)?.let { hostWin ->
+                hostWin.invalidateNativeOverlayTitleBarChromeCache()
+                if (enteringFullscreen) {
+                    hostWin.syncSquareWindowCorners(enabled = false)
+                }
+                if (isUndec && enteringFullscreen &&
+                    !hostWin.isTransitioningFullscreen &&
+                    (hostWin.styleMask and NSWindowStyleMaskTitled) == 0uL
+                ) {
+                    val savedFrame = hostWin.frame
+                    hostWin.styleMask = UNDECORATED_TRANSITION_STYLE_MASK
+                    hostWin.setFrame(savedFrame, display = false)
+                }
+                hostWin.markFullscreenTransitionWillChange()
+                if (enteringFullscreen) {
+                    hostWin.applyFullscreenMenuBarHoverChrome(win.getTitle())
+                    hostWin.syncContentViewFillsWindowFrame()
+                } else if (isUndec) {
+                    hostWin.applyUndecoratedChromeAttributes()
+                    hostWin.hideStandardWindowButtons()
+                    hostWin.syncContentViewFillsWindowFrame()
+                }
+            }
+        } finally {
+            syncingChromeSessionKey = 0L
+        }
+    }
+
+    internal fun onNativeWindowFullscreenFailed(windowKey: Long, isDialog: Boolean) {
+        val session = sessions[windowKey] ?: return
+        val win = session.windowImpl ?: return
+        val inFullscreenNow = (session.nsWindow.styleMask and NSWindowStyleMaskFullScreen) != 0uL
+        session.activeFullscreen = inFullscreenNow
+        clearNativeOverlayTitleBarHoverPin(session)
+        val hostWin = session.nsWindow as? MacosHostWindow
+        hostWin?.onFullscreenTransitionFinished(
+            succeeded = false,
+            inFullscreenNow = inFullscreenNow
         )
-    }
-
-    private fun dispatchWidgetPointerDown(widget: DesktopNativeWidget?, event: PointerEvent) {
-        var cur = widget
-        while (cur != null) {
-            val impl = cur.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
-            if (impl != null) {
-                val b = cur.bounds
-                val local = event.copy(x = event.screenX - b.x, y = event.screenY - b.y)
-                impl.dispatchPointerDown(local)
-                break
-            }
-            cur = cur.parentWidget
-        }
-    }
-
-    private fun dispatchWidgetPointerMove(widget: DesktopNativeWidget?, event: PointerEvent) {
-        var cur = widget
-        while (cur != null) {
-            val impl = cur.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
-            if (impl != null) {
-                val b = cur.bounds
-                val local = event.copy(x = event.screenX - b.x, y = event.screenY - b.y)
-                impl.dispatchPointerMove(local)
-                break
-            }
-            cur = cur.parentWidget
-        }
-    }
-
-    private fun dispatchWidgetPointerUp(widget: DesktopNativeWidget?, event: PointerEvent) {
-        var cur = widget
-        while (cur != null) {
-            val impl = cur.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
-            if (impl != null) {
-                val b = cur.bounds
-                val local = event.copy(x = event.screenX - b.x, y = event.screenY - b.y)
-                impl.dispatchPointerUp(local)
-                break
-            }
-            cur = cur.parentWidget
-        }
-    }
-
-    // =========================================================================
-    // Focus, Keyboard, Clipboard, & Native Select/Dropdown Popups
-    // =========================================================================
-
-    private fun focusTextInput(inputImpl: DesktopTextInputNativeImpl<DesktopNativeWidget>) {
-        if (!inputImpl.isEnabled()) return
-        val session = findSessionContainingWidget(inputImpl.nativeWidget) ?: activeSession() ?: return
-        if (session.focusedWidget !== inputImpl.nativeWidget) {
-            clearFocusedWidgetInSession(session)
-            session.focusedWidget = inputImpl.nativeWidget
-            session.selectAllPendingReplace = false
-            GenericUiThreading.runOnLogic {
-                inputImpl.setFocusedState(true)
-            }
-        }
-        session.nsWindow.makeFirstResponder(session.canvasView)
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    private fun clearFocusedWidgetInSession(session: MacosWindowSession) {
-        val prev = session.focusedWidget ?: return
-        session.focusedWidget = null
-        session.selectAllPendingReplace = false
-        val prevImpl = prev.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
-        if (prevImpl != null) {
-            GenericUiThreading.runOnLogic {
-                prevImpl.setFocusedState(false)
-            }
-        }
-    }
-
-    private fun openSelectPopup(selectImpl: DesktopSelectNativeImpl<DesktopNativeWidget>, bounds: Rect) {
-        if (!selectImpl.isEnabled()) return
-        val session = findSessionContainingWidget(selectImpl.nativeWidget) ?: activeSession() ?: return
-        dispatch_async(dispatch_get_main_queue()) {
-            MacosMenuBarBridge.popUpSelectMenu(
-                options = selectImpl.getOptions(),
-                selectedValue = selectImpl.getSelectedValue(),
-                anchorBounds = bounds,
-                inView = session.canvasView
-            ) { selectedValue ->
-                selectImpl.notifyUserSelectionChanged(selectedValue)
-                requestRedraw()
-            }
-        }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun openDropdownPopup(dropdownImpl: DesktopDropdownNativeImpl<DesktopNativeWidget>, bounds: Rect) {
-        if (!dropdownImpl.isEnabled()) return
-        val session = findSessionContainingWidget(dropdownImpl.nativeWidget) ?: activeSession() ?: return
-        val items: List<Pair<String, String>> = when (dropdownImpl) {
-            is MacosDropdownNativeImpl -> dropdownImpl.getDropdownItems()
-            else -> (dropdownImpl.nativeWidget.attributes["items"] as? List<Pair<String, String>>) ?: emptyList()
-        }
-        dispatch_async(dispatch_get_main_queue()) {
-            MacosMenuBarBridge.popUpDropdownMenu(
-                items = items,
-                anchorBounds = bounds,
-                inView = session.canvasView
-            ) { itemId ->
-                if (dropdownImpl is MacosDropdownNativeImpl) {
-                    dropdownImpl.notifyUserItemSelected(itemId)
-                }
-                requestRedraw()
-            }
-        }
-    }
-
-    internal fun onPerformKeyEquivalent(windowKey: Long, event: NSEvent): Boolean {
-        val flags = event.modifierFlags
-        val cmd = (flags and NSEventModifierFlagCommand) != 0UL
-        if (!cmd) return false
-        val session = sessions[windowKey] ?: return false
-        val inputImpl = focusedTextInput(session)
-        val ch = event.charactersIgnoringModifiers?.lowercase() ?: return false
-        if (inputImpl != null) {
-            when (ch) {
-                "v" -> {
-                    performTextPaste()
-                    return true
-                }
-                "c" -> {
-                    performTextCopy()
-                    return true
-                }
-                "x" -> {
-                    performTextCut()
-                    return true
-                }
-                "a" -> {
-                    performTextSelectAll()
-                    return true
-                }
-            }
-        }
-        return false
-    }
-
-    internal fun onKeyDown(windowKey: Long, event: NSEvent) {
-        val session = sessions[windowKey] ?: return
-        session.lastStageActivityTimeMs = monotonicTimeMs()
-        val inputImpl = focusedTextInput(session)
-        val keyEvent = mapNsKeyEvent(event, isTargetTextInput = inputImpl != null)
-
-        if (keyEvent.key == "Escape") {
-            if (inputImpl != null) {
-                clearFocusedWidgetInSession(session)
-                session.canvasView.setNeedsDisplay(true)
-                return
-            }
-            if (session.dialogImpl != null) {
-                val dlg = session.dialogImpl
-                GenericUiThreading.runOnLogic {
-                    dlg.closeDialog()
-                }
-                return
-            }
-        }
-
-        if (inputImpl != null && !keyEvent.metaKey && !keyEvent.ctrlKey) {
-            if (handleTextInputKeyDown(session, inputImpl, event, keyEvent)) {
-                session.canvasView.setNeedsDisplay(true)
-                return
-            }
-        }
-
-        GenericUiThreading.runOnLogic {
-            session.windowImpl?.dispatchKeyDown(keyEvent)
-            (session.dialogImpl as? DesktopBaseNativeImpl<*>)?.dispatchKeyDown(keyEvent)
-        }
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    internal fun onKeyUp(windowKey: Long, event: NSEvent) {
-        val session = sessions[windowKey] ?: return
-        val inputImpl = focusedTextInput(session)
-        val keyEvent = mapNsKeyEvent(event, isTargetTextInput = inputImpl != null)
-        GenericUiThreading.runOnLogic {
-            session.windowImpl?.dispatchKeyUp(keyEvent)
-            (session.dialogImpl as? DesktopBaseNativeImpl<*>)?.dispatchKeyUp(keyEvent)
-        }
-    }
-
-    private fun handleTextInputKeyDown(
-        session: MacosWindowSession,
-        inputImpl: DesktopTextInputNativeImpl<*>,
-        nsEvent: NSEvent,
-        keyEvent: KeyEvent
-    ): Boolean {
-        if (!inputImpl.isEnabled()) return false
-        if (inputImpl.isReadOnly()) return keyEvent.key != "Tab"
-
-        when (keyEvent.key) {
-            "Backspace", "Delete" -> {
-                val cur = inputImpl.getValue()
-                if (cur.isNotEmpty()) {
-                    val next = if (session.selectAllPendingReplace || nsEvent.modifierFlags and NSEventModifierFlagCommand != 0UL) {
-                        ""
-                    } else {
-                        dropLastCodePoint(cur)
-                    }
-                    session.selectAllPendingReplace = false
-                    GenericUiThreading.runOnLogic {
-                        inputImpl.setValue(next)
-                    }
-                }
-                return true
-            }
-            "Enter" -> {
-                if (inputImpl.isMultiline() && !keyEvent.metaKey && !keyEvent.ctrlKey) {
-                    val base = if (session.selectAllPendingReplace) "" else inputImpl.getValue()
-                    session.selectAllPendingReplace = false
-                    GenericUiThreading.runOnLogic {
-                        inputImpl.setValue("$base\n")
-                    }
-                } else {
-                    session.selectAllPendingReplace = false
-                    GenericUiThreading.runOnLogic {
-                        inputImpl.submitValue()
-                    }
-                }
-                return true
-            }
-            "Tab" -> {
-                cycleTextInputFocus(session, reverse = keyEvent.shiftKey)
-                return true
-            }
-            "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End" -> {
-                session.selectAllPendingReplace = false
-                return true
-            }
-        }
-
-        val chars = nsEvent.characters ?: return false
-        val printable = buildString {
-            for (ch in chars) {
-                val code = ch.code
-                // Skip ASCII control chars and macOS Private Use Area function-key codes (0xF700..0xF8FF)
-                if (code >= 0x20 && code != 0x7F && code !in 0xF700..0xF8FF) {
-                    append(ch)
-                }
-            }
-        }
-        if (printable.isNotEmpty()) {
-            val base = if (session.selectAllPendingReplace) "" else inputImpl.getValue()
-            session.selectAllPendingReplace = false
-            GenericUiThreading.runOnLogic {
-                inputImpl.setValue(base + printable)
-            }
-            return true
-        }
-        return false
-    }
-
-    private fun cycleTextInputFocus(session: MacosWindowSession, reverse: Boolean) {
-        val inputs = session.hitRegions
-            .mapNotNull { it.widget?.attributes?.get("nativeImpl") as? DesktopTextInputNativeImpl<*> }
-            .distinct()
-            .filter { it.isEnabled() && it.isVisible() }
-        if (inputs.isEmpty()) return
-        val curIdx = inputs.indexOfFirst { it.nativeWidget === session.focusedWidget }
-        val nextIdx = if (curIdx < 0) {
-            0
-        } else if (reverse) {
-            (curIdx - 1 + inputs.size) % inputs.size
+        val (w, h) = session.currentClientSize()
+        win.notifyHostResizedFromOs(
+            widthPx = w,
+            heightPx = h,
+            fullscreenNow = inFullscreenNow,
+            maximizedNow = session.nsWindow.isZoomed()
+        )
+        if (!inFullscreenNow) {
+            syncWindowProperties(win)
+            hostWin?.syncSquareWindowCorners(
+                enabled = win.isUndecorated() && !win.isToolModalWindow,
+                forceRefresh = true
+            )
         } else {
-            (curIdx + 1) % inputs.size
+            session.rootView.isUndecoratedChrome = false
+            resetUndecoratedResizeState(session)
+            hostWin?.applyFullscreenMenuBarHoverChrome(win.getTitle())
         }
-        val target = inputs[nextIdx]
-        focusTextInput(target)
+        session.nsWindow.invalidateCursorRectsForView(session.rootView)
+        session.needsRelayout = true
+        session.layoutWindowTree(force = true)
     }
 
-    fun performTextPaste() {
-        val session = activeSession() ?: return
-        val inputImpl = focusedTextInput(session) ?: return
-        if (!inputImpl.isEnabled() || inputImpl.isReadOnly()) return
-        val rawClip = NSPasteboard.generalPasteboard.stringForType(NSPasteboardTypeString) ?: return
-        val sanitized = if (inputImpl.isMultiline()) {
-            rawClip.replace("\r\n", "\n").replace('\r', '\n')
-        } else {
-            rawClip.replace("\r\n", " ").replace('\n', ' ').replace('\r', ' ')
-        }
-        if (sanitized.isEmpty()) return
-        val base = if (session.selectAllPendingReplace) "" else inputImpl.getValue()
-        session.selectAllPendingReplace = false
-        GenericUiThreading.runOnLogic {
-            inputImpl.setValue(base + sanitized)
-        }
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    fun performTextCopy() {
-        val session = activeSession() ?: return
-        val inputImpl = focusedTextInput(session) ?: return
-        if (inputImpl.isPasswordMode()) return
-        val text = inputImpl.getValue()
-        if (text.isEmpty()) return
-        val pb = NSPasteboard.generalPasteboard
-        pb.clearContents()
-        pb.setString(text, forType = NSPasteboardTypeString)
-    }
-
-    fun performTextCut() {
-        val session = activeSession() ?: return
-        val inputImpl = focusedTextInput(session) ?: return
-        if (!inputImpl.isEnabled() || inputImpl.isReadOnly() || inputImpl.isPasswordMode()) return
-        val text = inputImpl.getValue()
-        if (text.isEmpty()) return
-        val pb = NSPasteboard.generalPasteboard
-        pb.clearContents()
-        pb.setString(text, forType = NSPasteboardTypeString)
-        session.selectAllPendingReplace = false
-        GenericUiThreading.runOnLogic {
-            inputImpl.setValue("")
-        }
-        session.canvasView.setNeedsDisplay(true)
-    }
-
-    fun performTextSelectAll() {
-        val session = activeSession() ?: return
-        val inputImpl = focusedTextInput(session) ?: return
-        if (inputImpl.getValue().isNotEmpty()) {
-            session.selectAllPendingReplace = true
-            session.canvasView.setNeedsDisplay(true)
+    internal fun onNativeWindowFullscreenChanged(windowKey: Long, isDialog: Boolean, fullscreen: Boolean) {
+        val session = sessions[windowKey] ?: return
+        val win = session.windowImpl ?: return
+        session.activeFullscreen = fullscreen
+        syncingChromeSessionKey = windowKey
+        try {
+            clearNativeOverlayTitleBarHoverPin(session)
+            val hostWin = session.nsWindow as? MacosHostWindow
+            hostWin?.onFullscreenTransitionFinished(succeeded = true, inFullscreenNow = fullscreen)
+            val (w, h) = session.currentClientSize()
+            win.notifyHostResizedFromOs(
+                widthPx = w,
+                heightPx = h,
+                fullscreenNow = fullscreen,
+                maximizedNow = session.nsWindow.isZoomed()
+            )
+            if (fullscreen) {
+                session.rootView.isUndecoratedChrome = false
+                resetUndecoratedResizeState(session)
+                hostWin?.applyFullscreenMenuBarHoverChrome(win.getTitle())
+                hostWin?.standardWindowButton(platform.AppKit.NSWindowCloseButton)?.superview?.layoutSubtreeIfNeeded()
+            } else {
+                syncWindowProperties(win)
+                hostWin?.syncSquareWindowCorners(
+                    enabled = win.isUndecorated() && !win.isToolModalWindow,
+                    forceRefresh = true
+                )
+                dispatch_async(dispatch_get_main_queue()) {
+                    val activeSession = sessions[windowKey] ?: return@dispatch_async
+                    val activeWin = activeSession.windowImpl ?: return@dispatch_async
+                    if (activeSession.isClosing || activeSession.activeFullscreen) return@dispatch_async
+                    syncWindowProperties(activeWin)
+                    syncNativeOverlayTitleBarForSession(activeSession)
+                    (activeSession.nsWindow as? MacosHostWindow)?.syncSquareWindowCorners(
+                        enabled = activeWin.isUndecorated() && !activeWin.isToolModalWindow,
+                        forceRefresh = true
+                    )
+                    activeSession.needsRelayout = true
+                    activeSession.layoutWindowTree(force = true)
+                }
+            }
+            session.nsWindow.invalidateCursorRectsForView(session.rootView)
+            session.needsRelayout = true
+            session.layoutWindowTree(force = true)
+        } finally {
+            syncingChromeSessionKey = 0L
         }
     }
 
-    private fun focusedTextInput(session: MacosWindowSession): DesktopTextInputNativeImpl<*>? =
-        session.focusedWidget?.attributes?.get("nativeImpl") as? DesktopTextInputNativeImpl<*>
+    // -------------------------------------------------------------------------
+    // VBlank, Display & Frame Metrics
+    // -------------------------------------------------------------------------
 
-    private fun activeSession(): MacosWindowSession? {
-        activeKeyWindowId?.let { sessions[it]?.let { s -> return s } }
-        return sessions.values.lastOrNull()
+    internal fun activeHostWindowForDisplayLink(): NSWindow? = activeSession()?.nsWindow
+
+    private fun dispatchActiveVBlankWidgets(timestampMs: Double? = null) {
+        val active = com.nexustools.genericui.desktop.core.DesktopNativeWidget.activeVBlankWidgetsSnapshot()
+        if (active.isEmpty()) return
+        val ts = timestampMs ?: (platform.QuartzCore.CACurrentMediaTime() * 1000.0)
+        for (w in active) {
+            w.vblankDispatch?.invoke(ts)
+        }
     }
 
-    private fun findSessionContainingWidget(widget: DesktopNativeWidget): MacosWindowSession? {
+    internal fun syncHostVBlankWatcher() {
+        if (!MacosAppKitDispatch.isMainThread()) {
+            MacosAppKitDispatch.onMainOrDefer { syncHostVBlankWatcher() }
+            return
+        }
+        val active = com.nexustools.genericui.desktop.core.DesktopNativeWidget.activeVBlankWidgetsSnapshot()
+        val hasActive = active.isNotEmpty() || sessions.values.any { it.stageViews.isNotEmpty() }
+        val scheduler = com.nexustools.genericui.animation.Animator.activeScheduler
+        if (scheduler is MacosAnimationNativeImpl) {
+            if (hostVBlankWatcherId > 0) {
+                com.nexustools.genericui.animation.Animator.unwatchVBlank(hostVBlankWatcherId)
+                hostVBlankWatcherId = -1
+            }
+            val preferredHz = com.nexustools.genericui.desktop.core.DesktopNativeWidget.resolvePreferredVBlankRateHz()
+            scheduler.setHostSurfaceDemand(active = hasActive, preferredRateHz = preferredHz)
+        } else if (hasActive && hostVBlankWatcherId <= 0) {
+            hostVBlankWatcherId = com.nexustools.genericui.animation.Animator.watchVBlank { _, tsMs, _ ->
+                onAnimatorVBlankTick(tsMs)
+            }
+        } else if (!hasActive && hostVBlankWatcherId > 0) {
+            com.nexustools.genericui.animation.Animator.unwatchVBlank(hostVBlankWatcherId)
+            hostVBlankWatcherId = -1
+        }
+    }
+
+    internal fun onAnimatorVBlankTick(timestampMs: Double? = null) {
+        dispatchActiveVBlankWidgets(timestampMs)
+        flushPendingOverlayRelayout()
+        syncAllNativeOverlayTitleBars()
+        var anyStage = false
         for (session in sessions.values) {
-            val root = session.dialogImpl?.nativeWidget ?: session.windowImpl?.nativeWidget ?: continue
-            if (root.containsNativeWidget(widget)) return session
+            if (session.presentStageSurfaces(forceRefresh = false)) {
+                recordStageOnlyPaint(250L)
+                anyStage = true
+            }
         }
-        return null
+        if (redrawRequested) {
+            invalidateAllWindows(stageOnly = false)
+        } else if (stageRedrawRequested && !anyStage) {
+            invalidateAllWindows(stageOnly = true)
+        }
     }
 
-    private fun dropLastCodePoint(text: String): String {
-        if (text.isEmpty()) return ""
-        if (text.length >= 2 && text[text.length - 1].isLowSurrogate() && text[text.length - 2].isHighSurrogate()) {
-            return text.substring(0, text.length - 2)
+    fun requestRedraw() {
+        redrawRequested = true
+        redisplayOnlyRequested = false
+        if (redrawDispatchScheduled.compareAndSet(0, 1)) {
+            dispatch_async(dispatch_get_main_queue()) {
+                redrawDispatchScheduled.store(0)
+                if (redrawRequested) {
+                    redrawRequested = false
+                    for (session in sessions.values) {
+                        session.needsRelayout = true
+                        session.needsRedisplay = true
+                        flushSessionDisplayNow(session, stageOnly = false)
+                    }
+                }
+            }
         }
-        return text.substring(0, text.length - 1)
     }
 
-    private fun mapNsKeyEvent(event: NSEvent, isTargetTextInput: Boolean): KeyEvent {
-        val code = event.keyCode.toInt()
-        val flags = event.modifierFlags
-        val keyName = when (code) {
-            36, 76 -> "Enter"
-            51 -> "Backspace"
-            117 -> "Delete"
-            53 -> "Escape"
-            48 -> "Tab"
-            49 -> " "
-            123 -> "ArrowLeft"
-            124 -> "ArrowRight"
-            126 -> "ArrowUp"
-            125 -> "ArrowDown"
-            115 -> "Home"
-            119 -> "End"
-            116 -> "PageUp"
-            121 -> "PageDown"
-            122 -> "F1"
-            120 -> "F2"
-            99 -> "F3"
-            118 -> "F4"
-            96 -> "F5"
-            97 -> "F6"
-            98 -> "F7"
-            100 -> "F8"
-            101 -> "F9"
-            109 -> "F10"
-            103 -> "F11"
-            111 -> "F12"
-            else -> event.charactersIgnoringModifiers?.takeIf { it.isNotEmpty() } ?: "Unidentified"
+    fun requestViewportRedisplay() {
+        redisplayOnlyRequested = true
+        for (session in sessions.values) {
+            session.needsRedisplay = true
         }
-        return KeyEvent(
-            key = keyName,
-            code = keyName,
-            keyCode = code,
-            shiftKey = (flags and NSEventModifierFlagShift) != 0UL,
-            ctrlKey = (flags and NSEventModifierFlagControl) != 0UL,
-            altKey = (flags and NSEventModifierFlagOption) != 0UL,
-            metaKey = (flags and NSEventModifierFlagCommand) != 0UL,
-            isRepeat = event.isARepeat(),
-            isTargetTextInput = isTargetTextInput
-        )
+        if (redisplayDispatchScheduled.compareAndSet(0, 1)) {
+            dispatch_async(dispatch_get_main_queue()) {
+                redisplayDispatchScheduled.store(0)
+                if (redisplayOnlyRequested) {
+                    redisplayOnlyRequested = false
+                    for (session in sessions.values) {
+                        if (session.needsRelayout || session.needsRedisplay) {
+                            flushSessionDisplayNow(session, stageOnly = false)
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    // =========================================================================
-    // Visual Test Driver, Screenshot Capture, & Paint Performance Telemetry
-    // =========================================================================
-
-    fun queryClientRect(): Rect {
-        val session = activeSession() ?: return Rect(0, 0, 0, 0)
-        var w = 0
-        var h = 0
-        session.canvasView.bounds.useContents {
-            w = size.width.roundToInt().coerceAtLeast(0)
-            h = size.height.roundToInt().coerceAtLeast(0)
+    fun onUiQueueDrained() {
+        val hasRelayout = redrawRequested || sessions.values.any { it.needsRelayout }
+        if (hasRelayout) {
+            requestRedraw()
+            return
         }
-        return Rect(0, 0, w, h)
+        if (withOverlayRelayoutLock { pendingOverlayRelayoutRoots.isNotEmpty() }) {
+            MacosAppKitDispatch.onMainOrDefer { flushPendingOverlayRelayout() }
+        }
+        val hasRedisplay = redisplayOnlyRequested || sessions.values.any { it.needsRedisplay }
+        if (hasRedisplay) {
+            requestViewportRedisplay()
+            return
+        }
+        val hasStage = stageRedrawRequested || sessions.values.any { it.needsStageOnlyRedisplay }
+        if (hasStage) {
+            requestStageRedraw()
+        }
+    }
+
+    fun requestStageRedraw() {
+        stageRedrawRequested = true
+        if (stageRedrawDispatchScheduled.compareAndSet(0, 1)) {
+            dispatch_async(dispatch_get_main_queue()) {
+                stageRedrawDispatchScheduled.store(0)
+                if (stageRedrawRequested) {
+                    stageRedrawRequested = false
+                    for (session in sessions.values) {
+                        session.needsStageOnlyRedisplay = true
+                        flushSessionDisplayNow(session, stageOnly = true)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resolveTopIsolatedOverlayContainer(
+        widget: DesktopNativeWidget
+    ): com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>? {
+        var highestContainer: com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>? = null
+        var cur: DesktopNativeWidget? = widget
+        while (cur != null && cur.isInsideIsolatedStageSubtree()) {
+            val impl = cur.attributes["nativeImpl"] as? com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>
+            if (impl != null && cur.interactiveSurfaceSpec == null) {
+                highestContainer = impl
+            }
+            cur = cur.parentWidget
+        }
+        return highestContainer
+    }
+
+    fun requestOverlayRelayout(widget: DesktopNativeWidget) {
+        val overlayRoot = resolveTopIsolatedOverlayContainer(widget)
+        if (overlayRoot == null) {
+            requestStageRedraw()
+            return
+        }
+        withOverlayRelayoutLock {
+            pendingOverlayRelayoutRoots.add(overlayRoot)
+        }
+        if (overlayRelayoutDispatchScheduled.compareAndSet(0, 1)) {
+            dispatch_async(dispatch_get_main_queue()) {
+                overlayRelayoutDispatchScheduled.store(0)
+                flushPendingOverlayRelayout()
+            }
+        }
+    }
+
+    private fun flushPendingOverlayRelayout() {
+        val roots = withOverlayRelayoutLock {
+            if (pendingOverlayRelayoutRoots.isEmpty()) return
+            pendingOverlayRelayoutRoots.toList().also {
+                pendingOverlayRelayoutRoots.clear()
+            }
+        }
+        for (overlayRoot in roots) {
+            if (overlayRoot.isDisposed) continue
+            val bounds = overlayRoot.nativeWidget.bounds
+            if (bounds.width > 0 && bounds.height > 0) {
+                overlayRoot.layoutChildrenInBounds(bounds.width.toFloat(), bounds.height.toFloat())
+                val view = (overlayRoot.nativeWidget as? MacosViewHandle)?.nsView
+                view?.layoutSubtreeIfNeeded()
+                view?.setNeedsDisplay(true)
+                view?.displayIfNeeded()
+            }
+        }
     }
 
     fun invalidateAllWindows(stageOnly: Boolean = false) {
-        if (!appInitialized || !MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
-        runOnMainAppKitThread {
-            for (session in sessions.values) {
-                if (stageOnly) {
-                    invalidateSessionStageOnly(session)
-                } else {
-                    invalidateSessionWindow(session)
-                }
+        for (session in sessions.values) {
+            if (stageOnly) {
+                session.needsStageOnlyRedisplay = true
+            } else {
+                session.needsRelayout = true
+                session.needsRedisplay = true
             }
         }
     }
 
     fun forceSynchronousPaint(stageOnly: Boolean = false) {
-        if (!appInitialized || !MacosApplicationNativeImpl.interactiveMacosGuiEnabled) return
-        runOnMainAppKitThread {
-            for (session in sessions.values) {
-                if (stageOnly) {
-                    invalidateSessionStageOnly(session)
-                } else {
-                    invalidateSessionWindow(session)
-                }
-                session.canvasView.displayIfNeeded()
+        flushPendingOverlayRelayout()
+        for (session in sessions.values) {
+            flushSessionDisplayNow(session, stageOnly = stageOnly)
+        }
+    }
+
+    fun flushPendingDisplay() {
+        flushPendingOverlayRelayout()
+        for (session in sessions.values) {
+            if (session.needsRelayout || session.needsRedisplay || session.needsStageOnlyRedisplay) {
+                flushSessionDisplayNow(
+                    session,
+                    stageOnly = session.needsStageOnlyRedisplay && !session.needsRelayout && !session.needsRedisplay
+                )
             }
         }
     }
 
-    fun pumpVisualWindowEvents(durationMs: Long = 32L) {
-        if (!appInitialized || !MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
-            GenericUiThreading.flushAllQueues()
+    private fun flushSessionDisplayNow(session: MacosWindowSession, stageOnly: Boolean) {
+        val start = TimeSource.Monotonic.markNow()
+        if (stageOnly && !session.needsRelayout && !session.needsRedisplay) {
+            session.presentStageSurfaces(forceRefresh = true)
+            for (sv in session.stageViews) {
+                sv.displayIfNeeded()
+            }
+            session.needsStageOnlyRedisplay = false
+            val elapsedUs = start.elapsedNow().inWholeMicroseconds.coerceAtLeast(1L)
+            recordStageOnlyPaint(elapsedUs)
             return
         }
-        val app = NSApplication.sharedApplication
-        val startMs = monotonicTimeMs()
-        val targetMs = durationMs.coerceAtLeast(0L).toDouble()
+
+        if (!session.needsRelayout) {
+            session.presentStageSurfaces(forceRefresh = false)
+            session.rootView.displayIfNeeded()
+            session.needsRedisplay = false
+            session.needsStageOnlyRedisplay = false
+            val elapsedUs = start.elapsedNow().inWholeMicroseconds.coerceAtLeast(1L)
+            recordFullWindowPaint(elapsedUs)
+            return
+        }
+
+        val (cw, ch) = session.currentClientSize()
+        val mutVer = DesktopNativeWidget.globalLayoutMutationVersion
+        val layoutUpToDate = session.lastLaidOutWidth == cw &&
+            session.lastLaidOutHeight == ch &&
+            session.lastMutationVersion == mutVer
+        if (layoutUpToDate) {
+            session.needsRelayout = false
+        } else {
+            session.layoutWindowTree(force = true)
+        }
+        session.presentStageSurfaces(forceRefresh = false)
+        session.rootView.setNeedsDisplay(true)
+        session.rootView.displayIfNeeded()
+        session.needsRelayout = false
+        session.needsRedisplay = false
+        session.needsStageOnlyRedisplay = false
+        val elapsedUs = start.elapsedNow().inWholeMicroseconds.coerceAtLeast(1L)
+        recordFullWindowPaint(elapsedUs)
+    }
+
+    private fun recordStageOnlyPaint(us: Long) {
+        totalPaintsCount++
+        stageOnlyPaintsCount++
+        paintDurationsUs.add(us)
+    }
+
+    private fun recordFullWindowPaint(us: Long) {
+        totalPaintsCount++
+        fullWindowPaintsCount++
+        paintDurationsUs.add(us)
+    }
+
+    fun resetFrameMetrics() {
+        totalPaintsCount = 0L
+        stageOnlyPaintsCount = 0L
+        fullWindowPaintsCount = 0L
+        paintDurationsUs.clear()
+    }
+
+    fun getFrameMetricsSnapshot(): MacosFrameMetricsSnapshot {
+        if (paintDurationsUs.isEmpty()) {
+            return MacosFrameMetricsSnapshot(
+                totalPaints = totalPaintsCount,
+                stageOnlyPaints = stageOnlyPaintsCount,
+                fullWindowPaints = fullWindowPaintsCount,
+                sampleCount = 0,
+                p50PaintUs = 0L,
+                p95PaintUs = 0L,
+                maxPaintUs = 0L,
+                avgPaintUs = 0L
+            )
+        }
+        val sorted = paintDurationsUs.sorted()
+        val p50 = sorted[((sorted.size - 1) * 0.50).roundToInt().coerceIn(0, sorted.lastIndex)]
+        val p95 = sorted[((sorted.size - 1) * 0.95).roundToInt().coerceIn(0, sorted.lastIndex)]
+        val maxV = sorted.last()
+        val avgV = sorted.sum() / sorted.size
+        return MacosFrameMetricsSnapshot(
+            totalPaints = totalPaintsCount,
+            stageOnlyPaints = stageOnlyPaintsCount,
+            fullWindowPaints = fullWindowPaintsCount,
+            sampleCount = sorted.size,
+            p50PaintUs = p50,
+            p95PaintUs = p95,
+            maxPaintUs = maxV,
+            avgPaintUs = avgV
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // Visual Runner Helpers, Input Simulation & Screen Capture
+    // -------------------------------------------------------------------------
+
+    fun queryClientRect(): Rect {
+        val session = activeSession() ?: return Rect(0, 0, 0, 0)
+        val (w, h) = session.currentClientSize()
+        return Rect(0, 0, w, h)
+    }
+
+    fun pumpVisualWindowEvents(durationMs: Long = 32L) {
+        val endMark = TimeSource.Monotonic.markNow()
+        val targetMs = durationMs.coerceAtLeast(1L)
+        GenericUiThreading.flushAllQueues()
+        var lastVBlankElapsedMs = -16L
         do {
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.002, false)
-            app.updateWindows()
-            onFrameTimerTick()
-            for (session in sessions.values.toList()) {
-                session.canvasView.displayIfNeeded()
+            autoreleasepool {
+                val app = NSApplication.sharedApplication
+                while (true) {
+                    val ev = app.nextEventMatchingMask(
+                        mask = NSEventMaskAny,
+                        untilDate = null,
+                        inMode = NSDefaultRunLoopMode,
+                        dequeue = true
+                    ) ?: break
+                    if (visualTestMode) {
+                        val evType = ev.type
+                        if (evType == NSEventTypeMouseMoved ||
+                            evType == NSEventTypeMouseEntered ||
+                            evType == NSEventTypeMouseExited ||
+                            evType == NSEventTypeCursorUpdate
+                        ) {
+                            continue
+                        }
+                    }
+                    app.sendEvent(ev)
+                }
+                NSRunLoop.currentRunLoop.runMode(
+                    NSDefaultRunLoopMode,
+                    beforeDate = NSDate.dateWithTimeIntervalSinceNow(0.004)
+                )
+                GenericUiThreading.flushAllQueues()
+                val elapsed = endMark.elapsedNow().inWholeMilliseconds
+                if (elapsed - lastVBlankElapsedMs >= 16L) {
+                    lastVBlankElapsedMs = elapsed
+                    dispatchActiveVBlankWidgets()
+                    flushPendingOverlayRelayout()
+                    for (session in sessions.values.toList()) {
+                        session.presentStageSurfaces(forceRefresh = false)
+                    }
+                }
             }
-            val nowMs = monotonicTimeMs()
-            if (nowMs - startMs < targetMs && sessions.isNotEmpty()) {
-                usleep(3_000u)
-            } else {
-                break
-            }
-        } while (sessions.isNotEmpty())
+        } while (endMark.elapsedNow().inWholeMilliseconds < targetMs)
+        dispatchActiveVBlankWidgets()
+        GenericUiThreading.flushAllQueues()
+        flushPendingOverlayRelayout()
+        syncAllNativeOverlayTitleBars()
+        for (session in sessions.values.toList()) {
+            session.presentStageSurfaces(forceRefresh = false)
+        }
     }
 
     fun closeAllVisualWindows() {
         for (session in sessions.values.toList()) {
-            clearFocusedWidgetInSession(session)
-            session.nsWindow.delegate = null
+            session.isClosing = true
+            resetUndecoratedResizeState(session)
+            (session.nsWindow as? MacosHostWindow)?.let { hostWin ->
+                hostWin.isClosingWindow = true
+                hostWin.onMaximizedStateChanged = null
+            }
+            session.nsWindow.setDelegate(null)
             session.nsWindow.orderOut(null)
+            session.nsWindow.close()
+            session.isShown = false
         }
         sessions.clear()
         activeKeyWindowId = null
-        frameTimer?.invalidate()
-        frameTimer = null
-        eventLoopRunning = false
-        restoreHiddenCursors()
+        syncHostVBlankWatcher()
         PopupMouseCaptureManager.clear()
-        InputFocusManager.reset()
-    }
-
-    fun captureWindowScreenshot(width: Int = 0, height: Int = 0): ImageBuffer? {
-        val session = activeSession() ?: return null
-        session.canvasView.displayIfNeeded()
-
-        val viewW = session.canvasView.bounds.useContents { size.width.roundToInt().coerceAtLeast(1) }
-        val viewH = session.canvasView.bounds.useContents { size.height.roundToInt().coerceAtLeast(1) }
-        val targetW = if (width > 0) width else viewW
-        val targetH = if (height > 0) height else viewH
-        if (targetW <= 0 || targetH <= 0) return null
-
-        val premul = ByteArray(targetW * targetH * 4)
-        val colorSpace = CGColorSpaceCreateDeviceRGB() ?: return null
-        try {
-            premul.usePinned { pinned ->
-                val cgCtx = CGBitmapContextCreate(
-                    data = pinned.addressOf(0),
-                    width = targetW.convert(),
-                    height = targetH.convert(),
-                    bitsPerComponent = 8.convert(),
-                    bytesPerRow = (targetW * 4).convert(),
-                    space = colorSpace,
-                    bitmapInfo = CGImageAlphaInfo.kCGImageAlphaPremultipliedLast.value or kCGBitmapByteOrderDefault
-                ) ?: return null
-                val prevNsCtx = NSGraphicsContext.currentContext
-                try {
-                    // Match flipped NSView coordinates: (0, 0) at top-left, +Y downward
-                    CGContextTranslateCTM(cgCtx, 0.0, targetH.toDouble())
-                    CGContextScaleCTM(cgCtx, 1.0, -1.0)
-                    if (targetW != viewW || targetH != viewH) {
-                        CGContextScaleCTM(
-                            cgCtx,
-                            targetW.toDouble() / viewW.toDouble(),
-                            targetH.toDouble() / viewH.toDouble()
-                        )
-                    }
-                    val nsCtx = NSGraphicsContext.graphicsContextWithCGContext(cgCtx, flipped = true)
-                    NSGraphicsContext.setCurrentContext(nsCtx)
-                    renderSessionIntoContext(
-                        session = session,
-                        cgContext = cgCtx,
-                        dirtyX = 0,
-                        dirtyY = 0,
-                        dirtyW = viewW,
-                        dirtyH = viewH,
-                        allowStageFastPath = false,
-                        recordMetrics = false
-                    )
-                } finally {
-                    NSGraphicsContext.setCurrentContext(prevNsCtx)
-                    CGContextRelease(cgCtx)
-                }
-            }
-        } finally {
-            CGColorSpaceRelease(colorSpace)
-        }
-
-        val out = ImageBuffer(targetW, targetH)
-        val dst = out.bytes
-        var i = 0
-        val limit = targetW * targetH * 4
-        while (i < limit) {
-            val r = premul[i].toInt() and 0xFF
-            val g = premul[i + 1].toInt() and 0xFF
-            val b = premul[i + 2].toInt() and 0xFF
-            val a = premul[i + 3].toInt() and 0xFF
-            if (a >= 254 || a == 0) {
-                dst[i] = r.toByte()
-                dst[i + 1] = g.toByte()
-                dst[i + 2] = b.toByte()
-                dst[i + 3] = (if (a == 0) 0 else 255).toByte()
-            } else {
-                dst[i] = ((r * 255) / a).coerceAtMost(255).toByte()
-                dst[i + 1] = ((g * 255) / a).coerceAtMost(255).toByte()
-                dst[i + 2] = ((b * 255) / a).coerceAtMost(255).toByte()
-                dst[i + 3] = a.toByte()
-            }
-            i += 4
-        }
-        return out
+        PointerDragManager.cancelActiveDrag()
+        syncActivationPolicyForCurrentState()
     }
 
     fun simulateMouseMove(x: Float, y: Float, flushDisplay: Boolean = true) {
         val session = activeSession() ?: return
-        handlePointerMovedAt(session, x, y, 0UL)
+        session.layoutWindowTree(force = false)
+        val dx = x.toDouble()
+        val dy = y.toDouble()
+        val hit = session.rootView.hitTestClientPoint(dx, dy)
+        val winLoc = session.rootView.convertClientPointToWindow(dx, dy)
+        val prev = session.lastHoverTargetView
+        session.rootView.suppressCursorSync = true
+        try {
+            if (prev !== hit) {
+                fun chainToRoot(leaf: NSView?): List<NSView> {
+                    if (leaf == null) return emptyList()
+                    val chain = ArrayList<NSView>(12)
+                    var cur: NSView? = leaf
+                    while (cur != null) {
+                        chain.add(cur)
+                        if (cur === session.rootView) break
+                        cur = cur.superview
+                    }
+                    return chain
+                }
+                val prevChain = chainToRoot(prev)
+                val hitChain = chainToRoot(hit)
+                val hitSet = hitChain.toHashSet()
+                var lca: NSView? = null
+                for (v in prevChain) {
+                    if (v in hitSet) {
+                        lca = v
+                        break
+                    }
+                }
+                if (prevChain.isNotEmpty()) {
+                    synthesizeMouseEvent(NSEventTypeMouseMoved, winLoc, session.nsWindow.windowNumber, clickCount = 0)?.let { ev ->
+                        for (v in prevChain) {
+                            if (v === lca) break
+                            v.mouseExited(ev)
+                        }
+                    }
+                }
+                if (hitChain.isNotEmpty()) {
+                    val enterList = ArrayList<NSView>(hitChain.size)
+                    for (v in hitChain) {
+                        if (v === lca) break
+                        enterList.add(v)
+                    }
+                    if (enterList.isNotEmpty()) {
+                        synthesizeMouseEvent(NSEventTypeMouseMoved, winLoc, session.nsWindow.windowNumber, clickCount = 0)?.let { ev ->
+                            for (i in enterList.indices.reversed()) {
+                                enterList[i].mouseEntered(ev)
+                            }
+                        }
+                    }
+                }
+                session.lastHoverTargetView = hit
+            }
+            synthesizeMouseEvent(NSEventTypeMouseMoved, winLoc, session.nsWindow.windowNumber, clickCount = 0)?.let { ev ->
+                (hit ?: session.rootView).mouseMoved(ev)
+            }
+        } finally {
+            session.rootView.suppressCursorSync = false
+        }
+        session.rootView.updateEffectiveCursorForResolvedHit(hit, dx, dy, forceCheckCurrent = true)
         GenericUiThreading.flushAllQueues()
         if (flushDisplay) {
-            session.canvasView.displayIfNeeded()
+            flushPendingDisplay()
         }
     }
 
     fun simulateMouseClick(x: Float, y: Float, button: Int = 0, clickCount: Int = 1) {
         val session = activeSession() ?: return
-        handlePointerMovedAt(session, x, y, 0UL)
-        handlePointerDownAt(session, x, y, button = button, clickCount = clickCount)
+        session.layoutWindowTree(force = false)
+        val dx = x.toDouble()
+        val dy = y.toDouble()
+        val hit = session.rootView.hitTestClientPoint(dx, dy) ?: session.rootView
+        val winLoc = session.rootView.convertClientPointToWindow(dx, dy)
+        val downType = if (button == 2) NSEventTypeRightMouseDown else NSEventTypeLeftMouseDown
+        val upType = if (button == 2) NSEventTypeRightMouseUp else NSEventTypeLeftMouseUp
+        val downEv = synthesizeMouseEvent(downType, winLoc, session.nsWindow.windowNumber, clickCount = clickCount)
+        val upEv = synthesizeMouseEvent(upType, winLoc, session.nsWindow.windowNumber, clickCount = clickCount)
+
+        if (button == 2) {
+            if (downEv != null) hit.rightMouseDown(downEv)
+            if (upEv != null) hit.rightMouseUp(upEv)
+        } else if (hit is NSButton && hit.isEnabled() && !hit.isHidden()) {
+            hit.performClick(null)
+        } else {
+            if (downEv != null) hit.mouseDown(downEv)
+            GenericUiThreading.flushAllQueues()
+            if (upEv != null) hit.mouseUp(upEv)
+        }
         GenericUiThreading.flushAllQueues()
-        handlePointerUpAt(session, x, y, button = button, clickCount = clickCount)
-        GenericUiThreading.flushAllQueues()
-        session.canvasView.displayIfNeeded()
     }
 
     fun simulateMouseDrag(
@@ -3230,83 +2652,975 @@ object MacosNativeWindowHost {
         button: Int = 0
     ) {
         val session = activeSession() ?: return
-        handlePointerMovedAt(session, fromX, fromY, 0UL)
-        handlePointerDownAt(session, fromX, fromY, button = button, clickCount = 1)
-        GenericUiThreading.flushAllQueues()
-        session.canvasView.displayIfNeeded()
+        session.layoutWindowTree(force = false)
+        val startTarget = session.rootView.hitTestClientPoint(fromX.toDouble(), fromY.toDouble()) ?: session.rootView
+        val downLoc = session.rootView.convertClientPointToWindow(fromX.toDouble(), fromY.toDouble())
+        val downType = if (button == 2) NSEventTypeRightMouseDown else NSEventTypeLeftMouseDown
+        val upType = if (button == 2) NSEventTypeRightMouseUp else NSEventTypeLeftMouseUp
+
+        synthesizeMouseEvent(downType, downLoc, session.nsWindow.windowNumber, clickCount = 1)?.let { ev ->
+            startTarget.mouseDown(ev)
+        }
+
         val count = steps.coerceAtLeast(1)
         for (i in 1..count) {
-            val t = i.toFloat() / count.toFloat()
-            val cx = fromX + (toX - fromX) * t
-            val cy = fromY + (toY - fromY) * t
-            handlePointerDraggedAt(session, cx, cy, button = button, clickCount = 1)
+            val t = i.toDouble() / count.toDouble()
+            val curX = fromX.toDouble() + (toX.toDouble() - fromX.toDouble()) * t
+            val curY = fromY.toDouble() + (toY.toDouble() - fromY.toDouble()) * t
+            val loc = session.rootView.convertClientPointToWindow(curX, curY)
+            synthesizeMouseEvent(NSEventTypeLeftMouseDragged, loc, session.nsWindow.windowNumber, clickCount = 1)?.let { ev ->
+                startTarget.mouseDragged(ev)
+            }
             GenericUiThreading.flushAllQueues()
-            session.canvasView.displayIfNeeded()
         }
-        handlePointerUpAt(session, toX, toY, button = button, clickCount = 1)
+
+        val upLoc = session.rootView.convertClientPointToWindow(toX.toDouble(), toY.toDouble())
+        synthesizeMouseEvent(upType, upLoc, session.nsWindow.windowNumber, clickCount = 1)?.let { ev ->
+            startTarget.mouseUp(ev)
+        }
         GenericUiThreading.flushAllQueues()
-        session.canvasView.displayIfNeeded()
     }
 
     fun simulateScrollWheel(x: Float, y: Float, deltaPx: Float, flushDisplay: Boolean = true) {
         val session = activeSession() ?: return
-        handleScrollWheelAt(session, x, y, deltaPx)
-        GenericUiThreading.flushAllQueues()
-        if (flushDisplay) {
-            session.canvasView.displayIfNeeded()
+        session.layoutWindowTree(force = false)
+        var cur: NSView? = session.rootView.hitTestClientPoint(x.toDouble(), y.toDouble()) ?: session.rootView
+        var scrollHandled = false
+        while (cur != null) {
+            if (cur is NSScrollView) {
+                val clip = cur.contentView()
+                val doc = cur.documentView
+                if (doc != null) {
+                    val clipBounds = clip.bounds
+                    val docFrame = doc.frame
+                    val (curX, curY, clipW, clipH) = clipBounds.useContents {
+                        listOf(origin.x, origin.y, size.width, size.height)
+                    }
+                    val (docW, docH) = docFrame.useContents { size.width to size.height }
+                    val maxScrollY = (docH - clipH).coerceAtLeast(0.0)
+                    val maxScrollX = (docW - clipW).coerceAtLeast(0.0)
+                    val nextY = (curY + deltaPx.toDouble()).coerceIn(0.0, maxScrollY)
+                    val nextX = curX.coerceIn(0.0, maxScrollX)
+                    clip.scrollToPoint(NSMakePoint(nextX, nextY))
+                    cur.reflectScrolledClipView(clip)
+                    scrollHandled = true
+                }
+                break
+            }
+            cur = cur.superview
         }
-    }
-
-    fun flushPendingDisplay() {
-        val session = activeSession() ?: return
-        session.canvasView.displayIfNeeded()
-    }
-
-    fun resetFrameMetrics() {
-        paintSampleWriteIdx = 0
-        paintSampleCount = 0
-        totalPaintsCounter = 0L
-        stageOnlyPaintsCounter = 0L
-        fullWindowPaintsCounter = 0L
-    }
-
-    fun getFrameMetricsSnapshot(): MacosFrameMetricsSnapshot {
-        val n = paintSampleCount
-        if (n <= 0) {
-            return MacosFrameMetricsSnapshot(
-                totalPaints = totalPaintsCounter,
-                stageOnlyPaints = stageOnlyPaintsCounter,
-                fullWindowPaints = fullWindowPaintsCounter,
-                sampleCount = 0,
-                p50PaintUs = 0L,
-                p95PaintUs = 0L,
-                maxPaintUs = 0L,
-                avgPaintUs = 0L
+        if (!scrollHandled) {
+            session.hostContainer()?.dispatchWheel(
+                com.nexustools.genericui.event.WheelEvent(
+                    x = x,
+                    y = y,
+                    deltaX = 0f,
+                    deltaY = deltaPx
+                )
             )
         }
-        val copy = LongArray(n) { idx -> paintDurationSamplesUs[idx] }
-        copy.sort()
-        var sum = 0L
-        for (v in copy) sum += v
-        val p50Idx = ((n - 1) * 50) / 100
-        val p95Idx = ((n - 1) * 95) / 100
-        return MacosFrameMetricsSnapshot(
-            totalPaints = totalPaintsCounter,
-            stageOnlyPaints = stageOnlyPaintsCounter,
-            fullWindowPaints = fullWindowPaintsCounter,
-            sampleCount = n,
-            p50PaintUs = copy[p50Idx],
-            p95PaintUs = copy[p95Idx],
-            maxPaintUs = copy[n - 1],
-            avgPaintUs = sum / n.toLong()
-        )
+        GenericUiThreading.flushAllQueues()
+        if (flushDisplay) {
+            flushPendingDisplay()
+        }
     }
 
-    private fun monotonicTimeMs(): Double =
-        NSProcessInfo.processInfo.systemUptime * 1000.0
+    private fun synthesizeMouseEvent(
+        type: ULong,
+        windowLocation: CValue<platform.CoreGraphics.CGPoint>,
+        windowNumber: Long,
+        clickCount: Int
+    ): NSEvent? = NSEvent.mouseEventWithType(
+        type = type,
+        location = windowLocation,
+        modifierFlags = 0uL,
+        timestamp = 0.0,
+        windowNumber = windowNumber,
+        context = null,
+        eventNumber = 0L,
+        clickCount = clickCount.toLong(),
+        pressure = if (type == NSEventTypeLeftMouseUp || type == NSEventTypeRightMouseUp) 0f else 1f
+    )
 
-    private fun monotonicTimeUs(): Long =
-        (NSProcessInfo.processInfo.systemUptime * 1_000_000.0).toLong()
+    // -------------------------------------------------------------------------
+    // Offscreen / Backing AppKit Window Screenshot Capture
+    // -------------------------------------------------------------------------
 
-    private fun Boolean?.orFalse(): Boolean = this == true
+    fun captureWindowScreenshot(width: Int = 0, height: Int = 0): ImageBuffer? {
+        val session = activeSession() ?: return null
+        val (cw, ch) = session.currentClientSize()
+        val targetW = if (width > 0) width else cw
+        val targetH = if (height > 0) height else ch
+        val winImpl = session.windowImpl
+        if (winImpl != null) {
+            return captureWindowScreenshot(winImpl, targetW, targetH)
+        }
+        session.layoutWindowTree(force = true)
+        session.presentStageSurfaces(forceRefresh = true)
+        return captureRootViewWithBackdropFilters(session.rootView, targetW, targetH)
+    }
+
+    fun captureWindowScreenshot(winImpl: MacosWindowNativeImpl, width: Int = 0, height: Int = 0): ImageBuffer? {
+        val existing = sessions.values.firstOrNull { it.windowImpl === winImpl }
+        val targetW = if (width > 0) width else winImpl.getWindowSize().width.toInt().coerceAtLeast(320)
+        val targetH = if (height > 0) height else winImpl.getWindowSize().height.toInt().coerceAtLeast(240)
+
+        if (existing != null) {
+            val origFrame = existing.nsWindow.frame
+            val (origW, origH) = existing.currentClientSize()
+            if (origW != targetW || origH != targetH) {
+                existing.nsWindow.setContentSize(NSMakeSize(targetW.toDouble(), targetH.toDouble()))
+            }
+            val hostWin = existing.nsWindow as? MacosHostWindow
+            val prevForceKey = hostWin?.forceActiveKeyAppearanceForCapture ?: false
+            if (visualTestMode && hostWin != null) {
+                hostWin.forceActiveKeyAppearanceForCapture = true
+            }
+            return try {
+                existing.layoutWindowTree(force = true)
+                existing.presentStageSurfaces(forceRefresh = true)
+                captureRootViewWithBackdropFilters(existing.rootView, targetW, targetH)
+            } finally {
+                if (hostWin != null) {
+                    hostWin.forceActiveKeyAppearanceForCapture = prevForceKey
+                }
+                if (origW != targetW || origH != targetH) {
+                    existing.nsWindow.setFrame(origFrame, display = false)
+                    existing.layoutWindowTree(force = true)
+                }
+            }
+        }
+
+        val tmpKey = --syntheticKeySeq
+        val offscreenWin = MacosOffscreenCaptureWindow(
+            contentRect = NSMakeRect(0.0, 0.0, targetW.toDouble(), targetH.toDouble()),
+            styleMask = MacosViewHandle.NSWindowStyleMaskBorderless.toULong(),
+            backing = NSBackingStoreBuffered,
+            defer = false
+        )
+        offscreenWin.setReleasedWhenClosed(false)
+        offscreenWin.appearance = NSApplication.sharedApplication.appearance()
+            ?: NSAppearance.appearanceNamed(
+                if (MacosAppKitAppearance.isDarkTheme(winImpl.nativeWidget)) {
+                    NSAppearanceNameDarkAqua
+                } else {
+                    NSAppearanceNameAqua
+                }
+            )
+        val rootView = MacosWindowRootView(
+            windowKey = tmpKey,
+            frameRect = NSMakeRect(0.0, 0.0, targetW.toDouble(), targetH.toDouble())
+        )
+        offscreenWin.setContentView(rootView)
+        val delegate = MacosWindowDelegate(windowKey = tmpKey, isDialog = false)
+        val tmpSession = MacosWindowSession(
+            windowKey = tmpKey,
+            nsWindow = offscreenWin,
+            rootView = rootView,
+            delegate = delegate,
+            isDialog = false,
+            windowImpl = winImpl
+        )
+        return try {
+            tmpSession.layoutWindowTree(force = true)
+            tmpSession.presentStageSurfaces(forceRefresh = true)
+            captureRootViewWithBackdropFilters(rootView, targetW, targetH)
+        } finally {
+            for (sub in rootView.subviews.filterIsInstance<NSView>()) {
+                sub.removeFromSuperview()
+            }
+            offscreenWin.close()
+        }
+    }
+
+    private fun captureRootViewWithBackdropFilters(
+        rootView: MacosWindowRootView,
+        width: Int,
+        height: Int
+    ): ImageBuffer? {
+        if (width <= 0 || height <= 0) return null
+        if (!rootView.inLayoutCallback) {
+            rootView.layoutSubtreeIfNeeded()
+        }
+        val basePremulRgba = renderViewToPremulRgba(rootView, width, height) ?: return null
+
+        val backdropTargets = collectVisibleBackdropViews(rootView)
+        if (backdropTargets.isNotEmpty()) {
+            val premulBgra = convertPremulRgbaToPremulBgraInts(basePremulRgba, width, height)
+            for ((view, support) in backdropTargets) {
+                val filter = support.activeBackdropFilter ?: continue
+                if (filter.isNone || !filter.hasActiveEffects) continue
+
+                val rectInRoot = view.convertRect(view.bounds, toView = rootView)
+                val rx = rectInRoot.useContents { origin.x.roundToInt() }.coerceIn(0, width)
+                val ry = rectInRoot.useContents { origin.y.roundToInt() }.coerceIn(0, height)
+                val rw = rectInRoot.useContents { size.width.roundToInt() }.coerceIn(0, width - rx)
+                val rh = rectInRoot.useContents { size.height.roundToInt() }.coerceIn(0, height - ry)
+                if (rw <= 0 || rh <= 0) continue
+
+                val wasHidden = view.isHidden()
+                val prevAlpha = view.alphaValue
+                view.setHidden(true)
+                val underlayBytes = renderViewToPremulRgba(rootView, width, height)
+                view.setHidden(wasHidden)
+                view.setAlphaValue(prevAlpha)
+
+                if (underlayBytes != null) {
+                    val underlayBgra = convertPremulRgbaToPremulBgraInts(underlayBytes, width, height)
+                    val radiusPx = support.activeCornerRadii?.topLeft?.resolvePx(rw.toFloat())
+                        ?: support.activeFallbackRadiusPx
+                    AppleBackdropFilterController.applyBackdropToPremulBgraRegion(
+                        filter = filter,
+                        pixels = underlayBgra,
+                        strideWords = width,
+                        bufferWidth = width,
+                        bufferHeight = height,
+                        regionX = rx,
+                        regionY = ry,
+                        regionWidth = rw,
+                        regionHeight = rh,
+                        cornerRadiusPx = radiusPx,
+                        componentOpacity = prevAlpha.toFloat()
+                    )
+                    // Copy filtered backdrop region into destination premulBgra and blend view surface + children on top.
+                    val vev = support.visualEffectView
+                    val vevWasHidden = vev?.isHidden() ?: false
+                    val underlay = support.backdropUnderlayView
+                    val underlayWasHidden = underlay?.isHidden() ?: false
+                    vev?.setHidden(true)
+                    underlay?.setHidden(true)
+                    val fgBytes = try {
+                        captureIsolatedSubtreeBytes(view, rootView, width, height)
+                    } finally {
+                        underlay?.setHidden(underlayWasHidden)
+                        vev?.setHidden(vevWasHidden)
+                    }
+                    compositeFilteredRegionAndForeground(
+                        dstBgra = premulBgra,
+                        filteredUnderlayBgra = underlayBgra,
+                        foregroundPremulRgba = fgBytes,
+                        width = width,
+                        rx = rx,
+                        ry = ry,
+                        rw = rw,
+                        rh = rh,
+                        radiusPx = radiusPx
+                    )
+                }
+            }
+            val finalRgba = unpremultiplyBgraIntsToRgbaBytes(premulBgra, width, height)
+            return ImageBuffer(width, height, PixelFormat.RGBA_8888, ImageColorSpace.SRGB, finalRgba)
+        }
+
+        val unpremul = unpremultiplyRgbaBytes(basePremulRgba, width * height)
+        return ImageBuffer(width, height, PixelFormat.RGBA_8888, ImageColorSpace.SRGB, unpremul)
+    }
+
+    private class MacosOffscreenCaptureWindow(
+        contentRect: CValue<NSRect>,
+        styleMask: platform.AppKit.NSWindowStyleMask,
+        backing: platform.AppKit.NSBackingStoreType,
+        defer: Boolean
+    ) : NSWindow(
+        contentRect = contentRect,
+        styleMask = styleMask,
+        backing = backing,
+        defer = defer
+    ) {
+        override fun isKeyWindow(): Boolean = true
+        override fun isMainWindow(): Boolean = true
+        override fun canBecomeKeyWindow(): Boolean = true
+        override fun canBecomeMainWindow(): Boolean = true
+    }
+
+    private class MacosSnapshotStageBlitView(
+        private val cgImage: platform.CoreGraphics.CGImageRef?,
+        private val spec: com.nexustools.genericui.desktop.core.DesktopInteractiveSurfaceSpec?,
+        frameRect: CValue<NSRect>
+    ) : NSView(frameRect) {
+
+        override fun isFlipped(): Boolean = false
+
+        override fun drawRect(dirtyRect: CValue<NSRect>) {
+            val (w, h) = bounds.useContents { size.width to size.height }
+            if (w <= 0.0 || h <= 0.0) return
+            val ctx = NSGraphicsContext.currentContext?.CGContext ?: return
+            platform.CoreGraphics.CGContextSetRGBFillColor(ctx, 0.0, 0.0, 0.0, 1.0)
+            platform.CoreGraphics.CGContextFillRect(ctx, CGRectMake(0.0, 0.0, w, h))
+            val img = cgImage ?: return
+            val imgW = platform.CoreGraphics.CGImageGetWidth(img).toDouble()
+            val imgH = platform.CoreGraphics.CGImageGetHeight(img).toDouble()
+            if (imgW <= 0.0 || imgH <= 0.0) return
+            val srcW = imgW.toInt().coerceAtLeast(1)
+            val srcH = imgH.toInt().coerceAtLeast(1)
+            val rect = if (spec != null) {
+                com.nexustools.genericui.desktop.core.DesktopInteractiveSurfaceSpec.computePresentationRect(
+                    w, h, srcW, srcH, spec
+                )
+            } else {
+                com.nexustools.genericui.desktop.core.DesktopInteractiveSurfaceSpec.computePresentationRect(
+                    w, h, srcW, srcH, (imgW / imgH).toFloat(), com.nexustools.genericui.enums.ui.ObjectFit.CONTAIN
+                )
+            }
+            val cgDstY = h - rect.dstY - rect.dstH
+            CGContextSaveGState(ctx)
+            try {
+                platform.CoreGraphics.CGContextClipToRect(ctx, CGRectMake(0.0, 0.0, w, h))
+                CGContextDrawImage(ctx, CGRectMake(rect.dstX, cgDstY, rect.dstW, rect.dstH), img)
+            } finally {
+                CGContextRestoreGState(ctx)
+            }
+        }
+    }
+
+    private fun renderViewToPremulRgba(view: NSView, width: Int, height: Int): ByteArray? {
+        val tempStageBlits = ArrayList<MacosSnapshotStageBlitView>()
+        fun injectStageBlits(node: NSView) {
+            if (node.isHidden() || node.alphaValue <= 0.004) return
+            if (node is MacosInteractiveSurfaceView) {
+                val blit = MacosSnapshotStageBlitView(
+                    cgImage = node.currentCgImage(),
+                    spec = node.currentSpec(),
+                    frameRect = node.bounds
+                )
+                val firstSub = node.subviews.firstOrNull() as? NSView
+                if (firstSub != null) {
+                    node.addSubview(blit, positioned = platform.AppKit.NSWindowBelow, relativeTo = firstSub)
+                } else {
+                    node.addSubview(blit)
+                }
+                tempStageBlits.add(blit)
+                return
+            }
+            for (sub in node.subviews) {
+                if (sub is NSView) injectStageBlits(sub)
+            }
+        }
+        injectStageBlits(view)
+        val captureBounds = NSMakeRect(0.0, 0.0, width.toDouble(), height.toDouble())
+        val rep = view.bitmapImageRepForCachingDisplayInRect(captureBounds)
+        if (rep == null) {
+            for (blit in tempStageBlits) blit.removeFromSuperview()
+            return null
+        }
+        view.cacheDisplayInRect(captureBounds, toBitmapImageRep = rep)
+        val cgImg = rep.CGImage
+        if (cgImg == null) {
+            for (blit in tempStageBlits) blit.removeFromSuperview()
+            return null
+        }
+
+        val colorSpace = CGColorSpaceCreateDeviceRGB()
+        if (colorSpace == null) {
+            for (blit in tempStageBlits) blit.removeFromSuperview()
+            return null
+        }
+        val bitmapInfo = kCGBitmapByteOrder32Big or CGImageAlphaInfo.kCGImageAlphaPremultipliedLast.value
+        val ctx = CGBitmapContextCreate(
+            data = null,
+            width = width.toULong(),
+            height = height.toULong(),
+            bitsPerComponent = 8uL,
+            bytesPerRow = (width * 4).toULong(),
+            space = colorSpace,
+            bitmapInfo = bitmapInfo
+        )
+        CGColorSpaceRelease(colorSpace)
+        if (ctx == null) {
+            for (blit in tempStageBlits) blit.removeFromSuperview()
+            return null
+        }
+        return try {
+            CGContextDrawImage(ctx, CGRectMake(0.0, 0.0, width.toDouble(), height.toDouble()), cgImg)
+            compositeVisibleScrollers(view, ctx, height)
+            val dataPtr = CGBitmapContextGetData(ctx)?.reinterpret<ByteVar>() ?: return null
+            val totalBytes = width * height * 4
+            val out = ByteArray(totalBytes)
+            out.usePinned { pinned ->
+                platform.posix.memcpy(pinned.addressOf(0), dataPtr, totalBytes.toULong())
+            }
+            out
+        } finally {
+            for (blit in tempStageBlits) blit.removeFromSuperview()
+            CGContextRelease(ctx)
+        }
+    }
+
+    private fun compositeVisibleScrollers(rootView: NSView, ctx: CGContextRef, height: Int) {
+        val rootH = rootView.bounds.useContents { size.height }
+        val rootFlipped = rootView.isFlipped()
+        fun walk(v: NSView) {
+            if (v.isHidden() || v.alphaValue <= 0.004) return
+            val scroller = v as? NSScroller
+            if (scroller != null && scroller.isEnabled() && scroller.knobProportion > 0.0 && scroller.knobProportion < 1.0) {
+                val rInRoot = scroller.convertRect(scroller.bounds, toView = rootView)
+                val (rx, ry, rh) = rInRoot.useContents { Triple(origin.x, origin.y, size.height) }
+                val topDownY = if (rootFlipped) ry else (rootH - ry - rh)
+                CGContextSaveGState(ctx)
+                CGContextTranslateCTM(ctx, rx, height.toDouble() - topDownY)
+                CGContextScaleCTM(ctx, 1.0, -1.0)
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.setCurrentContext(
+                    NSGraphicsContext.graphicsContextWithCGContext(ctx, flipped = scroller.isFlipped())
+                )
+                scroller.effectiveAppearance.performAsCurrentDrawingAppearance {
+                    if (scroller.scrollerStyle == NSScrollerStyleLegacy) {
+                        scroller.drawKnobSlotInRect(scroller.bounds, highlight = false)
+                    }
+                    scroller.drawKnob()
+                }
+                NSGraphicsContext.restoreGraphicsState()
+                CGContextRestoreGState(ctx)
+                return
+            }
+            for (sub in v.subviews.filterIsInstance<NSView>()) {
+                walk(sub)
+            }
+        }
+        walk(rootView)
+    }
+
+    private fun captureIsolatedSubtreeBytes(
+        target: NSView,
+        rootView: MacosWindowRootView,
+        width: Int,
+        height: Int
+    ): ByteArray? {
+        val siblingsHidden = ArrayList<Pair<NSView, Boolean>>()
+        fun hideNonAncestorsAndNonDescendants(parent: NSView) {
+            for (sub in parent.subviews.filterIsInstance<NSView>()) {
+                if (sub == target) continue
+                if (isDescendant(target, sub)) {
+                    hideNonAncestorsAndNonDescendants(sub)
+                } else {
+                    siblingsHidden.add(sub to sub.isHidden())
+                    sub.setHidden(true)
+                }
+            }
+        }
+        hideNonAncestorsAndNonDescendants(rootView)
+        return try {
+            renderViewToPremulRgba(rootView, width, height)
+        } finally {
+            for ((v, wasHidden) in siblingsHidden) {
+                v.setHidden(wasHidden)
+            }
+        }
+    }
+
+    private fun isDescendant(candidateDescendant: NSView, ancestor: NSView): Boolean {
+        var cur: NSView? = candidateDescendant
+        while (cur != null) {
+            if (cur == ancestor) return true
+            cur = cur.superview
+        }
+        return false
+    }
+
+    private fun resolveSurfaceLayerSupport(view: NSView): MacosSurfaceLayerSupport? = when (view) {
+        is MacosContainerView -> view.surfaceSupport
+        is MacosStyledContainerView -> view.surfaceSupport
+        is MacosStyledComponentView -> view.surfaceSupport
+        is MacosStyledButtonControl -> view.surfaceSupport
+        is com.nexustools.genericui.macos.impl.MacosNavbarView -> view.surfaceSupport
+        else -> null
+    }
+
+    private fun collectVisibleBackdropViews(root: NSView): List<Pair<NSView, MacosSurfaceLayerSupport>> {
+        val result = ArrayList<Pair<NSView, MacosSurfaceLayerSupport>>()
+        fun walk(v: NSView) {
+            if (v.isHidden() || v.alphaValue <= 0.004) return
+            val support = resolveSurfaceLayerSupport(v)
+            if (support != null && support.activeBackdropFilter != null) {
+                result.add(v to support)
+            }
+            for (sub in v.subviews.filterIsInstance<NSView>()) {
+                walk(sub)
+            }
+        }
+        walk(root)
+        return result
+    }
+
+    private fun convertPremulRgbaToPremulBgraInts(rgba: ByteArray, w: Int, h: Int): IntArray {
+        val count = w * h
+        val out = IntArray(count)
+        for (i in 0 until count) {
+            val o = i * 4
+            val r = rgba[o].toInt() and 0xFF
+            val g = rgba[o + 1].toInt() and 0xFF
+            val b = rgba[o + 2].toInt() and 0xFF
+            val a = rgba[o + 3].toInt() and 0xFF
+            out[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        return out
+    }
+
+    private fun compositeFilteredRegionAndForeground(
+        dstBgra: IntArray,
+        filteredUnderlayBgra: IntArray,
+        foregroundPremulRgba: ByteArray?,
+        width: Int,
+        rx: Int,
+        ry: Int,
+        rw: Int,
+        rh: Int,
+        radiusPx: Float
+    ) {
+        val rLim = radiusPx.coerceAtLeast(0f).toDouble()
+        for (py in ry until (ry + rh)) {
+            val rowOff = py * width
+            for (px in rx until (rx + rw)) {
+                if (rLim > 0.5 && !isPointInsideRoundedBox(px - rx, py - ry, rw, rh, rLim)) {
+                    continue
+                }
+                val idx = rowOff + px
+                var bg = filteredUnderlayBgra[idx]
+                if (foregroundPremulRgba != null) {
+                    val o = idx * 4
+                    val sr = foregroundPremulRgba[o].toInt() and 0xFF
+                    val sg = foregroundPremulRgba[o + 1].toInt() and 0xFF
+                    val sb = foregroundPremulRgba[o + 2].toInt() and 0xFF
+                    val sa = foregroundPremulRgba[o + 3].toInt() and 0xFF
+                    if (sa > 0) {
+                        val invA = 255 - sa
+                        val dr = (bg ushr 16) and 0xFF
+                        val dg = (bg ushr 8) and 0xFF
+                        val db = bg and 0xFF
+                        val da = (bg ushr 24) and 0xFF
+                        val outR = (sr + (dr * invA + 127) / 255).coerceIn(0, 255)
+                        val outG = (sg + (dg * invA + 127) / 255).coerceIn(0, 255)
+                        val outB = (sb + (db * invA + 127) / 255).coerceIn(0, 255)
+                        val outA = (sa + (da * invA + 127) / 255).coerceIn(0, 255)
+                        bg = (outA shl 24) or (outR shl 16) or (outG shl 8) or outB
+                    }
+                }
+                dstBgra[idx] = bg
+            }
+        }
+    }
+
+    private fun isPointInsideRoundedBox(lx: Int, ly: Int, w: Int, h: Int, r: Double): Boolean {
+        val effR = min(r, min(w, h) * 0.5)
+        val cx = when {
+            lx < effR -> effR - lx
+            lx >= w - effR -> lx - (w - effR) + 1.0
+            else -> return true
+        }
+        val cy = when {
+            ly < effR -> effR - ly
+            ly >= h - effR -> ly - (h - effR) + 1.0
+            else -> return true
+        }
+        return cx * cx + cy * cy <= effR * effR + 0.5
+    }
+
+    private fun unpremultiplyBgraIntsToRgbaBytes(bgra: IntArray, w: Int, h: Int): ByteArray {
+        val count = w * h
+        val out = ByteArray(count * 4)
+        for (i in 0 until count) {
+            val px = bgra[i]
+            val a = (px ushr 24) and 0xFF
+            var r = (px ushr 16) and 0xFF
+            var g = (px ushr 8) and 0xFF
+            var b = px and 0xFF
+            if (a in 1..254) {
+                r = ((r * 255 + a / 2) / a).coerceIn(0, 255)
+                g = ((g * 255 + a / 2) / a).coerceIn(0, 255)
+                b = ((b * 255 + a / 2) / a).coerceIn(0, 255)
+            } else if (a == 0) {
+                r = 0; g = 0; b = 0
+            }
+            val o = i * 4
+            out[o] = r.toByte()
+            out[o + 1] = g.toByte()
+            out[o + 2] = b.toByte()
+            out[o + 3] = a.toByte()
+        }
+        return out
+    }
+
+    private fun unpremultiplyRgbaBytes(src: ByteArray, pxCount: Int): ByteArray {
+        val out = ByteArray(pxCount * 4)
+        for (i in 0 until pxCount) {
+            val o = i * 4
+            var r = src[o].toInt() and 0xFF
+            var g = src[o + 1].toInt() and 0xFF
+            var b = src[o + 2].toInt() and 0xFF
+            val a = src[o + 3].toInt() and 0xFF
+            if (a in 1..254) {
+                r = ((r * 255 + a / 2) / a).coerceIn(0, 255)
+                g = ((g * 255 + a / 2) / a).coerceIn(0, 255)
+                b = ((b * 255 + a / 2) / a).coerceIn(0, 255)
+            } else if (a == 0) {
+                r = 0; g = 0; b = 0
+            }
+            out[o] = r.toByte()
+            out[o + 1] = g.toByte()
+            out[o + 2] = b.toByte()
+            out[o + 3] = a.toByte()
+        }
+        return out
+    }
+
+    // -------------------------------------------------------------------------
+    // Undecorated 8-Edge Resize, Text Menu Commands & Test Registry
+    // -------------------------------------------------------------------------
+
+    private fun edgeToCssCursor(edge: UndecoratedResizeEdge): CssCursor = when (edge) {
+        UndecoratedResizeEdge.N -> CssCursor.N_RESIZE
+        UndecoratedResizeEdge.S -> CssCursor.S_RESIZE
+        UndecoratedResizeEdge.E -> CssCursor.E_RESIZE
+        UndecoratedResizeEdge.W -> CssCursor.W_RESIZE
+        UndecoratedResizeEdge.NE -> CssCursor.NE_RESIZE
+        UndecoratedResizeEdge.NW -> CssCursor.NW_RESIZE
+        UndecoratedResizeEdge.SE -> CssCursor.SE_RESIZE
+        UndecoratedResizeEdge.SW -> CssCursor.SW_RESIZE
+        UndecoratedResizeEdge.NONE -> CssCursor.DEFAULT
+    }
+
+    internal fun onNativeWindowLiveResizeChanged(windowKey: Long, active: Boolean) {
+        val session = sessions[windowKey] ?: return
+        val rv = session.rootView
+        rv.isInNativeLiveResize = active
+        if (active) {
+            val edge = if (session.activeResizeEdge != UndecoratedResizeEdge.NONE) {
+                session.activeResizeEdge
+            } else {
+                val mousePt = NSEvent.mouseLocation
+                val winPt = session.nsWindow.convertPointFromScreen(mousePt)
+                val (lx, ly) = rv.convertPoint(winPt, fromView = null).useContents { x to y }
+                val (bw, bh) = rv.bounds.useContents { size.width to size.height }
+                detectUndecoratedResizeEdge(lx, ly, bw, bh, isWindowControlHit = false)
+            }
+            if (session.activeWindowResizeDragSession?.isActive != true) {
+                session.activeWindowResizeDragSession = PointerDragManager.startWindowResizeDrag(
+                    lockedCursor = edgeToCssCursor(edge)
+                )
+            }
+            if (rv.lockedResizeCursor == null) {
+                rv.lockedResizeCursor = if (edge != UndecoratedResizeEdge.NONE) {
+                    resolveCursorForResizeEdge(edge).second
+                } else {
+                    NSCursor.currentCursor
+                }
+            }
+            rv.lockedResizeCursor?.set()
+        } else {
+            val hostWin = session.nsWindow as? MacosHostWindow
+            if (rv.activeCustomResizeEdge == UndecoratedResizeEdge.NONE) {
+                session.activeWindowResizeDragSession?.dispose()
+                session.activeWindowResizeDragSession = null
+                rv.lockedResizeCursor = null
+            }
+            if (!session.isClosing &&
+                !session.isSyncingSize &&
+                hostWin?.isTransitioningFullscreen != true &&
+                hostWin?.isAnimatingMaximize != true &&
+                hostWin?.isPerformingNativeZoom != true
+            ) {
+                val (w, h) = session.currentClientSize()
+                session.windowImpl?.notifyHostResizedFromOs(
+                    widthPx = w,
+                    heightPx = h,
+                    fullscreenNow = session.activeFullscreen,
+                    maximizedNow = session.nsWindow.isZoomed()
+                )
+            }
+            refreshDeferredBackdropUnderlays(rv)
+            session.layoutWindowTree(force = false)
+        }
+        session.nsWindow.invalidateCursorRectsForView(rv)
+    }
+
+    private fun resetUndecoratedResizeState(session: MacosWindowSession) {
+        val hadState = session.activeResizeEdge != UndecoratedResizeEdge.NONE ||
+            session.rootView.activeCustomResizeEdge != UndecoratedResizeEdge.NONE ||
+            session.rootView.lockedResizeCursor != null ||
+            session.activeWindowResizeDragSession?.isActive == true
+        session.activeResizeEdge = UndecoratedResizeEdge.NONE
+        session.resizeStartFrame = null
+        session.activeWindowResizeDragSession?.dispose()
+        session.activeWindowResizeDragSession = null
+        session.rootView.activeCustomResizeEdge = UndecoratedResizeEdge.NONE
+        if (!session.rootView.isInNativeLiveResize) {
+            session.rootView.lockedResizeCursor = null
+        }
+        if (hadState) {
+            session.nsWindow.invalidateCursorRectsForView(session.rootView)
+        }
+    }
+
+    internal fun detectUndecoratedResizeEdge(
+        viewX: Double,
+        viewY: Double,
+        viewWidth: Double,
+        viewHeight: Double,
+        isWindowControlHit: Boolean
+    ): UndecoratedResizeEdge {
+        if (viewWidth <= 0.0 || viewHeight <= 0.0) {
+            return UndecoratedResizeEdge.NONE
+        }
+        if (viewX < 0.0 || viewX > viewWidth || viewY < 0.0 || viewY > viewHeight) {
+            return UndecoratedResizeEdge.NONE
+        }
+        val edgeBand = if (isWindowControlHit) UNDECORATED_RESIZE_CONTROL_EDGE_PT else UNDECORATED_RESIZE_EDGE_PT
+        val cornerBand = if (isWindowControlHit) UNDECORATED_RESIZE_CONTROL_EDGE_PT else UNDECORATED_RESIZE_CORNER_PT
+        val onLeftEdge = viewX <= edgeBand
+        val onRightEdge = viewX >= viewWidth - edgeBand
+        val onTopEdge = viewY <= edgeBand
+        val onBottomEdge = viewY >= viewHeight - edgeBand
+        val inLeftCorner = viewX <= cornerBand
+        val inRightCorner = viewX >= viewWidth - cornerBand
+        val inTopCorner = viewY <= cornerBand
+        val inBottomCorner = viewY >= viewHeight - cornerBand
+        return when {
+            (onTopEdge && inLeftCorner) || (onLeftEdge && inTopCorner) -> UndecoratedResizeEdge.NW
+            (onTopEdge && inRightCorner) || (onRightEdge && inTopCorner) -> UndecoratedResizeEdge.NE
+            (onBottomEdge && inLeftCorner) || (onLeftEdge && inBottomCorner) -> UndecoratedResizeEdge.SW
+            (onBottomEdge && inRightCorner) || (onRightEdge && inBottomCorner) -> UndecoratedResizeEdge.SE
+            onTopEdge -> UndecoratedResizeEdge.N
+            onBottomEdge -> UndecoratedResizeEdge.S
+            onLeftEdge -> UndecoratedResizeEdge.W
+            onRightEdge -> UndecoratedResizeEdge.E
+            else -> UndecoratedResizeEdge.NONE
+        }
+    }
+
+    internal fun resolveCursorForResizeEdge(edge: UndecoratedResizeEdge): Pair<String, NSCursor> {
+        val hasMacos15FrameCursors = NSProcessInfo.processInfo.operatingSystemVersion.useContents {
+            majorVersion >= 15L
+        }
+        val cursor = when (edge) {
+            UndecoratedResizeEdge.N -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionTop, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.resizeUpDownCursor
+            UndecoratedResizeEdge.S -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionBottom, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.resizeUpDownCursor
+            UndecoratedResizeEdge.W -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionLeft, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.resizeLeftRightCursor
+            UndecoratedResizeEdge.E -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionRight, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.resizeLeftRightCursor
+            UndecoratedResizeEdge.NW -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionTopLeft, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.crosshairCursor
+            UndecoratedResizeEdge.NE -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionTopRight, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.crosshairCursor
+            UndecoratedResizeEdge.SW -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionBottomLeft, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.crosshairCursor
+            UndecoratedResizeEdge.SE -> if (hasMacos15FrameCursors) {
+                NSCursor.frameResizeCursorFromPosition(NSCursorFrameResizePositionBottomRight, NSCursorFrameResizeDirectionsAll)
+            } else NSCursor.crosshairCursor
+            UndecoratedResizeEdge.NONE -> NSCursor.arrowCursor
+        }
+        return "resize:${edge.name.lowercase()}" to cursor
+    }
+
+    internal fun computeResizedWindowFrame(
+        startFrame: CValue<NSRect>,
+        edge: UndecoratedResizeEdge,
+        deltaScreenX: Double,
+        deltaScreenY: Double,
+        minSize: Size? = null,
+        maxSize: Size? = null,
+        aspectRatio: Double? = null
+    ): CValue<NSRect> {
+        var sx = 0.0
+        var sy = 0.0
+        var sw = 0.0
+        var sh = 0.0
+        startFrame.useContents {
+            sx = origin.x; sy = origin.y; sw = size.width; sh = size.height
+        }
+        val minW = (minSize?.width?.toDouble() ?: 160.0).coerceAtLeast(60.0)
+        val minH = (minSize?.height?.toDouble() ?: 120.0).coerceAtLeast(60.0)
+        val maxW = maxSize?.width?.toDouble() ?: 10000.0
+        val maxH = maxSize?.height?.toDouble() ?: 10000.0
+
+        if (aspectRatio != null && aspectRatio > 0.0 && edge != UndecoratedResizeEdge.NONE) {
+            val effMinW = maxOf(minW, minH * aspectRatio).coerceAtMost(maxW)
+            val effMaxW = minOf(maxW, maxH * aspectRatio).coerceAtLeast(effMinW)
+            val hasHoriz = edge.left || edge.right
+            val hasVert = edge.top || edge.bottom
+            val rawW = if (edge.right) sw + deltaScreenX else if (edge.left) sw - deltaScreenX else sw
+            val rawH = if (edge.top) sh + deltaScreenY else if (edge.bottom) sh - deltaScreenY else sh
+            val targetW = when {
+                hasHoriz && !hasVert -> rawW.coerceIn(effMinW, effMaxW)
+                !hasHoriz && hasVert -> (rawH * aspectRatio).coerceIn(effMinW, effMaxW)
+                else -> {
+                    val useX = kotlin.math.abs(deltaScreenX) >= kotlin.math.abs(deltaScreenY * aspectRatio)
+                    (if (useX) rawW else rawH * aspectRatio).coerceIn(effMinW, effMaxW)
+                }
+            }
+            val targetH = targetW / aspectRatio
+            val nx = when {
+                edge.left -> sx + (sw - targetW)
+                edge.right -> sx
+                else -> sx + (sw - targetW) * 0.5
+            }
+            val ny = when {
+                edge.top -> sy
+                edge.bottom -> sy + (sh - targetH)
+                else -> sy + (sh - targetH)
+            }
+            return NSMakeRect(nx, ny, targetW, targetH)
+        }
+
+        var nx = sx
+        var ny = sy
+        var nw = sw
+        var nh = sh
+
+        if (edge.right) {
+            nw = (sw + deltaScreenX).coerceIn(minW, maxW)
+        } else if (edge.left) {
+            val proposedW = (sw - deltaScreenX).coerceIn(minW, maxW)
+            nx = sx + (sw - proposedW)
+            nw = proposedW
+        }
+
+        // AppKit window frame Y points upward: dragging top up increases deltaScreenY -> taller frame.
+        if (edge.top) {
+            nh = (sh + deltaScreenY).coerceIn(minH, maxH)
+        } else if (edge.bottom) {
+            val proposedH = (sh - deltaScreenY).coerceIn(minH, maxH)
+            ny = sy + (sh - proposedH)
+            nh = proposedH
+        }
+
+        return NSMakeRect(nx, ny, nw, nh)
+    }
+
+    private fun handleUndecoratedEdgeMouseDown(session: MacosWindowSession, event: NSEvent): Boolean {
+        val rv = session.rootView
+        if (!rv.isUndecoratedChrome || rv.isWindowInFullscreen()) return false
+        val (lx, ly) = rv.convertPoint(event.locationInWindow, fromView = null).useContents { x to y }
+        val (bw, bh) = rv.bounds.useContents { size.width to size.height }
+        val edge = detectUndecoratedResizeEdge(lx, ly, bw, bh, isWindowControlHit = false)
+        if (edge == UndecoratedResizeEdge.NONE) return false
+        (session.nsWindow as? MacosHostWindow)?.clearMaximizedStateOnManualResize()
+        session.activeResizeEdge = edge
+        val cursor = resolveCursorForResizeEdge(edge).second
+        session.activeWindowResizeDragSession?.dispose()
+        session.activeWindowResizeDragSession = PointerDragManager.startWindowResizeDrag(
+            lockedCursor = edgeToCssCursor(edge)
+        )
+        rv.activeCustomResizeEdge = edge
+        rv.lockedResizeCursor = cursor
+        cursor.set()
+        session.nsWindow.invalidateCursorRectsForView(rv)
+        val screenPt = session.nsWindow.convertPointToScreen(event.locationInWindow)
+        screenPt.useContents {
+            session.resizeStartScreenX = x
+            session.resizeStartScreenY = y
+        }
+        session.resizeStartFrame = session.nsWindow.frame
+        return true
+    }
+
+    private fun handleUndecoratedEdgeMouseDragged(session: MacosWindowSession, event: NSEvent): Boolean {
+        val edge = session.activeResizeEdge
+        val startFrame = session.resizeStartFrame ?: return false
+        if (edge == UndecoratedResizeEdge.NONE) return false
+        session.rootView.lockedResizeCursor?.set()
+        val screenPt = session.nsWindow.convertPointToScreen(event.locationInWindow)
+        var curSX = 0.0
+        var curSY = 0.0
+        screenPt.useContents { curSX = x; curSY = y }
+        val win = session.windowImpl
+        val nextFrame = computeResizedWindowFrame(
+            startFrame = startFrame,
+            edge = edge,
+            deltaScreenX = curSX - session.resizeStartScreenX,
+            deltaScreenY = curSY - session.resizeStartScreenY,
+            minSize = win?.getMinWindowSize(),
+            aspectRatio = win?.getAspectRatio()
+        )
+        session.nsWindow.setFrame(nextFrame, display = true)
+        return true
+    }
+
+    private fun handleUndecoratedEdgeMouseUp(session: MacosWindowSession): Boolean {
+        if (session.activeResizeEdge == UndecoratedResizeEdge.NONE &&
+            session.rootView.activeCustomResizeEdge == UndecoratedResizeEdge.NONE
+        ) {
+            return false
+        }
+        resetUndecoratedResizeState(session)
+        return true
+    }
+
+    private fun dispatchWindowKeyEvent(session: MacosWindowSession, event: NSEvent, isDown: Boolean): Boolean {
+        val chars = event.charactersIgnoringModifiers ?: event.characters ?: ""
+        val keyStr = when (event.keyCode.toInt()) {
+            36, 76 -> "Enter"
+            48 -> "Tab"
+            49 -> " "
+            51 -> "Backspace"
+            53 -> "Escape"
+            123 -> "ArrowLeft"
+            124 -> "ArrowRight"
+            125 -> "ArrowDown"
+            126 -> "ArrowUp"
+            else -> chars.ifEmpty { "Unidentified" }
+        }
+        val mod = event.modifierFlags
+        val ke = KeyEvent(
+            key = keyStr,
+            code = keyStr,
+            keyCode = event.keyCode.toInt(),
+            shiftKey = (mod and NSEventModifierFlagShift) != 0uL,
+            ctrlKey = (mod and NSEventModifierFlagControl) != 0uL,
+            altKey = (mod and NSEventModifierFlagOption) != 0uL,
+            metaKey = (mod and NSEventModifierFlagCommand) != 0uL,
+            isRepeat = event.isARepeat()
+        )
+        val win = session.windowImpl ?: return false
+        if (isDown) win.dispatchKeyDown(ke) else win.dispatchKeyUp(ke)
+        return true
+    }
+
+    fun performTextCut() {
+        NSApplication.sharedApplication.sendAction(NSSelectorFromString("cut:"), to = null, from = null)
+    }
+
+    fun performTextCopy() {
+        NSApplication.sharedApplication.sendAction(NSSelectorFromString("copy:"), to = null, from = null)
+    }
+
+    fun performTextPaste() {
+        NSApplication.sharedApplication.sendAction(NSSelectorFromString("paste:"), to = null, from = null)
+    }
+
+    fun performTextSelectAll() {
+        NSApplication.sharedApplication.sendAction(NSSelectorFromString("selectAll:"), to = null, from = null)
+    }
+
+    internal fun dialogSessionNsWindow(dialogImpl: DesktopDialogWindowNativeImpl<*>): NSWindow? =
+        sessions[dialogImpl.nativeWidget.nativePointer]?.nsWindow
+
+    internal fun dialogSessionOwnerKey(dialogImpl: DesktopDialogWindowNativeImpl<*>): Long? =
+        sessions[dialogImpl.nativeWidget.nativePointer]?.ownerWindowKey
+
+    internal fun registerSessionForTest(session: MacosWindowSession) {
+        sessions[session.windowKey] = session
+        activeKeyWindowId = session.windowKey
+    }
+
+    internal fun unregisterSessionForTest(windowKey: Long) {
+        sessions.remove(windowKey)
+        if (activeKeyWindowId == windowKey) {
+            activeKeyWindowId = sessions.keys.firstOrNull()
+        }
+    }
+
+    private fun activeSession(): MacosWindowSession? {
+        activeKeyWindowId?.let { id -> sessions[id]?.let { if (!it.isClosing) return it } }
+        return sessions.values.firstOrNull { !it.isClosing }
+    }
 }

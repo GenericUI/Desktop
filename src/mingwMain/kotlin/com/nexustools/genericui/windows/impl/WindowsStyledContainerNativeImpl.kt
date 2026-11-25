@@ -1,35 +1,100 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.windows.impl
 
+import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.windows.Win32HwndHandle
-import com.nexustools.genericui.windows.render.Win32ContainerChromeRenderUtil
-import com.nexustools.genericui.windows.render.Win32RenderContext
+import com.nexustools.genericui.windows.Win32LayeredStageHostHwnd
+import com.nexustools.genericui.windows.Win32RetainedControlSupport
+import platform.windows.InvalidateRect
 
 /**
- * Win32 native implementation for custom-skinned `StyledContainer` surfaces.
+ * Retained Win32 styled container (`"GenericUIStyledContainerW"` or `"GenericUILayeredStageHostW"`)
+ * supporting backgrounds, multi-stop gradients, rounded SDF clipping, borders, box shadows, focus
+ * rings, and all 10 `filter` / `backdrop-filter` operations.
  */
 class WindowsStyledContainerNativeImpl(
-    widget: Win32HwndHandle = Win32HwndHandle("GenericUIStyledContainerClass"),
+    widget: Win32HwndHandle = Win32HwndHandle("GenericUIStyledContainerW"),
     classPrefix: String = "styled-container",
     tagName: String = "genericui:styled-container"
-) : DesktopStyledContainerNativeImpl<Win32HwndHandle>(widget, classPrefix), WindowsRenderableNativeImpl {
+) : DesktopStyledContainerNativeImpl<Win32HwndHandle>(widget, classPrefix, tagName) {
 
     init {
-        nativeWidget.attributes["nativeImpl"] = this
-        nativeWidget.attributes["tagName"] = tagName
+        val initialClass = if (Win32LayeredStageHostHwnd.isLayeredStageContainer(this)) {
+            "GenericUILayeredStageHostW"
+        } else {
+            "GenericUIStyledContainerW"
+        }
+        layoutController = Win32RetainedControlSupport.initContainer(
+            container = this,
+            handle = nativeWidget,
+            win32ClassName = initialClass
+        )
+        if (initialClass == "GenericUILayeredStageHostW") {
+            Win32LayeredStageHostHwnd.registerStageHost(nativeWidget, this)
+        }
+        Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = true)
     }
 
-    override fun renderWin32(
-        ctx: Win32RenderContext,
-        left: Int,
-        top: Int,
-        right: Int,
-        fixedHeight: Int?
-    ): Int = Win32ContainerChromeRenderUtil.renderContainerOrCard(
-        ctx = ctx,
-        widget = nativeWidget,
-        left = left,
-        top = top,
-        right = right
-    )
+    override fun onChildAddedNative(childImpl: NativeImpl<*>, index: Int) {
+        Win32RetainedControlSupport.onContainerChildAdded(
+            container = this,
+            handle = nativeWidget,
+            childImpl = childImpl,
+            ensureStageUpgrade = true
+        )
+    }
+
+    override fun onChildRemovedNative(childImpl: NativeImpl<*>) {
+        Win32RetainedControlSupport.onContainerChildRemoved(this, nativeWidget, childImpl)
+    }
+
+    override fun onChildrenClearedNative() {
+        Win32RetainedControlSupport.onContainerChildrenCleared(nativeWidget, childImpls.toList())
+    }
+
+    override fun onNativeBoundsChanged(rect: Rect) {
+        Win32RetainedControlSupport.onContainerBoundsChanged(this, nativeWidget, rect)
+    }
+
+    override fun onNativeVisibilityChanged(visible: Boolean) {
+        Win32RetainedControlSupport.onVisibilityChanged(nativeWidget, visible)
+    }
+
+    override fun onNativeEnabledChanged(enabled: Boolean) {
+        Win32RetainedControlSupport.onEnabledChanged(nativeWidget, enabled)
+    }
+
+    override fun onNativeOpacityChanged(opacity: Float) {
+        Win32RetainedControlSupport.onOpacityChanged(nativeWidget, opacity)
+    }
+
+    override fun onNativeTooltipChanged(tooltip: String?) {
+        Win32RetainedControlSupport.onTooltipChanged(nativeWidget, tooltip)
+    }
+
+    override fun onNativeCursorChanged(cursor: CssCursorValue?) {
+        Win32RetainedControlSupport.onCursorChanged(nativeWidget, cursor)
+    }
+
+    override fun onNativePointerEventsChanged(pointerEventsNone: Boolean) {
+        Win32RetainedControlSupport.onPointerEventsChanged(nativeWidget, pointerEventsNone)
+    }
+
+    override fun onNativeZIndexChanged(zIndex: Int) {
+        Win32RetainedControlSupport.onZIndexChanged(nativeWidget, zIndex)
+    }
+
+    override fun onNativeStyleSynced() {
+        Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = true)
+        nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+    }
+
+    override fun dispose() {
+        Win32RetainedControlSupport.onDispose(nativeWidget)
+        super.dispose()
+    }
 }

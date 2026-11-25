@@ -5,8 +5,8 @@ package com.nexustools.genericui.linux
 import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.gtk.GtkWindowNativeImpl
-import com.nexustools.genericui.qt.QtWidgetHandle
-import com.nexustools.genericui.qt.QtWindowNativeImpl
+import com.nexustools.genericui.kde.KdeDynamicBindings
+import com.nexustools.genericui.kde.KdeWindowNativeImpl
 import com.nexustools.genericui.window.WindowAspectRatioHelper
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.LongVar
@@ -141,35 +141,35 @@ class LinuxWindowAspectRatioAndX11HintsTest {
     }
 
     @Test
-    fun qtWindowAlwaysOnTopFlagAndAspectRatioClampInNormalVsUnconstrainedStates() {
-        val impl = QtWindowNativeImpl()
+    fun kdeWindowAlwaysOnTopFlagAndAspectRatioClampInNormalVsUnconstrainedStates() {
+        val impl = KdeWindowNativeImpl()
         val sixteenByNine = 16.0 / 9.0
 
         assertFalse(impl.isAlwaysOnTop())
-        assertEquals(0, impl.nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_WindowStaysOnTopHint)
+        assertEquals(0, impl.nativeWidget.kdeWindowFlags and KdeDynamicBindings.WINDOW_STAYS_ON_TOP_HINT)
 
         impl.setAlwaysOnTop(true)
         assertTrue(impl.isAlwaysOnTop())
-        assertTrue((impl.nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_WindowStaysOnTopHint) != 0)
-        assertEquals(impl.nativeWidget.qtWindowFlags, impl.nativeWidget.attributes["qtWindowFlags"])
+        assertTrue((impl.nativeWidget.kdeWindowFlags and KdeDynamicBindings.WINDOW_STAYS_ON_TOP_HINT) != 0)
+        assertEquals(impl.nativeWidget.kdeWindowFlags, impl.nativeWidget.attributes["kdeWindowFlags"])
 
         impl.setAlwaysOnTop(false)
         assertFalse(impl.isAlwaysOnTop())
-        assertEquals(0, impl.nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_WindowStaysOnTopHint)
+        assertEquals(0, impl.nativeWidget.kdeWindowFlags and KdeDynamicBindings.WINDOW_STAYS_ON_TOP_HINT)
 
-        // Tool-modal owned window with alwaysOnTopOfOwner retains Qt_WindowStaysOnTopHint
-        val owner = QtWindowNativeImpl()
+        // Tool-modal owned window with alwaysOnTopOfOwner retains WINDOW_STAYS_ON_TOP_HINT
+        val owner = KdeWindowNativeImpl()
         impl.configureAsToolModalWindow(
             ownerWindow = owner,
             showInTaskbar = false,
             minimizable = false,
             alwaysOnTopOfOwner = true
         )
-        assertTrue((impl.nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_WindowStaysOnTopHint) != 0)
+        assertTrue((impl.nativeWidget.kdeWindowFlags and KdeDynamicBindings.WINDOW_STAYS_ON_TOP_HINT) != 0)
         impl.setAlwaysOnTop(false)
-        assertTrue((impl.nativeWidget.qtWindowFlags and QtWidgetHandle.Qt_WindowStaysOnTopHint) != 0)
+        assertTrue((impl.nativeWidget.kdeWindowFlags and KdeDynamicBindings.WINDOW_STAYS_ON_TOP_HINT) != 0)
 
-        val main = QtWindowNativeImpl()
+        val main = KdeWindowNativeImpl()
         main.setAspectRatio(sixteenByNine)
         main.setWindowSize(Size(1600, 1000))
         assertEquals(Size(1600, 900), main.getWindowSize())
@@ -193,5 +193,48 @@ class LinuxWindowAspectRatioAndX11HintsTest {
 
         main.setAspectRatio(null)
         assertFailsWith<IllegalArgumentException> { main.setAspectRatio(-16.0 / 9.0) }
+    }
+
+    @Test
+    fun x11HintsPMinSizeAndUndecoratedGtkKdeMinWindowSizeEnforcement() = memScoped {
+        val hintsBuf = allocArray<LongVar>(18)
+        for (i in 0 until 18) hintsBuf[i] = 0L
+        val hintsInts = hintsBuf.reinterpret<IntVar>()
+
+        LinuxX11WindowHintsBridge.applySizeHintsMinSizeBuffer(hintsBuf, 360, 220)
+        assertTrue((hintsBuf[0] and LinuxX11WindowHintsBridge.P_MIN_SIZE) != 0L)
+        assertEquals(360, hintsInts[6])
+        assertEquals(220, hintsInts[7])
+
+        LinuxX11WindowHintsBridge.applySizeHintsMinSizeBuffer(hintsBuf, null, null)
+        assertEquals(0L, hintsBuf[0] and LinuxX11WindowHintsBridge.P_MIN_SIZE)
+        assertEquals(0, hintsInts[6])
+        assertEquals(0, hintsInts[7])
+
+        // Verify GTK4 and KDE undecorated windows enforce minWindowSize on host resize events
+        // both with and without an aspectRatio lock.
+        val gtkWin = GtkWindowNativeImpl()
+        gtkWin.setUndecorated(true)
+        gtkWin.setMinWindowSize(Size(360, 220))
+        gtkWin.syncHostClientSize(widthPx = 200, heightPx = 140, fullscreenNow = false, maximizedNow = false)
+        assertEquals(Size(360, 220), gtkWin.getWindowSize())
+
+        gtkWin.setAspectRatio(16.0 / 9.0)
+        gtkWin.syncHostClientSize(widthPx = 240, heightPx = 150, fullscreenNow = false, maximizedNow = false)
+        assertTrue(gtkWin.getWindowSize().width >= 360)
+        assertTrue(gtkWin.getWindowSize().height >= 220)
+        assertTrue(WindowAspectRatioHelper.matchesAspectRatio(gtkWin.getWindowSize(), 16.0 / 9.0, tolerancePx = 2))
+
+        val kdeWin = KdeWindowNativeImpl()
+        kdeWin.setUndecorated(true)
+        kdeWin.setMinWindowSize(Size(360, 220))
+        kdeWin.syncHostClientSize(widthPx = 200, heightPx = 140, fullscreenNow = false, maximizedNow = false)
+        assertEquals(Size(360, 220), kdeWin.getWindowSize())
+
+        kdeWin.setAspectRatio(16.0 / 9.0)
+        kdeWin.syncHostClientSize(widthPx = 240, heightPx = 150, fullscreenNow = false, maximizedNow = false)
+        assertTrue(kdeWin.getWindowSize().width >= 360)
+        assertTrue(kdeWin.getWindowSize().height >= 220)
+        assertTrue(WindowAspectRatioHelper.matchesAspectRatio(kdeWin.getWindowSize(), 16.0 / 9.0, tolerancePx = 2))
     }
 }

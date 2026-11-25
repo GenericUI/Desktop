@@ -25,15 +25,22 @@ kotlin {
                 "-lshell32",
                 "-luuid",
                 "-lwindowscodecs",
-                "-liphlpapi"
+                "-liphlpapi",
+                "-lcomctl32",
+                "-luxtheme",
+                "-ldwmapi",
+                "-lmsimg32"
             )
         }
     }
 
     macosArm64()
 
-    linuxX64()
-    linuxArm64()
+    listOf(linuxX64(), linuxArm64()).forEach { target ->
+        target.compilations.getByName("main").cinterops.create("kdeAbi") {
+            defFile(project.file("src/nativeInterop/cinterop/kde_abi.def"))
+        }
+    }
 
     sourceSets {
         val commonMain by getting {

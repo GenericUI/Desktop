@@ -9,9 +9,11 @@ import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.StyledVisualSpec
 import com.nexustools.genericui.style.theme.SystemThemeDetector
+import java.awt.AlphaComposite
 import java.awt.Color
 import java.awt.Dimension
 import java.awt.Graphics
+import java.awt.Graphics2D
 import java.awt.event.FocusAdapter
 import java.awt.event.FocusEvent
 import java.awt.event.MouseAdapter
@@ -29,29 +31,56 @@ class SwingStyledButtonImpl(
 ) : SwingButtonImpl(
     classPrefix,
     object : JButton() {
+        override fun contains(x: Int, y: Int): Boolean {
+            val impl = getClientProperty(CLIENT_PROPERTY_KEY) as? SwingBaseNativeImpl ?: return super.contains(x, y)
+            return impl.hitTestContains(this, x, y, super.contains(x, y))
+        }
+
         override fun paintComponent(g: Graphics) {
-            if (!isContentAreaFilled) {
-                @Suppress("UNCHECKED_CAST")
-                val provider = getClientProperty("styledButtonVisualsProvider") as? (() -> StyledVisualSpec)
-                val spec = provider?.invoke()
-                    ?: (getClientProperty("styledButtonVisuals") as? StyledVisualSpec)
-                    ?: StyledVisualSpec.EMPTY
-                val focusedState = (getClientProperty("styledButtonFocused") as? Boolean) ?: hasFocus()
-                val componentOpacity = (getClientProperty("opacity") as? Float) ?: 1f
-                val effBackdrop = CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
-                if (effBackdrop != null && width > 0 && height > 0) {
-                    SwingHardwareBackdropBlurRenderer.paintBackdrop(g, this, effBackdrop, spec.borderRadiusPx ?: 0f)
+            val rawOpacity = getClientProperty("opacity") as? Float
+            @Suppress("UNCHECKED_CAST")
+            val provider = getClientProperty("styledButtonVisualsProvider") as? (() -> StyledVisualSpec)
+            val spec = provider?.invoke()
+                ?: (getClientProperty("styledButtonVisuals") as? StyledVisualSpec)
+                ?: StyledVisualSpec.EMPTY
+            val componentOpacity = (rawOpacity ?: spec.opacity ?: 1f).coerceIn(0f, 1f)
+            if (componentOpacity <= SwingSurfacePaintUtil.OPACITY_SKIP_THRESHOLD) return
+            SwingSurfacePaintUtil.withComponentTransform(this, g) { tg ->
+                if (!isContentAreaFilled) {
+                    val focusedState = (getClientProperty("styledButtonFocused") as? Boolean) ?: hasFocus()
+                    val effBackdrop = CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
+                    if (effBackdrop != null && componentOpacity > SwingSurfacePaintUtil.OPACITY_SKIP_THRESHOLD && width > 0 && height > 0) {
+                        SwingSurfacePaintUtil.paintBackdropWithOpacity(
+                            g = tg,
+                            target = this,
+                            filter = effBackdrop,
+                            cornerRadiusPx = spec.borderRadiusPx ?: 0f,
+                            componentOpacity = componentOpacity
+                        )
+                    }
+                    SwingSurfacePaintUtil.paintStyledSurface(
+                        g = tg,
+                        width = width,
+                        height = height,
+                        spec = spec.copy(opacity = null),
+                        isFocused = focusedState,
+                        componentOpacity = componentOpacity
+                    )
                 }
-                SwingStyledContainerImpl.paintStyledSurface(
-                    g = g,
-                    width = width,
-                    height = height,
-                    spec = spec,
-                    isFocused = focusedState,
-                    componentOpacity = componentOpacity
-                )
+                if (componentOpacity < 0.999f) {
+                    val fgG2 = tg.create() as? Graphics2D
+                    if (fgG2 != null) {
+                        try {
+                            fgG2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, componentOpacity)
+                            super.paintComponent(fgG2)
+                        } finally {
+                            fgG2.dispose()
+                        }
+                        return@withComponentTransform
+                    }
+                }
+                super.paintComponent(tg)
             }
-            super.paintComponent(g)
         }
 
         override fun getPreferredSize(): Dimension {
@@ -78,6 +107,7 @@ class SwingStyledButtonImpl(
 
     init {
         nativeWidget.isContentAreaFilled = false
+        nativeWidget.isBorderPainted = false
         nativeWidget.isFocusPainted = false
         nativeWidget.isOpaque = false
         nativeWidget.putClientProperty("antialiasing", true)
@@ -116,6 +146,7 @@ class SwingStyledButtonImpl(
     override fun syncSwingAppearance() {
         super.syncSwingAppearance()
         nativeWidget.isContentAreaFilled = false
+        nativeWidget.isBorderPainted = false
         nativeWidget.isFocusPainted = false
         nativeWidget.isOpaque = false
     }
@@ -123,6 +154,7 @@ class SwingStyledButtonImpl(
     private fun syncCurrentVisuals() {
         val current = getStyledVisuals()
         nativeWidget.isContentAreaFilled = false
+        nativeWidget.isBorderPainted = false
         nativeWidget.isFocusPainted = false
         nativeWidget.isOpaque = false
         nativeWidget.putClientProperty("backdropBlurPx", current.backdropBlurPx)
@@ -149,7 +181,13 @@ class SwingStyledButtonImpl(
         current.textColor?.let { c ->
             nativeWidget.foreground = Color(c.r.coerceIn(0, 255), c.g.coerceIn(0, 255), c.b.coerceIn(0, 255), c.a.coerceIn(0, 255))
         }
-        current.opacity?.let { setOpacity(it) }
+        val computedOpacity = lastAppliedComputedOpacity
+        val preserveTransitionOpacity = computedOpacity != null &&
+            current.opacity == computedOpacity &&
+            kotlin.math.abs(getOpacity() - computedOpacity) > 0.0001f
+        if (!preserveTransitionOpacity) {
+            current.opacity?.let { setOpacity(it) }
+        }
         current.padding?.let { pad ->
             nativeWidget.border = BorderFactory.createEmptyBorder(pad.top, pad.left, pad.bottom, pad.right)
         }
@@ -208,7 +246,7 @@ class SwingStyledButtonImpl(
     override fun isHoveredState(): Boolean = hovered
 
     override fun setFocusedState(focused: Boolean) {
-        this.focused = focused && isEnabled()
+        this.focused = focused && isEnabled() && isEffectivelyFocusableInSwing()
         syncCurrentVisuals()
     }
 

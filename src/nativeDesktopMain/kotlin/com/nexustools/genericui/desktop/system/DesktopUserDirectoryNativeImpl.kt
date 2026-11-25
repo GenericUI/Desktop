@@ -13,7 +13,7 @@ import com.nexustools.genericui.util.UserDirectory
 import kotlin.concurrent.atomics.AtomicInt
 
 /**
- * Shared Desktop (`:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, `:desktop:qt`) implementation
+ * Shared Desktop (`:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, `:desktop:kde`) implementation
  * of [UserDirectoryNativeImpl] backed by POSIX file I/O ([DesktopConfigDirectoryHelper]), [FileSystem]
  * async stream delegation (`usesFileSystemBasePath == true`), and direct POSIX `readdir` directory enumeration.
  */

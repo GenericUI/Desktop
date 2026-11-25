@@ -5,6 +5,7 @@ import com.nexustools.genericui.core.NativeFactory
 import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.window.MainWindowSavedState
+import com.nexustools.genericui.window.TitleCapabilities
 import java.awt.GraphicsEnvironment
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
@@ -33,6 +34,7 @@ import com.nexustools.genericui.nativeimpl.lazy.LazyListNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.TreeViewNativeImpl
 import com.nexustools.genericui.nativeimpl.navigation.BottomNavigationBarNativeImpl
 import com.nexustools.genericui.nativeimpl.navigation.NavbarNativeImpl
+import com.nexustools.genericui.nativeimpl.surface.StyledComponentNativeImpl
 import com.nexustools.genericui.nativeimpl.net.HttpClientNativeImpl
 import com.nexustools.genericui.nativeimpl.net.TcpSocketNativeImpl
 import com.nexustools.genericui.nativeimpl.net.UdpSocketNativeImpl
@@ -57,6 +59,8 @@ class SwingNativeFactory : NativeFactory {
     override val backendTarget: com.nexustools.genericui.enums.system.BackendTarget =
         com.nexustools.genericui.enums.system.BackendTarget.Swing
     override val backendName: String = "swing"
+    override val defaultTitleCapabilities: TitleCapabilities
+        get() = SwingWindowImpl.DEFAULT_TITLE_CAPABILITIES
     override val supportsSystemTray: Boolean
         get() = SwingSystemTrayImpl.checkSystemTraySupported()
     override val layoutFactory: LayoutFactory = DesktopLayoutFactory
@@ -97,6 +101,7 @@ class SwingNativeFactory : NativeFactory {
     }
 
     init {
+        SwingApplicationImpl.ensureSystemLookAndFeelAndThemeInitialized()
         ImageLoader.activeNativeCodec = SwingImageIoCodecImpl()
     }
 
@@ -118,8 +123,12 @@ class SwingNativeFactory : NativeFactory {
 
     // Layout & Printable Book Documents
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> = SwingContainerImpl(classPrefix)
+    override fun createContainer(classPrefix: String, tagName: String): ContainerNativeImpl<*> =
+        SwingContainerImpl(classPrefix, tagName)
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
         SwingStyledContainerImpl(classPrefix, tagName)
+    override fun createStyledComponent(classPrefix: String, tagName: String): StyledComponentNativeImpl<*> =
+        SwingStyledComponentImpl(classPrefix, tagName)
     override fun createBookContainer(): BookContainerNativeImpl<*> = SwingBookContainerImpl()
     override fun createScrollView(): ScrollViewNativeImpl<*> = SwingScrollViewImpl()
     override fun createDivider(): DividerNativeImpl<*> = SwingDividerImpl()
@@ -161,6 +170,7 @@ class SwingNativeFactory : NativeFactory {
     // System Services
     override fun createUiThreadDispatcher(): UiThreadDispatcherNativeImpl = SwingUiThreadDispatcherNativeImpl()
     override fun createUiTimerScheduler(): UiTimerNativeImpl = SwingUiTimerImpl()
+    override fun createAnimationScheduler(): AnimationNativeImpl = SwingAnimationNativeImpl()
     override fun createPermissionManager(): PermissionManagerNativeImpl = SwingPermissionManagerImpl()
     override fun createSystemTray(): SystemTrayNativeImpl = SwingSystemTrayImpl()
     override fun createNotificationManager(): NotificationManagerNativeImpl = SwingNotificationManagerImpl()

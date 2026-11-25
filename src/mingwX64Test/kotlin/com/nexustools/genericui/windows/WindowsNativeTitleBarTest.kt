@@ -16,15 +16,46 @@ import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
 import com.nexustools.genericui.window.TitleBar
+import com.nexustools.genericui.windows.impl.WindowsScrollViewNativeImpl
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.sizeOf
+import platform.windows.GetClientRect
+import platform.windows.GetScrollInfo
+import platform.windows.GetWindowLongW
+import platform.windows.GWL_STYLE
 import platform.windows.HTCAPTION
 import platform.windows.HTCLIENT
 import platform.windows.HTCLOSE
 import platform.windows.HTMAXBUTTON
 import platform.windows.HTMINBUTTON
 import platform.windows.HTSYSMENU
+import platform.windows.HWND
+import platform.windows.InvalidateRect
+import platform.windows.MapWindowPoints
+import platform.windows.POINT
+import platform.windows.RDW_ALLCHILDREN
+import platform.windows.RDW_INVALIDATE
+import platform.windows.RDW_UPDATENOW
+import platform.windows.RECT
+import platform.windows.RedrawWindow
+import platform.windows.SB_LINEDOWN
+import platform.windows.SB_LINEUP
+import platform.windows.SB_PAGEDOWN
+import platform.windows.SB_VERT
+import platform.windows.SCROLLINFO
+import platform.windows.SIF_PAGE
+import platform.windows.SIF_POS
+import platform.windows.SIF_RANGE
+import platform.windows.SendMessageW
+import platform.windows.UpdateWindow
+import platform.windows.WM_VSCROLL
+import platform.windows.WS_VSCROLL
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -382,39 +413,53 @@ class WindowsNativeTitleBarTest {
 
             val hwnd = Win32NativeWindowHost.activeHwnd
             assertTrue(hwnd != null, "Expected active Win32 HWND")
-            val maxScroll = Win32NativeWindowHost.getCardPageMaxScrollY()
-            assertTrue(maxScroll > 0, "Expected positive maxScrollY for 45 cards, got $maxScroll")
-            assertEquals(0, Win32NativeWindowHost.getCardPageScrollY())
+            val scrollViewImpl = scrollView.ensureNativeImpl() as WindowsScrollViewNativeImpl
+            val svHwnd = scrollViewImpl.nativeWidget.hwnd
+            assertNotNull(svHwnd, "Expected retained ScrollView HWND")
+            assertTrue((GetWindowLongW(svHwnd, GWL_STYLE) and WS_VSCROLL) != 0, "ScrollView HWND must expose WS_VSCROLL")
 
-            val thumbBounds = Win32NativeWindowHost.getCardPageScrollThumbBounds()
-            val thumbCenterX = (thumbBounds[0] + thumbBounds[2]) / 2
-            val thumbCenterY = (thumbBounds[1] + thumbBounds[3]) / 2
-            assertTrue(thumbBounds[2] > thumbBounds[0] && thumbBounds[3] > thumbBounds[1])
+            fun queryScrollInfo(targetHwnd: HWND): Triple<Int, Int, Int> = memScoped {
+                val si = alloc<SCROLLINFO>()
+                si.cbSize = sizeOf<SCROLLINFO>().toUInt()
+                si.fMask = (SIF_RANGE or SIF_PAGE or SIF_POS).toUInt()
+                GetScrollInfo(targetHwnd, SB_VERT, si.ptr)
+                Triple(si.nMax, si.nPage.toInt(), si.nPos)
+            }
 
-            // 1. Hover over the scrollbar thumb -> hover state becomes active
-            Win32NativeWindowHost.handleMouseMove(hwnd, thumbCenterX, thumbCenterY)
-            assertTrue(Win32NativeWindowHost.isCardScrollbarThumbHovered())
+            val (maxRange, pageSize, initialPos) = queryScrollInfo(svHwnd)
+            val maxScroll = (maxRange + 1 - pageSize).coerceAtLeast(0)
+            assertTrue(maxScroll > 0, "Expected positive Win32 SCROLLINFO maxScroll for 45 cards, got max=$maxRange page=$pageSize")
+            assertEquals(0, initialPos)
+            assertEquals(0, scrollViewImpl.currentScrollY())
 
-            // 2. Click and drag the scrollbar thumb downward -> scrollY increases and syncs to ScrollView
-            Win32NativeWindowHost.handleMouseDown(hwnd, thumbCenterX, thumbCenterY)
-            assertTrue(Win32NativeWindowHost.isCardScrollbarThumbDragging())
-            Win32NativeWindowHost.handleMouseMove(hwnd, thumbCenterX, thumbCenterY + 120)
-            val draggedScrollY = Win32NativeWindowHost.getCardPageScrollY()
-            assertTrue(draggedScrollY > 0, "Expected thumb drag to increase scrollY, got $draggedScrollY")
-            val scrollViewImpl = scrollView.ensureNativeImpl() as DesktopScrollViewNativeImpl<*>
-            assertEquals(draggedScrollY, scrollViewImpl.currentScrollY())
-            Win32NativeWindowHost.handleMouseUp(hwnd, thumbCenterX, thumbCenterY + 120)
-            assertFalse(Win32NativeWindowHost.isCardScrollbarThumbDragging())
+            val svBounds = scrollViewImpl.nativeWidget.bounds
+            val svCenterX = svBounds.x + svBounds.width / 2
+            val svCenterY = svBounds.y + svBounds.height / 2
 
-            // 3. Mouse wheel down -> scrollY increases further
-            Win32NativeWindowHost.handleMouseWheel(hwnd, -120)
-            val afterWheelScrollY = Win32NativeWindowHost.getCardPageScrollY()
-            assertTrue(afterWheelScrollY > draggedScrollY)
+            // 1. Hover over the retained child HWND hierarchy inside ScrollView
+            val hoveredTarget = Win32ControlMessageRouter.findDeepestHitChildHwnd(hwnd, svCenterX, svCenterY)
+            assertTrue(hoveredTarget != hwnd, "Expected hover hit inside ScrollView retained child hierarchy")
+            Win32NativeWindowHost.simulateMouseMove(svCenterX, svCenterY, hwnd)
 
-            // 4. Programmatic scrollView.scrollTo(0, 0) -> resets scrollY to 0 on repaint
+            // 2. Native WM_VSCROLL paging -> updates ScrollView offset and Win32 SCROLLINFO.nPos
+            SendMessageW(svHwnd, WM_VSCROLL.toUInt(), SB_PAGEDOWN.toULong(), 0L)
+            Win32NativeWindowHost.pumpVisualWindowEvents(16L)
+            val scrolledPos = scrollViewImpl.currentScrollY()
+            assertTrue(scrolledPos > 0, "Expected WM_VSCROLL SB_PAGEDOWN to increase scrollY, got $scrolledPos")
+            val (_, _, win32PosAfterPage) = queryScrollInfo(svHwnd)
+            assertEquals(scrolledPos, win32PosAfterPage, "SCROLLINFO nPos must stay synchronized with ScrollView scrollY")
+
+            // 3. Mouse wheel down -> scrollY increases further via WM_MOUSEWHEEL bubbling
+            Win32NativeWindowHost.handleMouseWheelAt(hwnd, svCenterX, svCenterY, -120)
+            Win32NativeWindowHost.pumpVisualWindowEvents(16L)
+            val afterWheelScrollY = scrollViewImpl.currentScrollY()
+            assertTrue(afterWheelScrollY > scrolledPos, "Expected wheel to advance scrollY from $scrolledPos, got $afterWheelScrollY")
+
+            // 4. Programmatic scrollView.scrollTo(0, 0) -> resets scrollY and Win32 SCROLLINFO.nPos to 0
             scrollView.scrollTo(0, 0)
-            Win32NativeWindowHost.paintWindow(hwnd)
-            assertEquals(0, Win32NativeWindowHost.getCardPageScrollY())
+            RedrawWindow(hwnd, null, null, (RDW_INVALIDATE or RDW_UPDATENOW or RDW_ALLCHILDREN).toUInt())
+            assertEquals(0, scrollViewImpl.currentScrollY())
+            assertEquals(0, queryScrollInfo(svHwnd).third)
         } finally {
             Win32NativeWindowHost.closeAllVisualWindows()
             Win32NativeWindowHost.visualTestMode = prevVisualTest
@@ -481,14 +526,22 @@ class WindowsNativeTitleBarTest {
 
             val hwnd = Win32NativeWindowHost.activeHwnd
             assertTrue(hwnd != null, "Expected active Win32 HWND for Asset Panel benchmark")
+            val scrollViewImpl = scrollView.ensureNativeImpl() as WindowsScrollViewNativeImpl
+            val svHwnd = scrollViewImpl.nativeWidget.hwnd
+            assertNotNull(svHwnd, "Expected retained ScrollView HWND for Asset Panel benchmark")
 
             // Warm-up frames
             repeat(3) {
-                platform.windows.InvalidateRect(hwnd, null, 0)
-                Win32NativeWindowHost.paintWindow(hwnd)
+                RedrawWindow(hwnd, null, null, (RDW_INVALIDATE or RDW_UPDATENOW or RDW_ALLCHILDREN).toUInt())
             }
 
-            val maxScroll = Win32NativeWindowHost.getCardPageMaxScrollY()
+            val maxScroll = memScoped {
+                val si = alloc<SCROLLINFO>()
+                si.cbSize = sizeOf<SCROLLINFO>().toUInt()
+                si.fMask = (SIF_RANGE or SIF_PAGE or SIF_POS).toUInt()
+                GetScrollInfo(svHwnd, SB_VERT, si.ptr)
+                (si.nMax + 1 - si.nPage.toInt()).coerceAtLeast(0)
+            }
             assertTrue(
                 maxScroll > 0,
                 "Expected positive maxScrollY for 60 nested DCApp Asset Manager cards, got $maxScroll"
@@ -496,48 +549,44 @@ class WindowsNativeTitleBarTest {
 
             val clock = kotlin.time.TimeSource.Monotonic
 
-            // 1. Benchmark 30 full window paints
+            // 1. Benchmark 30 full retained window repaints
             val paintTimesMs = DoubleArray(30)
             for (i in paintTimesMs.indices) {
                 val mark = clock.markNow()
-                platform.windows.InvalidateRect(hwnd, null, 0)
-                Win32NativeWindowHost.paintWindow(hwnd)
+                RedrawWindow(hwnd, null, null, (RDW_INVALIDATE or RDW_UPDATENOW or RDW_ALLCHILDREN).toUInt())
                 paintTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
             }
 
-            // 2. Benchmark 60 mouse-move hover sweeps across cards, buttons, and scrollbar
+            // 2. Benchmark 60 mouse-move hover sweeps across retained cards, buttons, and viewport
             val hoverTimesMs = DoubleArray(60)
             for (i in hoverTimesMs.indices) {
                 val mx = 120 + (i * 17) % 980
                 val my = 110 + (i * 23) % 580
                 val mark = clock.markNow()
-                Win32NativeWindowHost.handleMouseMove(hwnd, mx, my)
-                platform.windows.UpdateWindow(hwnd)
+                Win32NativeWindowHost.simulateMouseMove(mx, my, hwnd)
+                UpdateWindow(hwnd)
                 hoverTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
             }
 
-            // 3. Benchmark 40 continuous scrollbar thumb drag steps
-            val thumbBounds = Win32NativeWindowHost.getCardPageScrollThumbBounds()
-            val thumbCenterX = (thumbBounds[0] + thumbBounds[2]) / 2
-            val thumbStartY = (thumbBounds[1] + thumbBounds[3]) / 2
+            // 3. Benchmark 40 continuous retained scrollbar scroll steps via WM_VSCROLL
             val dragTimesMs = DoubleArray(40)
-            Win32NativeWindowHost.handleMouseDown(hwnd, thumbCenterX, thumbStartY)
-            assertTrue(Win32NativeWindowHost.isCardScrollbarThumbDragging())
             for (i in dragTimesMs.indices) {
-                val dy = if (i < 20) (i + 1) * 14 else (40 - i) * 14
+                val scrollCmd = if (i < 20) SB_LINEDOWN else SB_LINEUP
                 val mark = clock.markNow()
-                Win32NativeWindowHost.handleMouseMove(hwnd, thumbCenterX, thumbStartY + dy)
-                platform.windows.UpdateWindow(hwnd)
+                SendMessageW(svHwnd, WM_VSCROLL.toUInt(), scrollCmd.toULong(), 0L)
+                UpdateWindow(hwnd)
                 dragTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
             }
-            Win32NativeWindowHost.handleMouseUp(hwnd, thumbCenterX, thumbStartY)
 
             // 4. Benchmark 30 mouse wheel scroll steps
+            val svBounds = scrollViewImpl.nativeWidget.bounds
+            val svCenterX = (svBounds.x + svBounds.width / 2).coerceAtLeast(10)
+            val svCenterY = (svBounds.y + svBounds.height / 2).coerceAtLeast(10)
             val wheelTimesMs = DoubleArray(30)
             for (i in wheelTimesMs.indices) {
                 val delta = if (i < 15) -120 else 120
                 val mark = clock.markNow()
-                Win32NativeWindowHost.handleMouseWheel(hwnd, delta)
+                Win32NativeWindowHost.handleMouseWheelAt(hwnd, svCenterX, svCenterY, delta)
                 wheelTimesMs[i] = mark.elapsedNow().inWholeMicroseconds / 1000.0
             }
 

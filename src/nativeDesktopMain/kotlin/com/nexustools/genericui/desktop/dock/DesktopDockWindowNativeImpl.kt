@@ -9,7 +9,7 @@ import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 
 /**
  * Shared desktop base implementation of [DockWindowNativeImpl] for detached floating utility windows
- * (`WS_EX_TOOLWINDOW` on `:windows`, `NSPanel` on `:macos`, utility `GtkWindow` on `:gtk`, `QDockWidget`/`Qt::Tool` on `:qt`).
+ * (`WS_EX_TOOLWINDOW` on `:windows`, `NSPanel` on `:macos`, utility `GtkWindow` on `:gtk`, `QDockWidget`/KDE tool window on `:kde`).
  *
  * Strictly behaves as a tool modal window attached to its owner [WindowNativeImpl]:
  * no taskbar entry, no minimize button, and always on top of the owner window.
@@ -45,7 +45,7 @@ open class DesktopDockWindowNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun setWindowBounds(bounds: Rect) {
-        nativeWidget.bounds = bounds
+        setBounds(bounds)
     }
 
     override fun showDockWindow() {

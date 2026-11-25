@@ -12,7 +12,7 @@ import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 
 /**
  * Shared Desktop coordinator for GIMP / Photoshop Single-Window Mode (`StudioWindowMode.SINGLE_WINDOW_MODE`)
- * and Multi-Window Mode (`StudioWindowMode.MULTI_WINDOW_MODE`) across `:windows`, `:macos`, `:gtk`, and `:qt`.
+ * and Multi-Window Mode (`StudioWindowMode.MULTI_WINDOW_MODE`) across `:windows`, `:macos`, `:gtk`, and `:kde`.
  *
  * Manages detaching `DockPanel`s and `DockArea`s into floating utility `DockWindow`s and re-docking them back
  * into the primary `DockWorkspace`. Detached `DockWindow`s are attached to [ownerWindow] as tool-modal utility

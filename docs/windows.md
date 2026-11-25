@@ -29,27 +29,30 @@ When `styles { globalStyleSheet = "..." }` is set in `build.gradle.kts`, startup
 
 ---
 
-## 60+Hz Hardware `backdrop-filter` & Stage HUD `ExpandingVolumeSlider` Wave-Alpha Sync
+## Pure Retained Child `HWND` Architecture, `ComCtl32 v6`, & 60+Hz `backdrop-filter`
 
-1. **`Win32Direct2dBackdropBlurEngine` (`StyledButton` & `StyledContainer`, Excluding `TextBubble`)**:
-   - Implemented in [`Win32Direct2dBackdropBlurEngine.kt`](../src/mingwMain/kotlin/com/nexustools/genericui/windows/Win32Direct2dBackdropBlurEngine.kt) and invoked via `Win32NativeWindowHost.applyBackdropFilterRect` from `Win32ContainerChromeRenderUtil` (`StyledContainer`), `Win32ButtonRenderUtil` (`StyledButton`), and `Win32WorkspaceWindowRenderUtil` (stage HUD overlays). (`TextBubble` strips `backdropFilter` via `isTextBubbleComponent()` -> `withoutBackdropFilter()`.)
-   - Uses **Direct3D 11 (`d3d11.dll`) + Direct2D 1.1 (`d2d1.dll`, `ID2D1DeviceContext`)** GPU effect graphs (`CLSID_D2D1GaussianBlur` + `CLSID_D2D1ColorMatrix`) to sample and composite underlying window/surface pixels at 60+Hz, falling back cleanly to `FastBackdropBlurKernel` when hardware D2D device creation is unavailable.
-2. **Stage HUD `ExpandingVolumeSlider` Wave-Alpha Synchronization**:
-   - In `Win32WorkspaceWindowRenderUtil` (`drawExpandingVolumeIconStack` + `resolveVolumeLayerAlpha`), custom data attributes inside `ROLE_EXPANDING_SLIDER_PILL` (`ExpandingVolumeSlider`) — mapping `data-volume-layer` layers (`"speaker"`, `"wave-1"` -> `"data-wave-1-opacity"`, `"wave-2"` -> `"data-wave-2-opacity"`, `"wave-3"` -> `"data-wave-3-opacity"`, `"mute-cross"` -> `"data-mute-cross-opacity"`) — multiply `hudAlpha * resolveVolumeLayerAlpha(...)` so mute cross and animated sound waves fade synchronously with the parent HUD overlay alpha.
+Every mounted component creates a genuine Win32 child `HWND` parented inside nested container `HWND`s (pure retained OS widgets driven by `DesktopContainerLayoutController`, with no monolithic window canvas painter or offscreen bitmap control stamping):
+
+1. **`ComCtl32 v6` Activation, `Win32ControlMessageRouter`, & `Win32LayeredStageHostHwnd`**:
+   - Activates **ComCtl32 v6** visual styles natively via `shell32.dll` manifest resource `124` (`ACTCTXW`) **before** `InitCommonControlsEx`, enabling authentic Windows 11/10 visual controls across standalone and bundled builds.
+   - `Win32ControlMessageRouter` routes `WM_COMMAND`, `WM_NOTIFY` (including `NM_CUSTOMDRAW`), `WM_CTLCOLOR*`, `WM_HSCROLL`/`WM_VSCROLL`, focus, and input events directly to per-widget `Windows<Component>NativeImpl` instances.
+   - `Win32LayeredStageHostHwnd` provides a double-buffered layered child compositor window solving Win32 heavyweight video/surface and overlay airspace issues cleanly.
+2. **`Win32Direct2dBackdropBlurEngine` (`StyledComponent`, `StyledButton`, `StyledContainer`, & `Composite`)**:
+   - Powered by `StyledWidgetVisualController`, `DesktopStyledWidgetDelegate`, and `Win32Direct2dBackdropBlurEngine` using **Direct3D 11 (`d3d11.dll`) + Direct2D 1.1 (`d2d1.dll`, `ID2D1DeviceContext`)** GPU effect graphs (`CLSID_D2D1GaussianBlur` + `CLSID_D2D1ColorMatrix`) for all 10 `CssFilter` / `backdrop-filter` operations and CSS gradients (`GradientStopNormalizer`), falling back cleanly to `FastBackdropBlurKernel` when hardware D2D device creation is unavailable.
+3. **Uniform CSS Cascade, `:system` `Animator` `@keyframes`, & `DesktopContainerLayoutController`**:
+   - Opacity inheritance (including `.hidden` overlay fade-in/out and SVG stack waves driven via `style.scss` + `SystemCssAnimationController` / `Animator`), CSS `transform` (`translate(...)`), `z-index` `SetWindowPos` ordering, `pointer-events: none` hit-test exclusion (`WM_NCHITTEST` `HTTRANSPARENT`), and `DesktopContainerLayoutController` + `BrowserLayoutEngine` proximal `position: relative` ancestor (else `Window`) containing-block bounds resolve uniformly with **zero** component/class/id/app-specific fast-paths.
 
 ---
 
-## Native `UxTheme` Control Rendering, Offscreen Tinting, & Modular `Win32*` / `Windows*` Layout
+## Native `ComCtl32 v6` Controls, `NM_CUSTOMDRAW` Button Styling, & Style Restraints
 
-1. **`BootstrapType.NONE` Default — 100% Unmodified Win32 `UxTheme` Controls**:
-   - `Win32DwmUxThemeBridge` applies `SetWindowTheme(hwnd, "Explorer", null)` (`LIGHT`) or `SetWindowTheme(hwnd, "DarkMode_Explorer", null)` (`DARK`) and paints native button parts (`BP_PUSHBUTTON`, `BP_CHECKBOX`, `BP_RADIOBUTTON`, `BP_GROUPBOX`, `BP_COMMANDLINK`) via `OpenThemeData` / `DrawThemeBackground` / `DrawThemeTextEx`.
-2. **`BootstrapType != NONE` — Empty-Text Offscreen Sprite + `DesktopControlTintRenderUtil`**:
-   - Renders the native `UxTheme` control **with NO text** into an offscreen 32-bit ARGB `CreateDIBSection`, tints via `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer`, blits onto the window DC, and paints contrasting text and icons on top.
-3. **Typography vs. Aesthetic Style Restraints**:
-   - Text elements honor `ComponentStyle` typography and color; standard controls/containers ignore aesthetic overrides (tint via `BootstrapType` only); `StyledContainer` / `StyledButton` / `:extensions:ui:alien` honor full `ComponentStyle` including `backdropFilter`.
-4. **1-Class-Per-File Modular Renderers (`59 Windows*NativeImpl` + `12 Win32*Render*`)**:
-   - **12 Render Utilities (`com.nexustools.genericui.windows.render`)**: `Win32RenderContext`, `Win32ControlTintRenderUtil`, `Win32TextRenderUtil`, `Win32ButtonRenderUtil`, `Win32ToggleSelectionRenderUtil`, `Win32InputFieldRenderUtil`, `Win32SliderProgressRenderUtil`, `Win32ContainerChromeRenderUtil`, `Win32NavigationRenderUtil`, `Win32DataDisplayRenderUtil`, `Win32WorkspaceWindowRenderUtil`, and `Win32MediaCanvasRenderUtil`.
-   - **59 `Windows*NativeImpl` Classes**: Per-component `Windows<Component>NativeImpl` peers delegating rendering to the `Win32*RenderUtil` classes.
+1. **`BootstrapType.NONE` Default & Non-`Button` Controls**:
+   - Applies `SetWindowTheme(hwnd, "Explorer", null)` (`LIGHT`) or `SetWindowTheme(hwnd, "DarkMode_Explorer", null)` (`DARK`) to genuine child `HWND` controls (`SysDateTimePick32`, `ComboBox`, `msctls_progress32`, `msctls_trackbar32`, etc.). Form subclasses (`ComboBox`, `DatePicker`, `TimePicker`, `ColorPicker`, `SearchField`, `NumberField`, `SplitDropdownButton`) stamp `data-control-variant` for specialized Win32 widget selection. Among control components, **`DropdownButton`, `SplitDropdownButton`, `ProgressBar`, `Spinner`, `StyledSlider`, `Composite`, and all other non-`Button` controls MUST NOT support `BootstrapType`**.
+2. **`Button` Genuine `"Button"` (`WC_BUTTON`) + `NM_CUSTOMDRAW` (`WindowsButtonNativeImpl`)**:
+   - **ONLY `Button` and its subclasses (`Button`, `IconButton`, `ToggleButton`, `FloatingActionButton`, `StyledButton`)** among control components support `BootstrapType`. `WindowsButtonNativeImpl` always mounts a genuine Win32 `"Button"` (`WC_BUTTON`, `BS_PUSHBUTTON`) child `HWND`: it returns `CDRF_DODEFAULT` in `NM_CUSTOMDRAW` when `(type == null || type == BootstrapType.NONE) && !outline` so UxTheme renders the unmodified system push button, and uses `NM_CUSTOMDRAW` (`CDDS_PREPAINT` -> `CDRF_SKIPDEFAULT`) for Bootstrap variants where UxTheme `BP_PUSHBUTTON` lacks a color-tint API (preserving genuine `WC_BUTTON` focus, input, and UIA semantics with zero window class swapping).
+3. **Bootstrap Semantic Surfaces & Typography vs. Aesthetic Style Restraints**:
+   - Bootstrap non-control classes (`Badge`, `Alert`, `Banner`, `Toast`, `Card`, `ListGroup`, `ListGroupItem`, `Jumbotron`, `Well`) mount custom Win32 child `HWND`s styled via `:system`'s `SemanticSurfaceStyleResolver` (`SemanticSurfacePaintSpec`). Text elements honor `ComponentStyle` typography and color; non-`Button` controls and standard containers ignore both `BootstrapType` and aesthetic overrides; `StyledComponent` / `StyledContainer` / `StyledButton` / `Composite` (`StyledSlider`, `SeekBar`, `ExpandingVolumeSlider`) / `:extensions:ui:alien` honor full CSS/SCSS styling including `backdropFilter` (`Composite` and `StyledSlider` do NOT support `BootstrapType`, and direct Kotlin component styles are forbidden beyond runtime-dynamic `%` values).
+4. **Per-Component `Windows*NativeImpl` Peers (`Composite` -> `WindowsStyledContainerNativeImpl`)**: Each component mounts a dedicated retained `Windows<Component>NativeImpl` child `HWND` (`Composite` / `StyledSlider` / `SeekBar` reuse `WindowsStyledContainerNativeImpl` with zero custom `*NativeImpl`).
 5. **Strict User CSS Class Isolation**: `styleSnapshot.customClasses` isolates user classes from `ComponentBootstrap` enums.
 
 ---
@@ -68,7 +71,7 @@ When `styles { globalStyleSheet = "..." }` is set in `build.gradle.kts`, startup
 - **`openWindowOnLaunch = false`**: `ServiceWorkerExtension.prepareDesktopMainLaunch(args)` spawns `serviceworker.exe` (unless `--open-window` / `--settings-only` is passed) and returns early so no main window opens.
 - **Singleton Lock, IPC, Autostart, & Headless Tray**:
   - `DesktopOsHelpers` acquires a Win32 named mutex (`CreateMutexW` `"Local\\..."`).
-  - `DesktopServiceWorkerHost` serves authenticated IPC over `127.0.0.1:0` (`serviceworker-endpoint.json` + 32-byte hex token).
+  - `DesktopServiceWorkerHost` serves authenticated IPC over overlapped Win32 Named Pipes (`\\.\pipe\genericui.<userHash>.<scopeHash>.sw`) with `PIPE_REJECT_REMOTE_CLIENTS` and an explicit current-user SID DACL (`serviceworker-endpoint.json` with `transport`, `address`, and 32-byte hex `token`).
   - **Autostart**: `WindowsShortcutWriter` installs `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\<appName>.lnk`.
   - **Headless Pump**: [`WindowsHeadlessTrayLoop`](../src/mingwMain/kotlin/com/nexustools/genericui/windows/WindowsHeadlessTrayLoop.kt) runs `runHeadlessPumpIfActive()` using a hidden `WS_EX_TOOLWINDOW` / `WS_POPUP` HWND so `WindowsSystemTrayNativeImpl` notifications and context menus stay responsive with zero visible windows.
 

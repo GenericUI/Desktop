@@ -4,7 +4,7 @@ import com.nexustools.genericui.threading.DefaultUiThreadDispatcherNativeImpl
 
 /**
  * Shared Kotlin/Native desktop implementation of [com.nexustools.genericui.threading.UiThreadDispatcherNativeImpl]
- * across `:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, and `:desktop:qt`.
+ * across `:desktop:windows`, `:desktop:macos`, `:desktop:gtk`, and `:desktop:kde`.
  *
  * Enforces strict separation between OS UI thread rendering/widget updates and the Logic/event-handler
  * execution queue ([isSplitThreadingEnabled] == `true`).

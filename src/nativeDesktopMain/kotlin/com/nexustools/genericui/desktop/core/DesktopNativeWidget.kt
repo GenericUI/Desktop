@@ -6,7 +6,7 @@ import com.nexustools.genericui.geometry.Size
 
 /**
  * Base desktop native widget handle model encapsulating a platform-specific native pointer/handle
- * (`HWND` on Win32, `NSView*`/`NSWindow*` on macOS AppKit, `GtkWidget*` on GTK4, `QWidget*` on Qt6),
+ * (`HWND` on Win32, `NSView*`/`NSWindow*` on macOS AppKit, `GtkWidget*` on GTK4, `QWidget*` on KDE),
  * native toolkit widget class name, property map, and child widget hierarchy.
  */
 open class DesktopNativeWidget(
@@ -15,18 +15,44 @@ open class DesktopNativeWidget(
     val nativePointer: Long = nextPointerId()
 ) {
     var visible: Boolean = true
+        set(value) {
+            if (field != value) {
+                field = value
+                bumpAttrMutationVersion()
+            }
+        }
     var enabled: Boolean = true
+    var focusable: Boolean = true
     var opacity: Float = 1.0f
     var tooltipText: String? = null
     var preferredSize: Size? = null
+        set(value) {
+            if (field != value) {
+                field = value
+                bumpAttrMutationVersion()
+            }
+        }
     var bounds: Rect = Rect(0f, 0f, 0f, 0f)
     var padding: EdgeInsets = EdgeInsets.ZERO
+        set(value) {
+            if (field != value) {
+                field = value
+                bumpAttrMutationVersion()
+            }
+        }
     var margin: EdgeInsets = EdgeInsets.ZERO
+        set(value) {
+            if (field != value) {
+                field = value
+                bumpAttrMutationVersion()
+            }
+        }
     var disposed: Boolean = false
         set(value) {
             field = value
             if (value) {
                 removeActiveVBlankWidget(this)
+                onDisposed()
             }
         }
 
@@ -44,6 +70,56 @@ open class DesktopNativeWidget(
     }
 
     private val backingAttributes: LinkedHashMap<String, Any?> = linkedMapOf("antialiasing" to true)
+    private var rawAttrWriteVersion: Long = 0L
+    private var cachedAttrSnapshotVer: Long = -1L
+    private var cachedAttrSnapshot: Map<String, Any?> = emptyMap()
+    private var cachedStringAttrVer: Long = -1L
+    private var cachedStringAttrs: Map<String, String> = emptyMap()
+    internal var cachedNormalizedTagName: String? = null
+    internal var cachedNormalizedTagVer: Long = -1L
+
+    fun resolveNormalizedTagName(computeRaw: () -> String): String {
+        val ver = rawAttrWriteVersion
+        val cached = cachedNormalizedTagName
+        if (cached != null && cachedNormalizedTagVer == ver) {
+            return cached
+        }
+        val normalized = computeRaw().trim().lowercase().removePrefix("genericui:")
+        cachedNormalizedTagName = normalized
+        cachedNormalizedTagVer = ver
+        return normalized
+    }
+
+    fun snapshotAttributesMap(): Map<String, Any?> = withAttrLock {
+        if (cachedAttrSnapshotVer == rawAttrWriteVersion) {
+            cachedAttrSnapshot
+        } else {
+            val copy = LinkedHashMap(backingAttributes)
+            cachedAttrSnapshot = copy
+            cachedAttrSnapshotVer = rawAttrWriteVersion
+            copy
+        }
+    }
+
+    fun snapshotStringAttributesMap(): Map<String, String> = withAttrLock {
+        if (cachedStringAttrVer == rawAttrWriteVersion) {
+            cachedStringAttrs
+        } else {
+            val out = LinkedHashMap<String, String>()
+            for ((k, v) in backingAttributes.entries) {
+                when (v) {
+                    is String -> out[k] = v
+                    is Number -> out[k] = v.toString()
+                    is Boolean -> out[k] = v.toString()
+                    is com.nexustools.genericui.style.css.CssLength -> out[k] = v.toCssString()
+                    is com.nexustools.genericui.style.css.CssAspectRatio -> out[k] = v.numericRatio.toString()
+                }
+            }
+            cachedStringAttrs = out
+            cachedStringAttrVer = rawAttrWriteVersion
+            out
+        }
+    }
 
     val attributes: MutableMap<String, Any?> = object : MutableMap<String, Any?> {
         override val size: Int
@@ -77,7 +153,23 @@ open class DesktopNativeWidget(
         }
 
         override fun put(key: String, value: Any?): Any? {
-            val prev = withAttrLock { backingAttributes.put(key, value) }
+            var changed = false
+            val isTransformKey = key == "transform" || key == "transform2D"
+            val prev = withAttrLock {
+                val existed = backingAttributes.containsKey(key)
+                val old = backingAttributes.put(key, value)
+                if (!existed || old != value) {
+                    rawAttrWriteVersion++
+                    changed = true
+                }
+                if (isTransformKey) {
+                    hasTransformAttribute = backingAttributes["transform"] != null || backingAttributes["transform2D"] != null
+                }
+                old
+            }
+            if (changed && !isLayoutOutputOnlyKey(key)) {
+                bumpAttrMutationVersion()
+            }
             if (key == "vblankDispatch") {
                 syncVBlankRegistration(value)
             }
@@ -98,7 +190,22 @@ open class DesktopNativeWidget(
         }
 
         override fun remove(key: String): Any? {
-            val prev = withAttrLock { backingAttributes.remove(key) }
+            var hadKey = false
+            val isTransformKey = key == "transform" || key == "transform2D"
+            val prev = withAttrLock {
+                hadKey = backingAttributes.containsKey(key)
+                val old = backingAttributes.remove(key)
+                if (hadKey) {
+                    rawAttrWriteVersion++
+                }
+                if (isTransformKey) {
+                    hasTransformAttribute = backingAttributes["transform"] != null || backingAttributes["transform2D"] != null
+                }
+                old
+            }
+            if (prev != null && !isLayoutOutputOnlyKey(key)) {
+                bumpAttrMutationVersion()
+            }
             if (key == "vblankDispatch") {
                 syncVBlankRegistration(null)
             }
@@ -119,11 +226,34 @@ open class DesktopNativeWidget(
         }
 
         override fun clear() {
-            withAttrLock { backingAttributes.clear() }
+            withAttrLock {
+                if (backingAttributes.isNotEmpty()) {
+                    rawAttrWriteVersion++
+                }
+                hasTransformAttribute = false
+                backingAttributes.clear()
+            }
+            bumpAttrMutationVersion()
             syncVBlankRegistration(null)
             resetOverlaySubtreeFlagRecursive()
         }
     }
+
+    private fun isLayoutOutputOnlyKey(key: String): Boolean =
+        key == "vblankDispatch" ||
+            key == "contentOffsetX" ||
+            key == "contentOffsetY" ||
+            key == "tabContentOffsetX" ||
+            key == "tabContentOffsetY" ||
+            key == "resolvedTransform" ||
+            key == "layoutBackendTarget" ||
+            key == "firstActiveIndex" ||
+            key == "lastActiveIndex" ||
+            key == "leadingSpacerPx" ||
+            key == "trailingSpacerPx" ||
+            key == "totalContentExtentPx" ||
+            key == "hostSyncedScrollOffsetPx" ||
+            key == "hostSyncedScrollVer"
 
     @Suppress("UNCHECKED_CAST")
     var vblankDispatch: ((Double?) -> Unit)?
@@ -137,9 +267,16 @@ open class DesktopNativeWidget(
         }
 
     var cachedAllClassTokens: Set<String> = emptySet()
+    var hasResponsiveLayoutClass: Boolean = false
+    var hasFragmentClassToken: Boolean = false
+    var hasHeightUtilityClass: Boolean = false
+    var hasWidthUtilityClass: Boolean = false
+    var hasRootConstraintUtilityClass: Boolean = false
+    var hasTransformAttribute: Boolean = false
     var subtreeMutationVersion: Long = 1L
+    var selfAttrMutationVersion: Long = 0L
+    var subtreeAttrMutationVersion: Long = 0L
     internal var cachedOverlaySubtreeFlag: Int = -1
-    private var cachedOverlayClassifierGen: Int = -1
     var interactiveSurfaceSpec: DesktopInteractiveSurfaceSpec? = null
         set(value) {
             field = value
@@ -148,6 +285,7 @@ open class DesktopNativeWidget(
             }
             resetOverlaySubtreeFlagRecursive()
             val ver = ++globalTreeMutationVersion
+            ++globalLayoutMutationVersion
             ++globalNonOverlayMutationVersion
             var cur: DesktopNativeWidget? = this
             while (cur != null) {
@@ -163,6 +301,7 @@ open class DesktopNativeWidget(
             }
             resetOverlaySubtreeFlagRecursive()
             val ver = ++globalTreeMutationVersion
+            ++globalLayoutMutationVersion
             ++globalNonOverlayMutationVersion
             var cur: DesktopNativeWidget? = this
             while (cur != null) {
@@ -178,15 +317,29 @@ open class DesktopNativeWidget(
             }
         }
     var parentWidget: DesktopNativeWidget? = null
-        private set
+        internal set
+
+    var onViewportRedisplayRequested: (() -> Unit)? = null
+    var onSurfaceFrameReady: (() -> Unit)? = null
 
     @kotlin.concurrent.Volatile
     var children: List<DesktopNativeWidget> = emptyList()
         private set
 
+    private val childrenSpinLock = kotlin.concurrent.AtomicInt(0)
+
+    private inline fun <T> withChildrenLock(block: () -> T): T {
+        while (!childrenSpinLock.compareAndSet(0, 1)) {
+        }
+        return try {
+            block()
+        } finally {
+            childrenSpinLock.value = 0
+        }
+    }
+
     private fun resetOverlaySubtreeFlagRecursive() {
         cachedOverlaySubtreeFlag = -1
-        cachedOverlayClassifierGen = -1
         for (child in children) {
             child.resetOverlaySubtreeFlagRecursive()
         }
@@ -200,13 +353,28 @@ open class DesktopNativeWidget(
         }
     }
 
+    private fun addSpaceTokens(raw: String, out: MutableSet<String>) {
+        val len = raw.length
+        if (len == 0) return
+        var start = -1
+        for (i in 0..len) {
+            val ch = if (i < len) raw[i] else ' '
+            if (ch.isWhitespace()) {
+                if (start >= 0) {
+                    out.add(if (start == 0 && i == len) raw else raw.substring(start, i))
+                    start = -1
+                }
+            } else if (start < 0) {
+                start = i
+            }
+        }
+    }
+
     fun rebuildClassTokensCache(classPrefix: String = "") {
         resetOverlaySubtreeFlagRecursive()
         val out = LinkedHashSet<String>()
         if (classPrefix.isNotEmpty()) {
-            for (tok in classPrefix.split(WHITESPACE_REGEX)) {
-                if (tok.isNotEmpty()) out.add(tok)
-            }
+            addSpaceTokens(classPrefix, out)
         }
         val implTokens = (attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>)?.getClassTokensSet()
         if (implTokens != null) {
@@ -221,23 +389,119 @@ open class DesktopNativeWidget(
         }
         val bootstrapCls = attributes["bootstrapClass"] as? String
         if (!bootstrapCls.isNullOrEmpty()) {
-            for (tok in bootstrapCls.split(WHITESPACE_REGEX)) {
-                if (tok.isNotEmpty()) out.add(tok)
-            }
+            addSpaceTokens(bootstrapCls, out)
         }
         val attrCls = attributes["class"] as? String
         if (!attrCls.isNullOrEmpty()) {
-            for (tok in attrCls.split(WHITESPACE_REGEX)) {
-                if (tok.isNotEmpty()) out.add(tok)
-            }
+            addSpaceTokens(attrCls, out)
         }
         cachedAllClassTokens = if (out.isEmpty()) emptySet() else out
+        var hasResponsive = false
+        var hasFragment = false
+        var hasHeightUtil = false
+        var hasWidthUtil = false
+        var hasRootConstraint = false
+        for (tok in out) {
+            if (!hasResponsive) {
+                val isResponsiveLayoutPrefix = tok.startsWith("d-", ignoreCase = true) ||
+                    tok.startsWith("col-", ignoreCase = true) ||
+                    tok.startsWith("flex-", ignoreCase = true) ||
+                    tok.startsWith("order-", ignoreCase = true) ||
+                    tok.startsWith("justify-content-", ignoreCase = true) ||
+                    tok.startsWith("align-items-", ignoreCase = true) ||
+                    tok.startsWith("align-self-", ignoreCase = true) ||
+                    tok.startsWith("g-", ignoreCase = true) ||
+                    tok.startsWith("gx-", ignoreCase = true) ||
+                    tok.startsWith("gy-", ignoreCase = true) ||
+                    tok.startsWith("gap-", ignoreCase = true) ||
+                    tok.startsWith("row-cols-", ignoreCase = true)
+                if (isResponsiveLayoutPrefix && (
+                        tok.contains("-sm-", ignoreCase = true) ||
+                            tok.contains("-md-", ignoreCase = true) ||
+                            tok.contains("-lg-", ignoreCase = true) ||
+                            tok.contains("-xl-", ignoreCase = true) ||
+                            tok.contains("-xxl-", ignoreCase = true) ||
+                            (tok.startsWith("col-", ignoreCase = true) && (
+                                tok.endsWith("-sm", ignoreCase = true) ||
+                                    tok.endsWith("-md", ignoreCase = true) ||
+                                    tok.endsWith("-lg", ignoreCase = true) ||
+                                    tok.endsWith("-xl", ignoreCase = true) ||
+                                    tok.endsWith("-xxl", ignoreCase = true)
+                                ))
+                        )
+                ) {
+                    hasResponsive = true
+                }
+            }
+            if (!hasFragment && tok.contains("fragment", ignoreCase = true)) {
+                hasFragment = true
+            }
+            if (!hasHeightUtil && (
+                    tok.equals("h-100", ignoreCase = true) ||
+                        tok.equals("h-75", ignoreCase = true) ||
+                        tok.equals("h-50", ignoreCase = true) ||
+                        tok.equals("h-25", ignoreCase = true) ||
+                        tok.equals("h-auto", ignoreCase = true)
+                    )
+            ) {
+                hasHeightUtil = true
+            }
+            if (!hasWidthUtil && (
+                    tok.equals("w-100", ignoreCase = true) ||
+                        tok.equals("w-75", ignoreCase = true) ||
+                        tok.equals("w-50", ignoreCase = true) ||
+                        tok.equals("w-25", ignoreCase = true) ||
+                        tok.equals("w-auto", ignoreCase = true)
+                    )
+            ) {
+                hasWidthUtil = true
+            }
+            if (!hasRootConstraint && (
+                    tok.equals("mw-100", ignoreCase = true) ||
+                        tok.equals("mh-100", ignoreCase = true)
+                    )
+            ) {
+                hasRootConstraint = true
+            }
+        }
+        hasResponsiveLayoutClass = hasResponsive
+        hasFragmentClassToken = hasFragment
+        hasHeightUtilityClass = hasHeightUtil
+        hasWidthUtilityClass = hasWidthUtil
+        hasRootConstraintUtilityClass = hasRootConstraint
+        selfAttrMutationVersion++
+    }
+
+    fun isSelfPointerEventsNone(): Boolean {
+        val attr = attributes["pointerEvents"] as? String
+        if (attr == "auto") return false
+        if (attr == "none") return true
+        return "pe-none" in cachedAllClassTokens
+    }
+
+    fun isSubtreeHitTestBlocked(): Boolean =
+        !visible || disposed || (isSelfPointerEventsNone() && opacity <= 0.001f)
+
+    fun effectiveZIndex(): Int =
+        (attributes["zIndex"] as? Number)?.toInt()
+            ?: (attributes["zIndex"] as? String)?.toIntOrNull()
+            ?: 0
+
+    fun effectivePosition(): String = when (val raw = attributes["position"] as? String) {
+        "absolute", "relative", "fixed", "sticky" -> raw
+        "static" -> "static"
+        else -> when {
+            "position-absolute" in cachedAllClassTokens -> "absolute"
+            "position-relative" in cachedAllClassTokens -> "relative"
+            "position-fixed" in cachedAllClassTokens -> "fixed"
+            "position-sticky" in cachedAllClassTokens -> "sticky"
+            else -> "static"
+        }
     }
 
     fun isInsideIsolatedStageSubtree(): Boolean {
-        val currentGen = classifierGeneration
         val cached = cachedOverlaySubtreeFlag
-        if (cached != -1 && cachedOverlayClassifierGen == currentGen) return cached == 1
+        if (cached != -1) return cached == 1
         var cur: DesktopNativeWidget? = this
         var topRoot: DesktopNativeWidget = this
         var found = false
@@ -269,9 +533,7 @@ open class DesktopNativeWidget(
             val tokens = cur.cachedAllClassTokens
             if (
                 "gui-overlay" in tokens ||
-                "gui-overlay-host" in tokens ||
-                "gui-text-bubble" in tokens ||
-                "gui-text-bubble-label" in tokens
+                "gui-overlay-host" in tokens
             ) {
                 found = true
                 break
@@ -281,29 +543,12 @@ open class DesktopNativeWidget(
                 found = true
                 break
             }
-            val classifiers = stageSubtreeClassifiers
-            if (classifiers.isNotEmpty()) {
-                val candidate = cur
-                var matchedClassifier = false
-                for (classifier in classifiers) {
-                    if (classifier.isIsolatedStageWidget(candidate)) {
-                        matchedClassifier = true
-                        break
-                    }
-                }
-                if (matchedClassifier) {
-                    found = true
-                    break
-                }
-            }
             cur = cur.parentWidget
         }
         if (found) {
             cachedOverlaySubtreeFlag = 1
-            cachedOverlayClassifierGen = currentGen
         } else if (topRoot.nativeClassName.contains("window", ignoreCase = true)) {
             cachedOverlaySubtreeFlag = 0
-            cachedOverlayClassifierGen = currentGen
         }
         return found
     }
@@ -320,70 +565,87 @@ open class DesktopNativeWidget(
         if (oldParent != null && oldParent !== this) {
             oldParent.removeChildWidget(child)
         }
-        val current = children
-        if (oldParent === this) {
-            val targetIdx = if (index < 0 || index >= current.size) current.size - 1 else index
-            if (targetIdx in current.indices && current[targetIdx] === child) {
-                return
+        val alreadyAtTarget = withChildrenLock {
+            val current = children
+            if (child.parentWidget === this) {
+                val targetIdx = if (index < 0 || index >= current.size) current.size - 1 else index
+                if (targetIdx in current.indices && current[targetIdx] === child) {
+                    return@withChildrenLock true
+                }
             }
-        }
-        val next = ArrayList<DesktopNativeWidget>(current.size + 1)
-        for (item in current) {
-            if (item !== child) {
-                next.add(item)
+            val next = ArrayList<DesktopNativeWidget>(current.size + 1)
+            for (item in current) {
+                if (item !== child) {
+                    next.add(item)
+                }
             }
+            if (index < 0 || index >= next.size) {
+                next.add(child)
+            } else {
+                next.add(index, child)
+            }
+            child.parentWidget = this
+            children = next
+            false
         }
-        if (index < 0 || index >= next.size) {
-            next.add(child)
-        } else {
-            next.add(index, child)
-        }
-        child.parentWidget = this
+        if (alreadyAtTarget) return
         if (canFastAssignNonOverlayChild(child)) {
             child.cachedOverlaySubtreeFlag = 0
-            child.cachedOverlayClassifierGen = classifierGeneration
         } else {
             child.resetOverlaySubtreeFlagRecursive()
         }
-        children = next
         notifyTreeInvalidated()
     }
 
     fun removeChildWidget(child: DesktopNativeWidget) {
-        val current = children
-        if (!current.contains(child)) return
-        val next = ArrayList<DesktopNativeWidget>(current.size)
-        for (item in current) {
-            if (item !== child) {
-                next.add(item)
+        val (wasPresent, detachedFromSelf) = withChildrenLock {
+            val current = children
+            if (!current.contains(child)) {
+                return@withChildrenLock false to false
             }
+            val next = ArrayList<DesktopNativeWidget>(current.size)
+            for (item in current) {
+                if (item !== child) {
+                    next.add(item)
+                }
+            }
+            var detached = false
+            if (child.parentWidget === this) {
+                child.parentWidget = null
+                detached = true
+            }
+            children = next
+            true to detached
         }
-        if (child.parentWidget === this) {
-            child.parentWidget = null
+        if (!wasPresent) return
+        if (detachedFromSelf) {
             if (canFastAssignNonOverlayChild(child)) {
                 child.cachedOverlaySubtreeFlag = 0
-                child.cachedOverlayClassifierGen = classifierGeneration
             } else {
                 child.resetOverlaySubtreeFlagRecursive()
             }
         }
-        children = next
         notifyTreeInvalidated()
     }
 
     fun clearChildWidgets() {
-        for (item in children) {
-            if (item.parentWidget === this) {
-                item.parentWidget = null
-                if (canFastAssignNonOverlayChild(item)) {
-                    item.cachedOverlaySubtreeFlag = 0
-                    item.cachedOverlayClassifierGen = classifierGeneration
-                } else {
-                    item.resetOverlaySubtreeFlagRecursive()
+        val previous = withChildrenLock {
+            val prev = children
+            for (item in prev) {
+                if (item.parentWidget === this) {
+                    item.parentWidget = null
                 }
             }
+            children = emptyList()
+            prev
         }
-        children = emptyList()
+        for (item in previous) {
+            if (canFastAssignNonOverlayChild(item)) {
+                item.cachedOverlaySubtreeFlag = 0
+            } else {
+                item.resetOverlaySubtreeFlagRecursive()
+            }
+        }
         notifyTreeInvalidated()
     }
 
@@ -403,7 +665,86 @@ open class DesktopNativeWidget(
         return false
     }
 
+    fun isEffectivelyFocusable(): Boolean {
+        var cur: DesktopNativeWidget? = this
+        while (cur != null) {
+            if (!cur.focusable) return false
+            cur = cur.parentWidget
+        }
+        return true
+    }
+
+    internal open fun onEffectiveFocusableChanged(focusable: Boolean) {}
+
+    internal open fun onDisposed() {}
+
+    fun bumpAttrMutationVersion(): Long {
+        val ver = ++globalAttrMutationVersion
+        selfAttrMutationVersion = ver
+        val inOverlay = isInsideIsolatedStageSubtree()
+        var cur: DesktopNativeWidget? = this
+        while (cur != null) {
+            if (cur !== this && inOverlay && !cur.isInsideIsolatedStageSubtree()) {
+                break
+            }
+            cur.subtreeAttrMutationVersion = ver
+            cur = cur.parentWidget
+        }
+        return ver
+    }
+
+    fun bumpSubtreeMutationVersion(): Long {
+        if (suppressTreeVersionBumpCount.value > 0) {
+            return subtreeMutationVersion
+        }
+        val ver = ++globalTreeMutationVersion
+        val inOverlay = isInsideIsolatedStageSubtree()
+        if (activeViewportScrollScopeCount.value <= 0 && !inOverlay) {
+            ++globalLayoutMutationVersion
+        }
+        var cur: DesktopNativeWidget? = this
+        while (cur != null) {
+            if (inOverlay && !cur.isInsideIsolatedStageSubtree()) {
+                break
+            }
+            cur.subtreeMutationVersion = ver
+            cur = cur.parentWidget
+        }
+        return ver
+    }
+
     fun notifyTreeInvalidated(visualOnly: Boolean = false) {
+        if (activeViewportScrollScopeCount.value > 0) {
+            if (!visualOnly && suppressTreeVersionBumpCount.value <= 0) {
+                bumpSubtreeMutationVersion()
+            }
+            var ancestorCheck: DesktopNativeWidget? = this.parentWidget
+            while (ancestorCheck != null) {
+                if (!ancestorCheck.visible) {
+                    return
+                }
+                ancestorCheck = ancestorCheck.parentWidget
+            }
+            val directHook = activeViewportScrollHost?.onViewportRedisplayRequested
+            if (directHook != null) {
+                directHook.invoke()
+            } else {
+                var cur: DesktopNativeWidget? = this
+                while (cur != null) {
+                    val hook = cur.onViewportRedisplayRequested
+                    if (hook != null) {
+                        hook.invoke()
+                        break
+                    }
+                    cur = cur.parentWidget
+                }
+            }
+            return
+        }
+        val inOverlay = isInsideIsolatedStageSubtree()
+        if (!visualOnly) {
+            bumpSubtreeMutationVersion()
+        }
         var ancestorCheck: DesktopNativeWidget? = this.parentWidget
         while (ancestorCheck != null) {
             if (!ancestorCheck.visible) {
@@ -411,27 +752,12 @@ open class DesktopNativeWidget(
             }
             ancestorCheck = ancestorCheck.parentWidget
         }
-        val ver = ++globalTreeMutationVersion
-        val inOverlay = isInsideIsolatedStageSubtree()
-        if (!visualOnly) {
-            var cur: DesktopNativeWidget? = this
-            while (cur != null) {
-                if (inOverlay && !cur.isInsideIsolatedStageSubtree()) {
-                    break
-                }
-                cur.subtreeMutationVersion = ver
-                if (cur.attributes["isLazyList"] == true) {
-                    break
-                }
-                if ("gui-hybrid-split-navigation" in cur.cachedAllClassTokens) {
-                    cur.parentWidget?.subtreeMutationVersion = ver
-                    break
-                }
-                cur = cur.parentWidget
+        if (inOverlay && (overlayLayoutInvalidationListener != null || overlayInvalidationListener != null)) {
+            if (!visualOnly && overlayLayoutInvalidationListener != null) {
+                overlayLayoutInvalidationListener?.invoke(this)
+            } else {
+                overlayInvalidationListener?.invoke(this)
             }
-        }
-        if (inOverlay && overlayInvalidationListener != null) {
-            overlayInvalidationListener?.invoke(this)
         } else {
             if (!visualOnly) {
                 ++globalNonOverlayMutationVersion
@@ -443,13 +769,22 @@ open class DesktopNativeWidget(
     companion object {
         private val WHITESPACE_REGEX = Regex("\\s+")
         private var pointerCounter: Long = 0x1000_0000L
-        private val stageSubtreeClassifiers: MutableList<DesktopStageSubtreeClassifier> = mutableListOf()
-        private var classifierGeneration: Int = 0
         var globalTreeMutationVersion: Long = 1L
+        var globalAttrMutationVersion: Long = 1L
+        var globalLayoutMutationVersion: Long = 1L
         var globalNonOverlayMutationVersion: Long = 1L
+        var globalViewportMutationVersion: Long = 1_000_000_000L
+        val activeViewportScrollScopeCount: kotlin.concurrent.AtomicInt = kotlin.concurrent.AtomicInt(0)
+        val suppressTreeVersionBumpCount: kotlin.concurrent.AtomicInt = kotlin.concurrent.AtomicInt(0)
+        var activeViewportScrollHost: DesktopNativeWidget? = null
         var onNativeTreeInvalidated: (() -> Unit)? = null
         var onCursorUpdated: (() -> Unit)? = null
         var overlayInvalidationListener: ((DesktopNativeWidget) -> Unit)? = null
+        var overlayLayoutInvalidationListener: ((DesktopNativeWidget) -> Unit)? = null
+        @kotlin.concurrent.Volatile
+        var onVBlankWidgetsChanged: (() -> Unit)? = null
+        @kotlin.concurrent.Volatile
+        var onSurfaceFrameReadyGlobal: ((DesktopNativeWidget) -> Unit)? = null
         val activeVBlankWidgets: MutableSet<DesktopNativeWidget> = linkedSetOf()
         private val vblankSpinLock = kotlin.concurrent.AtomicInt(0)
         private val pointerIdSpinLock = kotlin.concurrent.AtomicInt(0)
@@ -468,16 +803,46 @@ open class DesktopNativeWidget(
 
         internal fun addActiveVBlankWidget(widget: DesktopNativeWidget) {
             withVBlankLock { activeVBlankWidgets.add(widget) }
+            onVBlankWidgetsChanged?.invoke()
         }
 
         internal fun removeActiveVBlankWidget(widget: DesktopNativeWidget) {
             withVBlankLock { activeVBlankWidgets.remove(widget) }
+            onVBlankWidgetsChanged?.invoke()
         }
 
-        fun registerStageSubtreeClassifier(classifier: DesktopStageSubtreeClassifier) {
-            if (!stageSubtreeClassifiers.contains(classifier)) {
-                stageSubtreeClassifiers.add(classifier)
-                classifierGeneration++
+        fun notifyVBlankWidgetsChanged() {
+            onVBlankWidgetsChanged?.invoke()
+        }
+
+        fun notifySurfaceFrameReady(widget: DesktopNativeWidget) {
+            widget.onSurfaceFrameReady?.invoke()
+            onSurfaceFrameReadyGlobal?.invoke(widget)
+        }
+
+        fun resolvePreferredVBlankRateHz(): Double? {
+            val snapshot = withVBlankLock {
+                if (activeVBlankWidgets.isEmpty()) emptyList() else activeVBlankWidgets.toList()
+            }
+            if (snapshot.isEmpty()) return null
+            var maxPositiveRate = 0.0
+            var sawZeroOrNegative = false
+            for (widget in snapshot) {
+                val provider = widget.interactiveSurfaceSpec?.preferredFrameRateHz ?: return null
+                val rate = provider.invoke() ?: return null
+                if (!rate.isFinite()) return null
+                if (rate > 0.0) {
+                    if (rate > maxPositiveRate) {
+                        maxPositiveRate = rate
+                    }
+                } else {
+                    sawZeroOrNegative = true
+                }
+            }
+            return when {
+                maxPositiveRate > 0.0 -> maxPositiveRate
+                sawZeroOrNegative -> 0.0
+                else -> null
             }
         }
 

@@ -120,6 +120,22 @@ class SwingTabImpl(
                 }
             }
         })
+        syncSwingAppearance()
+    }
+
+    override fun syncSwingAppearance() {
+        super.syncSwingAppearance()
+        val tabFg = if (customTextColor == null &&
+            lastComponentStyle?.color == null &&
+            lastComputedStyle?.textColor == null
+        ) {
+            javax.swing.UIManager.getColor("TabbedPane.foreground") ?: titleLabel.foreground
+        } else {
+            titleLabel.foreground
+        }
+        titleLabel.foreground = tabFg
+        dirtyLabel.foreground = tabFg
+        closeButton.foreground = tabFg
     }
 
     fun beginTitleEdit() {

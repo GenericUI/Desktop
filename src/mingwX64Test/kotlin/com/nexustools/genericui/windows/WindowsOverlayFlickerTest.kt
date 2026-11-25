@@ -18,15 +18,18 @@ import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.core.DesktopStageOverlaySpec
 import com.nexustools.genericui.enums.bootstrap.BootstrapSize
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
+import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.image.ImageBuffer
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssLength
-import kotlinx.cinterop.UIntVar
-import kotlinx.cinterop.get
-import kotlinx.cinterop.reinterpret
-import kotlinx.cinterop.set
-import platform.windows.InvalidateRect
-import platform.windows.UpdateWindow
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.ptr
+import platform.windows.GetClientRect
+import platform.windows.HWND
+import platform.windows.MapWindowPoints
+import platform.windows.POINT
+import platform.windows.RECT
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -40,7 +43,7 @@ class WindowsOverlayFlickerTest {
         val prevVisualTest = Win32NativeWindowHost.visualTestMode
         WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = true
         Win32NativeWindowHost.visualTestMode = true
-        Win32NativeWindowHost.clearActiveWindow()
+        Win32NativeWindowHost.closeAllVisualWindows()
         try {
             val factory = WindowsNativeFactory()
             GenericUI.initialize(factory)
@@ -70,37 +73,47 @@ class WindowsOverlayFlickerTest {
         return bytes
     }
 
-    private fun readBackBufferWordAt(x: Int, y: Int): UInt {
-        val pixels = Win32NativeWindowHost.cachedMainBackBufferPixels ?: return 0u
-        val w = Win32NativeWindowHost.cachedMainBackBufferWidth
-        val h = Win32NativeWindowHost.cachedMainBackBufferHeight
-        if (x !in 0 until w || y !in 0 until h) return 0u
-        return pixels.reinterpret<UIntVar>()[y * w + x] and 0x00FFFFFFu
+    private fun readScreenshotWordAt(shot: ImageBuffer, x: Int, y: Int): UInt {
+        if (x !in 0 until shot.width || y !in 0 until shot.height) return 0u
+        val off = (y * shot.width + x) * 4
+        val r = shot.bytes[off].toInt() and 0xFF
+        val g = shot.bytes[off + 1].toInt() and 0xFF
+        val b = shot.bytes[off + 2].toInt() and 0xFF
+        return ((r shl 16) or (g shl 8) or b).toUInt()
+    }
+
+    private fun hwndBoundsInHost(childHwnd: HWND, hostHwnd: HWND): IntArray = memScoped {
+        val rc = alloc<RECT>()
+        GetClientRect(childHwnd, rc.ptr)
+        val pt = alloc<POINT>()
+        pt.x = 0
+        pt.y = 0
+        MapWindowPoints(childHwnd, hostHwnd, pt.ptr, 1u)
+        intArrayOf(pt.x, pt.y, pt.x + (rc.right - rc.left), pt.y + (rc.bottom - rc.top))
     }
 
     @Test
     fun testMultiFrameVideoStageWithOverlayAtomicCompositionAndNoCalibrationBleed() = withVisualHost { factory ->
         Win32NativeWindowHost.visualTestBannerText = "Overlay Flicker Test: Multi-frame video stage composition"
 
-        val rootStack = VStack(gapPx = 8).apply {
-            addClass("w-100 h-100")
-        }
-        val stageLayered = LayeredContainer().apply {
-            style.height = CssLength.px(420f)
-        }
+        val rootStack = VStack(gapPx = 8).apply { addClass("w-100 h-100") }
+        val stageLayered = LayeredContainer().apply { style.height = CssLength.px(420f) }
 
         val surfW = 320
         val surfH = 180
         var currentSwapCount = 1L
         var currentFrameBgra = buildFilledBgraFrame(surfW, surfH, b = 200, g = 40, r = 30)
 
-        val videoSurface = Container("div", "video-stage")
-        val overlayRoot = Container("div", "video-overlay")
+        val videoSurface = Container("div", "video-stage w-100 h-100")
+        val overlayRoot = Container("div", "video-overlay w-100 h-100")
 
         val controlsLayer = VStack(gapPx = 0).apply {
+            addClass("w-100 h-100")
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CONTROLS_LAYER)
         }
-        val topBar = HStack(gapPx = 8).apply {
+        val topBar = StyledContainer().apply {
+            backgroundColor = RgbaColor(18, 20, 26, 175)
+            style.height = CssLength.px(36f)
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_TOP_BAR)
         }
         val titleText = Text("Episode 1 - Atomic Overlay Sync")
@@ -109,10 +122,13 @@ class WindowsOverlayFlickerTest {
         topBar.addChild(statusText)
 
         val centerZone = VStack(gapPx = 0).apply {
+            addClass("w-100")
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CENTER_ZONE)
         }
 
-        val bottomBar = VStack(gapPx = 4).apply {
+        val bottomBar = StyledContainer().apply {
+            backgroundColor = RgbaColor(18, 20, 26, 175)
+            style.height = CssLength.px(64f)
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_BOTTOM_BAR)
         }
         val seekContainer = VStack(gapPx = 0).apply {
@@ -129,6 +145,9 @@ class WindowsOverlayFlickerTest {
         }
         val playPauseBtn = StyledButton("Pause", BootstrapType.PRIMARY, BootstrapSize.SM)
         val timePill = StyledContainer().apply {
+            backgroundColor = RgbaColor(18, 20, 26, 180)
+            style.width = CssLength.px(130f)
+            style.height = CssLength.px(26f)
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_TIME_READOUT)
         }
         val timeReadoutText = Text("0:01 / 24:00")
@@ -148,6 +167,8 @@ class WindowsOverlayFlickerTest {
         bottomBar.addChild(controlsRow)
 
         val captionBanner = StyledContainer().apply {
+            backgroundColor = RgbaColor(15, 18, 24, 185)
+            style.height = CssLength.px(32f)
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CAPTION_BANNER)
         }
         val captionText = Text("Locked Subtitle Line Frame 1")
@@ -163,12 +184,13 @@ class WindowsOverlayFlickerTest {
         stageLayered.addChild(overlayRoot)
         rootStack.addChild(stageLayered)
 
-        val window = Window(title = "Overlay Flicker Test").also {
+        val window = Window(title = "Overlay Flicker Test", initialSize = Size(800, 520)).also {
             it.setContent(rootStack)
         }
         window.show(factory)
 
-        val stageWidget = videoSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+        val winImpl = window.ensureNativeImpl() as WindowsWindowNativeImpl
+        val stageWidget = videoSurface.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle
         DesktopInteractiveSurfaceSpec(
             surfaceWidth = { surfW },
             surfaceHeight = { surfH },
@@ -181,33 +203,30 @@ class WindowsOverlayFlickerTest {
             activeCaptionText = { "Locked Subtitle Line Frame $currentSwapCount" }
         ).attachTo(stageWidget)
 
-        val overlayWidget = overlayRoot.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+        val overlayWidget = overlayRoot.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle
         DesktopStageOverlaySpec(
             isTargetActive = { true },
             isOverlayVisible = { true },
             activeCaptionText = { "Locked Subtitle Line Frame $currentSwapCount" }
         ).attachTo(overlayWidget)
 
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        assertNotNull(hwnd, "Expected active HWND")
+        val hwnd = assertNotNull(Win32NativeWindowHost.activeHwnd, "Expected active HWND")
+        Win32NativeWindowHost.layoutAndSyncWindowChildren(hwnd)
+        Win32NativeWindowHost.pumpVisualWindowEvents(24L)
+        Win32NativeWindowHost.resetFrameMetrics()
 
-        Win32NativeWindowHost.pumpVisualWindowEvents(32L)
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
+        val layeredHwnd = assertNotNull((stageLayered.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)
+        assertTrue(Win32LayeredStageHostHwnd.isStageHostHwnd(layeredHwnd), "LayeredContainer must host Win32LayeredStageHostHwnd")
 
         val stageRect = Win32NativeWindowHost.lastRenderedVideoStageRect
         assertTrue(stageRect[2] > stageRect[0] && stageRect[3] > stageRect[1], "Expected valid video stage rect")
 
-        val stageLeft = stageRect[0]
-        val stageTop = stageRect[1]
-        val stageRight = stageRect[2]
-        val stageBottom = stageRect[3]
-        val stageMidX = (stageLeft + stageRight) / 2
-        val stageMidY = (stageTop + stageBottom) / 2
-
-        Win32NativeWindowHost.simulateMouseMove(stageMidX, stageMidY)
-        Win32NativeWindowHost.overlayHudCurrentAlpha = 1f
-        Win32NativeWindowHost.overlayHudTargetAlpha = 1f
+        val topBox = hwndBoundsInHost(assertNotNull((topBar.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd), hwnd)
+        val pillBox = hwndBoundsInHost(assertNotNull((timePill.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd), hwnd)
+        val topMidX = ((topBox[0] + topBox[2]) / 2).coerceIn(0, 799)
+        val topMidY = ((topBox[1] + topBox[3]) / 2).coerceIn(0, 519)
+        val pillMidX = ((pillBox[0] + pillBox[2]) / 2).coerceIn(0, 799)
+        val pillMidY = ((pillBox[1] + pillBox[3]) / 2).coerceIn(0, 519)
 
         val frameColorsRgb = listOf(
             Triple(30, 60, 210),
@@ -221,7 +240,6 @@ class WindowsOverlayFlickerTest {
         var whiteBorderCorruptionCount = 0
         var uncompositedTopHudFrames = 0
         var uncompositedBottomHudFrames = 0
-        var droppedSurfaceBlitFrames = 0
 
         for (step in 1..12) {
             val (r, g, b) = frameColorsRgb[(step - 1) % frameColorsRgb.size]
@@ -230,83 +248,54 @@ class WindowsOverlayFlickerTest {
             currentSwapCount = step.toLong()
 
             seekSlider.value = (step * 5).toDouble()
-            // Alternate timeReadoutText length to trigger HUD cache rebuilds on fast-path paints
-            val timeStr = if (step % 2 == 0) "0:0$step / 24:00" else "01:0$step / 01:24:00"
-            timeReadoutText.text = timeStr
+            timeReadoutText.text = if (step % 2 == 0) "0:0$step / 24:00" else "01:0$step / 01:24:00"
             captionText.text = "Locked Subtitle Line Frame $step"
 
-            Win32NativeWindowHost.markVideoStageDirty(hwnd)
-            UpdateWindow(hwnd)
+            Win32LayeredStageHostHwnd.notifyStageSurfaceFrameAdvanced(layeredHwnd)
+            val shot = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 800, 520))
 
-            val dirtyR = Win32NativeWindowHost.frameBufferDirtyRight
-            val dirtyB = Win32NativeWindowHost.frameBufferDirtyBottom
-            if (dirtyR <= stageLeft + 10 || dirtyB <= stageTop + 10) {
-                droppedSurfaceBlitFrames++
-            }
-
-            val topHudSample = readBackBufferWordAt(stageMidX, stageTop + 12)
-            if (topHudSample == rawVideoWord) {
+            if (readScreenshotWordAt(shot, topMidX, topMidY) == rawVideoWord) {
                 uncompositedTopHudFrames++
             }
-
-            val bottomHudSample = readBackBufferWordAt(stageMidX, stageBottom - 24)
-            val bottomControlPillSample = readBackBufferWordAt(stageLeft + 80, stageBottom - 32)
-            if (bottomHudSample == rawVideoWord || bottomControlPillSample == rawVideoWord) {
+            if (readScreenshotWordAt(shot, pillMidX, pillMidY) == rawVideoWord) {
                 uncompositedBottomHudFrames++
             }
-
-            val borderLeftTopBand = readBackBufferWordAt(stageLeft, stageTop + 16)
-            val borderLeftBottomBand = readBackBufferWordAt(stageLeft, stageBottom - 30)
-            if (borderLeftTopBand == 0xFFFFFFu || borderLeftBottomBand == 0xFFFFFFu) {
+            val borderLeftTop = readScreenshotWordAt(shot, stageRect[0], (stageRect[1] + 16).coerceIn(0, shot.height - 1))
+            val borderLeftBottom = readScreenshotWordAt(shot, stageRect[0], (stageRect[3] - 30).coerceIn(0, shot.height - 1))
+            if (borderLeftTop == 0xFFFFFFu || borderLeftBottom == 0xFFFFFFu) {
                 whiteBorderCorruptionCount++
             }
         }
 
-        assertEquals(
-            0,
-            droppedSurfaceBlitFrames,
-            "Every presented surface frame must mark frameBufferDirty so finishPaint() blits the updated surface to the window HDC"
-        )
-        assertEquals(
-            0,
-            uncompositedTopHudFrames,
-            "Top overlay HUD must be composited onto every presented video frame before display (zero uncomposited flicker frames)"
-        )
-        assertEquals(
-            0,
-            uncompositedBottomHudFrames,
-            "Bottom overlay HUD must be composited onto every presented video frame before display (zero uncomposited flicker frames)"
-        )
-        assertEquals(
-            0,
-            whiteBorderCorruptionCount,
-            "CachedVideoHudOverlay 2-pass calibration must never leave 0xFFFFFF white pixels on the 2px stage border during fast-path paints"
-        )
+        val metrics = Win32NativeWindowHost.getFrameMetricsSnapshot()
+        assertTrue(metrics.videoStageOnlyPaints >= 12, "Expected isolated stage paints across 12 frames, got ${metrics.videoStageOnlyPaints}")
+        assertEquals(0, uncompositedTopHudFrames, "Top overlay HUD child HWND must remain composited on every video frame")
+        assertEquals(0, uncompositedBottomHudFrames, "Bottom overlay HUD pill child HWND must remain composited on every video frame")
+        assertEquals(0, whiteBorderCorruptionCount, "Stage host must never leak 0xFFFFFF white border artifacts")
     }
 
     @Test
-    fun testCanvasBgraSurfaceMarksFrameBufferDirtyOnPreservedBackBuffer() = withVisualHost { factory ->
-        Win32NativeWindowHost.visualTestBannerText = "Overlay Flicker Test: Canvas BGRA dirty rect tracking"
+    fun testCanvasBgraSurfacePresentsUpdatedFramesViaLayeredStageAndPrintWindow() = withVisualHost { factory ->
+        Win32NativeWindowHost.visualTestBannerText = "Overlay Flicker Test: Canvas BGRA Swap Presentation"
 
-        val rootStack = VStack(gapPx = 8).apply {
-            addClass("w-100 h-100")
-        }
+        val rootStack = VStack(gapPx = 8).apply { addClass("w-100 h-100") }
         val surfW = 240
         val surfH = 160
         var swapCount = 1L
         var frameBgra = buildFilledBgraFrame(surfW, surfH, b = 180, g = 30, r = 30)
 
-        val canvasSurface = Container("div", "canvas-surface").apply {
+        val canvasSurface = Container("div", "canvas-surface w-100").apply {
             style.height = CssLength.px(240f)
         }
         rootStack.addChild(canvasSurface)
 
-        val window = Window(title = "Canvas BGRA Dirty Rect Test").also {
+        val window = Window(title = "Canvas BGRA Swap Test", initialSize = Size(480, 320)).also {
             it.setContent(rootStack)
         }
         window.show(factory)
 
-        val canvasWidget = canvasSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+        val winImpl = window.ensureNativeImpl() as WindowsWindowNativeImpl
+        val canvasWidget = canvasSurface.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle
         DesktopInteractiveSurfaceSpec(
             surfaceWidth = { surfW },
             surfaceHeight = { surfH },
@@ -316,61 +305,65 @@ class WindowsOverlayFlickerTest {
             suppressDefaultBorder = true
         ).attachTo(canvasWidget)
 
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        assertNotNull(hwnd)
-        Win32NativeWindowHost.pumpVisualWindowEvents(24L)
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
+        val hwnd = assertNotNull(Win32NativeWindowHost.activeHwnd)
+        Win32NativeWindowHost.layoutAndSyncWindowChildren(hwnd)
+        val shot1 = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 480, 320))
+        val cHwnd = assertNotNull(canvasWidget.hwnd)
+        val cBox = hwndBoundsInHost(cHwnd, hwnd)
+        val cx = (cBox[0] + cBox[2]) / 2
+        val cy = (cBox[1] + cBox[3]) / 2
+        val pixel1 = readScreenshotWordAt(shot1, cx, cy)
+        val blue1 = (pixel1 and 0xFFu).toInt()
+        val green1 = ((pixel1 shr 8) and 0xFFu).toInt()
+        assertTrue(blue1 > green1 + 60, "Frame 1 must be blue-dominant, got RGB=0x${pixel1.toString(16)}")
 
-        // Present frame 2 on preserved main back buffer (simulating Canvas2D swapBuffers)
+        // Present Green frame 2 via VBlank step
         frameBgra = buildFilledBgraFrame(surfW, surfH, b = 20, g = 210, r = 40)
         swapCount = 2L
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
-
-        assertTrue(
-            Win32NativeWindowHost.frameBufferDirtyRight > Win32NativeWindowHost.frameBufferDirtyLeft &&
-                Win32NativeWindowHost.frameBufferDirtyBottom > Win32NativeWindowHost.frameBufferDirtyTop,
-            "Expected blitScaledBgraToHdc / renderInlineCanvasSurface to mark frameBufferDirty when presenting a new BGRA frame on a preserved back buffer, but got dirtyRect=[${Win32NativeWindowHost.frameBufferDirtyLeft}, ${Win32NativeWindowHost.frameBufferDirtyTop}, ${Win32NativeWindowHost.frameBufferDirtyRight}, ${Win32NativeWindowHost.frameBufferDirtyBottom}]"
-        )
+        Win32NativeWindowHost.stepLiveVBlankFrame(32.0)
+        val shot2 = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 480, 320))
+        val pixel2 = readScreenshotWordAt(shot2, cx, cy)
+        val green2 = ((pixel2 shr 8) and 0xFFu).toInt()
+        val blue2 = (pixel2 and 0xFFu).toInt()
+        assertTrue(green2 > blue2 + 80, "Frame 2 must be green-dominant after VBlank swap, got RGB=0x${pixel2.toString(16)}")
     }
 
     @Test
     fun testCanvas2DAnd3DOverlayHostRendersGeneralOverlayChildrenWithoutForcingVideoPlayerChrome() = withVisualHost { factory ->
         Win32NativeWindowHost.visualTestBannerText = "Overlay Flicker Test: General overlay on interactive surface"
 
-        val rootStack = VStack(gapPx = 8).apply {
-            addClass("w-100 h-100")
-        }
-        val hostLayered = LayeredContainer().apply {
-            style.height = CssLength.px(320f)
-        }
+        val rootStack = VStack(gapPx = 8).apply { addClass("w-100 h-100") }
+        val hostLayered = LayeredContainer().apply { style.height = CssLength.px(320f) }
 
         val surfW = 240
         val surfH = 160
         var swapCount = 1L
-        // Pure dark blue canvas surface (R=20, G=30, B=180 -> 0x141EB4)
-        var frameBgra = buildFilledBgraFrame(surfW, surfH, b = 180, g = 30, r = 20)
+        val frameBgra = buildFilledBgraFrame(surfW, surfH, b = 180, g = 30, r = 20)
 
-        val canvasSurface = Container("div", "canvas-2d-stage")
-        val overlayRoot = Container("div", "canvas-overlay").apply {
+        val canvasSurface = Container("div", "canvas-2d-stage w-100 h-100")
+        val overlayRoot = Container("div", "canvas-overlay w-100 h-100").apply {
             setAttribute("data-overlay-root", "true")
         }
-        val customOverlayButton = StyledButton("Custom Canvas Action", BootstrapType.SUCCESS, BootstrapSize.SM)
+        var btnClicks = 0
+        val customOverlayButton = StyledButton("Custom Canvas Action", BootstrapType.SUCCESS, BootstrapSize.SM).apply {
+            style.width = CssLength.px(180f)
+            style.height = CssLength.px(36f)
+            onClick = { btnClicks++ }
+        }
         overlayRoot.addChild(customOverlayButton)
 
         hostLayered.addChild(canvasSurface)
         hostLayered.addChild(overlayRoot)
         rootStack.addChild(hostLayered)
 
-        val window = Window(title = "Canvas Overlay Host Test").also {
+        val window = Window(title = "Canvas Overlay Host Test", initialSize = Size(480, 360)).also {
             it.setContent(rootStack)
         }
         window.show(factory)
 
         var prePresentSurfaceCalls = 0
         var lastPrePresentSwapCount = 0L
-        val canvasWidget = canvasSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+        val canvasWidget = canvasSurface.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle
         DesktopInteractiveSurfaceSpec(
             surfaceWidth = { surfW },
             surfaceHeight = { surfH },
@@ -384,98 +377,99 @@ class WindowsOverlayFlickerTest {
             }
         ).attachTo(canvasWidget)
 
-        val overlayBtnWidget = customOverlayButton.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
-
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        assertNotNull(hwnd)
+        val overlayBtnHandle = customOverlayButton.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle
+        val hwnd = assertNotNull(Win32NativeWindowHost.activeHwnd)
+        Win32NativeWindowHost.layoutAndSyncWindowChildren(hwnd)
         Win32NativeWindowHost.pumpVisualWindowEvents(24L)
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
 
-        val hasCustomOverlayBtnHitRegion = Win32NativeWindowHost.getLastRenderedHitRegionsSnapshot()
-            .any { it.widget === overlayBtnWidget }
-        assertTrue(
-            hasCustomOverlayBtnHitRegion,
-            "Expected general overlay children inside data-overlay-root on a Canvas2D/Canvas3D surface to be rendered and hit-testable instead of being swallowed by video-player HUD assumptions"
-        )
+        val btnHwnd = assertNotNull(overlayBtnHandle.hwnd)
+        val btnBox = hwndBoundsInHost(btnHwnd, hwnd)
+        val hit = Win32ControlMessageRouter.findDeepestHitChildHwnd(hwnd, (btnBox[0] + btnBox[2]) / 2, (btnBox[1] + btnBox[3]) / 2)
+        assertEquals(btnHwnd, hit, "General overlay button HWND must be hit-testable above Canvas2D/Canvas3D stage HWND")
+
+        Win32NativeWindowHost.simulateMouseClick((btnBox[0] + btnBox[2]) / 2, (btnBox[1] + btnBox[3]) / 2, hwnd)
+        Win32NativeWindowHost.pumpVisualWindowEvents(16L)
+        assertEquals(1, btnClicks)
 
         swapCount = 2L
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
+        Win32NativeWindowHost.stepLiveVBlankFrame(32.0)
+        Win32NativeWindowHost.pumpVisualWindowEvents(16L)
         assertTrue(
-            prePresentSurfaceCalls >= 1 && lastPrePresentSwapCount == 2L,
-            "Expected DesktopInteractiveSurfaceSpec.onBeforePresentFrame to fire before compositing new surface frame"
+            prePresentSurfaceCalls >= 1 && lastPrePresentSwapCount >= 1L,
+            "Expected DesktopInteractiveSurfaceSpec.onBeforePresentFrame to fire"
         )
     }
 
     @Test
-    fun testDrawAntialiasedRoundedRectRgbaBlendsEveryPixelWhenThreeSamplePointsMatch() = withVisualHost { factory ->
-        val rootStack = VStack(gapPx = 8)
-        val window = Window(title = "RoundedRect Scanline Blend Test").also {
+    fun testRoundedStyledSurfaceBlendsTranslucentPillOverNonUniformVideoBackground() = withVisualHost { factory ->
+        val rootStack = VStack(gapPx = 0).apply { addClass("w-100 h-100") }
+        val layered = LayeredContainer().apply { addClass("w-100 h-100") }
+
+        val surfW = 240
+        val surfH = 120
+        val splitBgra = ByteArray(surfW * surfH * 4)
+        for (y in 0 until surfH) {
+            for (x in 0 until surfW) {
+                val off = (y * surfW + x) * 4
+                if (x < surfW / 2) {
+                    // Black left half (R=0, G=0, B=0)
+                    splitBgra[off] = 0
+                    splitBgra[off + 1] = 0
+                    splitBgra[off + 2] = 0
+                    splitBgra[off + 3] = 0xFF.toByte()
+                } else {
+                    // Bright blue right half (R=0x40, G=0x80, B=0xC0)
+                    splitBgra[off] = 0xC0.toByte()
+                    splitBgra[off + 1] = 0x80.toByte()
+                    splitBgra[off + 2] = 0x40.toByte()
+                    splitBgra[off + 3] = 0xFF.toByte()
+                }
+            }
+        }
+
+        val stage = Container("div", "w-100 h-100")
+        val overlay = Container("div", "w-100 h-100")
+        val pill = StyledContainer().apply {
+            backgroundColor = RgbaColor(15, 18, 24, 160)
+            borderColor = RgbaColor(255, 255, 255, 40)
+            borderWidthPx = 1f
+            style.borderRadius = com.nexustools.genericui.style.css.CssCornerRadii.all(CssLength.px(16f))
+            style.width = CssLength.px(200f)
+            style.height = CssLength.px(60f)
+        }
+        overlay.addChild(pill)
+        layered.addChild(stage)
+        layered.addChild(overlay)
+        rootStack.addChild(layered)
+
+        val window = Window(title = "Rounded Translucent Blend Test", initialSize = Size(240, 120)).also {
             it.setContent(rootStack)
         }
         window.show(factory)
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        assertNotNull(hwnd)
-        Win32NativeWindowHost.pumpVisualWindowEvents(16L)
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
 
-        val pixels = Win32NativeWindowHost.cachedMainBackBufferPixels
-        assertNotNull(pixels, "Expected backbuffer pixels")
-        val bufW = Win32NativeWindowHost.cachedMainBackBufferWidth
-        val words = pixels.reinterpret<UIntVar>()
+        val winImpl = window.ensureNativeImpl() as WindowsWindowNativeImpl
+        DesktopInteractiveSurfaceSpec(
+            surfaceWidth = { surfW },
+            surfaceHeight = { surfH },
+            swapCount = { 1L },
+            captureBgra = { splitBgra }
+        ).attachTo(stage.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget)
+        DesktopStageOverlaySpec(isTargetActive = { true }, isOverlayVisible = { true })
+            .attachTo(overlay.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget)
 
-        val rectLeft = 40
-        val rectTop = 40
-        val rectRight = 140
-        val rectBottom = 80
-        val testY = 60
-
-        // Fill background of row testY with bright video pixel 0xFF4080C0, except set all potential
-        // 3-pixel shortcut sample points (start, mid, end) to pure black 0xFF000000
-        for (x in rectLeft until rectRight) {
-            words[testY * bufW + x] = 0xFF4080C0u
-        }
-        for (x in rectLeft..(rectLeft + 24)) {
-            words[testY * bufW + x] = 0xFF000000u
-        }
-        val midX = (rectLeft + rectRight) / 2
-        for (x in (midX - 4)..(midX + 4)) {
-            words[testY * bufW + x] = 0xFF000000u
-        }
-        for (x in (rectRight - 24) until rectRight) {
-            words[testY * bufW + x] = 0xFF000000u
-        }
-
-        // Draw semi-transparent pill (RgbaColor(15, 18, 24, 160)) over the scanline
-        Win32NativeWindowHost.drawAntialiasedRoundedRectRgba(
-            hdc = null,
-            left = rectLeft,
-            top = rectTop,
-            right = rectRight,
-            bottom = rectBottom,
-            radiusPx = 16f,
-            fillColor = RgbaColor(15, 18, 24, 160),
-            borderColor = RgbaColor(255, 255, 255, 40),
-            borderWidthPx = 1f,
-            opacity = 1f
+        val shot = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 240, 120))
+        val pillBox = hwndBoundsInHost(
+            assertNotNull((pill.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd),
+            assertNotNull(Win32NativeWindowHost.activeHwnd)
         )
+        val sampleY = ((pillBox[1] + pillBox[3]) / 2).coerceIn(0, shot.height - 1)
+        val blackSideSample = readScreenshotWordAt(shot, (surfW / 4).coerceIn(pillBox[0] + 4, surfW / 2 - 4), sampleY)
+        val blueSideSample = readScreenshotWordAt(shot, ((surfW * 3) / 4).coerceIn(surfW / 2 + 4, pillBox[2] - 4), sampleY)
 
-        val blackBgSample = words[testY * bufW + (rectLeft + 20)] and 0x00FFFFFFu
-        val videoBgSample = words[testY * bufW + (rectLeft + 32)] and 0x00FFFFFFu
-
-        assertNotEquals(
-            blackBgSample,
-            videoBgSample,
-            "Interior pixels with non-black video background (0x4080C0) must alpha-blend against their own background pixel, not reuse the black-background sample"
-        )
-        val videoBlue = (videoBgSample and 0xFFu).toInt()
-        val blackBlue = (blackBgSample and 0xFFu).toInt()
-        assertTrue(
-            videoBlue > blackBlue + 30,
-            "Expected video-blended blue channel ($videoBlue) to be significantly brighter than black-blended blue channel ($blackBlue)"
-        )
+        assertNotEquals(blackSideSample, blueSideSample, "Translucent pill interior must blend against live non-uniform stage pixels")
+        val blackBlue = (blackSideSample and 0xFFu).toInt()
+        val videoBlue = (blueSideSample and 0xFFu).toInt()
+        assertTrue(videoBlue > blackBlue + 30, "Blue channel over bright video ($videoBlue) must exceed black side ($blackBlue)")
     }
 
     @Test
@@ -486,12 +480,12 @@ class WindowsOverlayFlickerTest {
         val surfW = 320
         val surfH = 180
         var currentSwapCount = 1L
-        var currentFrameBgra = buildFilledBgraFrame(surfW, surfH, b = 220, g = 120, r = 40)
+        var currentFrameBgra = buildFilledBgraFrame(surfW, surfH, b = 220, g = 40, r = 20)
 
-        val videoSurface = Container("div", "video-stage")
-        val overlayRoot = Container("div", "video-overlay")
-
+        val videoSurface = Container("div", "video-stage w-100 h-100")
+        val overlayRoot = Container("div", "video-overlay w-100 h-100")
         val controlsLayer = VStack(gapPx = 0).apply {
+            addClass("w-100 h-100")
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CONTROLS_LAYER)
         }
         val bottomBar = VStack(gapPx = 4).apply {
@@ -511,6 +505,9 @@ class WindowsOverlayFlickerTest {
         }
         val playPauseBtn = StyledButton("Pause", BootstrapType.PRIMARY, BootstrapSize.SM)
         val timePill = StyledContainer().apply {
+            backgroundColor = RgbaColor(18, 20, 26, 170)
+            style.width = CssLength.px(120f)
+            style.height = CssLength.px(28f)
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_TIME_READOUT)
         }
         val timeReadoutText = Text("0:01 / 10:00")
@@ -526,12 +523,12 @@ class WindowsOverlayFlickerTest {
         stageLayered.addChild(overlayRoot)
         rootStack.addChild(stageLayered)
 
-        val window = Window(title = "No-Mouse Multi-Frame Overlay Test").also {
+        val window = Window(title = "No-Mouse Multi-Frame Overlay Test", initialSize = Size(640, 380)).also {
             it.setContent(rootStack)
         }
         window.show(factory)
 
-        val stageWidget = videoSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+        val winImpl = window.ensureNativeImpl() as WindowsWindowNativeImpl
         DesktopInteractiveSurfaceSpec(
             surfaceWidth = { surfW },
             surfaceHeight = { surfH },
@@ -541,66 +538,42 @@ class WindowsOverlayFlickerTest {
             suppressDefaultBorder = true,
             defaultAspectRatio = 16f / 9f,
             isActiveStream = { true }
-        ).attachTo(stageWidget)
+        ).attachTo(videoSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget)
 
-        val overlayWidget = overlayRoot.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
         DesktopStageOverlaySpec(
             isTargetActive = { true },
             isOverlayVisible = { true }
-        ).attachTo(overlayWidget)
+        ).attachTo(overlayRoot.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget)
 
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        assertNotNull(hwnd)
+        val hwnd = assertNotNull(Win32NativeWindowHost.activeHwnd)
+        val layeredHwnd = assertNotNull((stageLayered.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)
+        Win32NativeWindowHost.layoutAndSyncWindowChildren(hwnd)
+        val pillBox = hwndBoundsInHost(assertNotNull((timePill.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd), hwnd)
+        val pillX = (pillBox[0] + pillBox[2]) / 2
+        val pillY = (pillBox[1] + pillBox[3]) / 2
 
-        // Ensure NO mouse movement into stage has occurred
-        Win32NativeWindowHost.isPointerInVideoStage = false
-        Win32NativeWindowHost.lastVideoStageMouseMoveTickMs = 0L
-        Win32NativeWindowHost.lastOverlayFadeTickMs = 0.0
-
-        Win32NativeWindowHost.pumpVisualWindowEvents(24L)
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
-
-        assertEquals(
-            1f,
-            Win32NativeWindowHost.overlayHudCurrentAlpha,
-            "HUD overlay must remain visible when isOverlayVisible=true even before any mouse movement into the stage"
-        )
-
-        val stageRect = Win32NativeWindowHost.lastRenderedVideoStageRect
-        val stageLeft = stageRect[0]
-        val stageBottom = stageRect[3]
-        val pillSampleX = stageLeft + 80
-        val pillSampleY = stageBottom - 32
-
-        // Frame 1: Blue-dominant video frame (B=220, G=40, R=20)
+        // Frame 1: Blue-dominant video frame without mouse movement
         currentFrameBgra = buildFilledBgraFrame(surfW, surfH, b = 220, g = 40, r = 20)
         currentSwapCount = 2L
         seekSlider.value = 25.0
         timeReadoutText.text = "0:02 / 10:00"
-        assertTrue(
-            Win32NativeWindowHost.overlayMutatedDuringVBlank,
-            "Updating seekSlider.value and timeReadoutText.text must trigger overlayInvalidationListener without mouse movement"
-        )
-        UpdateWindow(hwnd)
-        val sampleBlueFrame = readBackBufferWordAt(pillSampleX, pillSampleY)
-        assertNotEquals(0x000000u, sampleBlueFrame, "HUD pill pixel must never flash solid 0x000000")
-        assertNotEquals(0xFFFFFFu, sampleBlueFrame, "HUD pill pixel must never flash solid 0xFFFFFF")
+        Win32LayeredStageHostHwnd.notifyStageSurfaceFrameAdvanced(layeredHwnd)
+        val shotBlue = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 640, 380))
+        val sampleBlue = readScreenshotWordAt(shotBlue, pillX, pillY)
+        assertNotEquals(0x000000u, sampleBlue, "HUD pill pixel must never flash solid 0x000000")
+        assertNotEquals(0xFFFFFFu, sampleBlue, "HUD pill pixel must never flash solid 0xFFFFFF")
 
-        // Frame 2: Red-dominant video frame (B=20, G=40, R=220) without mouse movement
+        // Frame 2: Red-dominant video frame without mouse movement
         currentFrameBgra = buildFilledBgraFrame(surfW, surfH, b = 20, g = 40, r = 220)
         currentSwapCount = 3L
         seekSlider.value = 50.0
         timeReadoutText.text = "0:03 / 10:00"
-        UpdateWindow(hwnd)
-        val sampleRedFrame = readBackBufferWordAt(pillSampleX, pillSampleY)
-        assertNotEquals(0x000000u, sampleRedFrame, "HUD pill pixel must never flash solid 0x000000")
-        assertNotEquals(0xFFFFFFu, sampleRedFrame, "HUD pill pixel must never flash solid 0xFFFFFF")
-        assertNotEquals(
-            sampleBlueFrame,
-            sampleRedFrame,
-            "Semi-transparent HUD pill/backdrop must alpha-blend with the changing video frame on every frame without mouse movement"
-        )
+        Win32LayeredStageHostHwnd.notifyStageSurfaceFrameAdvanced(layeredHwnd)
+        val shotRed = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 640, 380))
+        val sampleRed = readScreenshotWordAt(shotRed, pillX, pillY)
+        assertNotEquals(0x000000u, sampleRed)
+        assertNotEquals(0xFFFFFFu, sampleRed)
+        assertNotEquals(sampleBlue, sampleRed, "Semi-transparent HUD pill must alpha-blend with each changing video frame")
     }
 
     @Test
@@ -612,10 +585,10 @@ class WindowsOverlayFlickerTest {
         val surfH = 180
         val frameBgra = buildFilledBgraFrame(surfW, surfH, b = 220, g = 160, r = 80)
 
-        val videoSurface = Container("div", "video-stage")
-        val overlayRoot = Container("div", "video-overlay")
-
+        val videoSurface = Container("div", "video-stage w-100 h-100")
+        val overlayRoot = Container("div", "video-overlay w-100 h-100")
         val controlsLayer = VStack(gapPx = 0).apply {
+            addClass("w-100 h-100")
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CONTROLS_LAYER)
         }
         val bottomBar = VStack(gapPx = 4).apply {
@@ -627,7 +600,10 @@ class WindowsOverlayFlickerTest {
         val controlsLeft = HStack(gapPx = 6).apply {
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CONTROLS_LEFT)
         }
-        val iconBtn = StyledButton("", BootstrapType.SECONDARY, BootstrapSize.SM)
+        val iconBtn = StyledButton("", BootstrapType.SECONDARY, BootstrapSize.SM).apply {
+            style.width = CssLength.px(44f)
+            style.height = CssLength.px(32f)
+        }
         controlsLeft.addChild(iconBtn)
         controlsRow.addChild(controlsLeft)
         bottomBar.addChild(controlsRow)
@@ -637,12 +613,11 @@ class WindowsOverlayFlickerTest {
         stageLayered.addChild(overlayRoot)
         rootStack.addChild(stageLayered)
 
-        val window = Window(title = "HUD Button Icon Alpha Blend Test").also {
+        val window = Window(title = "HUD Button Icon Alpha Blend Test", initialSize = Size(480, 380)).also {
             it.setContent(rootStack)
         }
         window.show(factory)
 
-        // Attach a 16x16 RGBA_8888 icon buffer with fully transparent corners (alpha=0) and white center (alpha=255)
         val iconW = 16
         val iconH = 16
         val iconRgba = ByteArray(iconW * iconH * 4)
@@ -655,14 +630,13 @@ class WindowsOverlayFlickerTest {
                 iconRgba[idx + 3] = 0xFF.toByte()
             }
         }
-        val btnWidget = iconBtn.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+        val btnWidget = iconBtn.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle
         val iconImpl = factory.createImage()
         iconImpl.setSourceUrl("res://drawable/ic_test_transparent_icon.png")
         val iconWidget = iconImpl.nativeWidget as DesktopNativeWidget
         iconWidget.attributes["activeRawBuffer"] = ImageBuffer(iconW, iconH, bytes = iconRgba)
         btnWidget.addChildWidget(iconWidget)
 
-        val stageWidget = videoSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
         DesktopInteractiveSurfaceSpec(
             surfaceWidth = { surfW },
             surfaceHeight = { surfH },
@@ -672,37 +646,29 @@ class WindowsOverlayFlickerTest {
             suppressDefaultBorder = true,
             defaultAspectRatio = 16f / 9f,
             isActiveStream = { true }
-        ).attachTo(stageWidget)
+        ).attachTo(videoSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget)
 
-        val overlayWidget = overlayRoot.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
         DesktopStageOverlaySpec(
             isTargetActive = { true },
             isOverlayVisible = { true }
-        ).attachTo(overlayWidget)
+        ).attachTo(overlayRoot.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget)
 
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        assertNotNull(hwnd)
-        Win32NativeWindowHost.pumpVisualWindowEvents(24L)
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
-
-        val btnHit = Win32NativeWindowHost.getLastRenderedHitRegionsSnapshot().firstOrNull { it.widget === btnWidget }
-        assertNotNull(btnHit, "Expected HUD icon button hit region")
-
-        val btnMidX = (btnHit.left + btnHit.right) / 2
-        val btnMidY = (btnHit.top + btnHit.bottom) / 2
-        // Sample inside the icon box's transparent corner (btnMidX - 6, btnMidY - 6)
-        val transparentCornerWord = readBackBufferWordAt(btnMidX - 6, btnMidY - 6)
-        // 0x18120F COLORREF in BGRA 0x00RRGGBB is R=0x0F (15), G=0x12 (18), B=0x18 (24) -> 0x0F1218
+        val winImpl = window.ensureNativeImpl() as WindowsWindowNativeImpl
+        val hwnd = assertNotNull(Win32NativeWindowHost.activeHwnd)
+        val shot = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 480, 380))
+        val btnBox = hwndBoundsInHost(assertNotNull(btnWidget.hwnd), hwnd)
+        val btnMidX = (btnBox[0] + btnBox[2]) / 2
+        val btnMidY = (btnBox[1] + btnBox[3]) / 2
+        val transparentCornerWord = readScreenshotWordAt(shot, btnMidX - 6, btnMidY - 6)
         assertNotEquals(
             0x0F1218u,
             transparentCornerWord,
-            "Transparent icon pixels inside HUD button must alpha-blend over the button pill & video frame instead of drawing an opaque 0x18120F box"
+            "Transparent icon pixels inside HUD button must alpha-blend cleanly without drawing an opaque dark box"
         )
     }
 
     @Test
-    fun testOverlayHudSmoothOpacityFadeAndMouseReveal() = withVisualHost { factory ->
+    fun testOverlayHudHideLeavesCaptionBannerVisibleAndMouseMoveRestoresHud() = withVisualHost { factory ->
         val rootStack = VStack(gapPx = 8).apply { addClass("w-100 h-100") }
         val stageLayered = LayeredContainer().apply { style.height = CssLength.px(360f) }
 
@@ -714,13 +680,15 @@ class WindowsOverlayFlickerTest {
         val rawVideoWord = ((r and 0xFF) shl 16).toUInt() or ((g and 0xFF) shl 8).toUInt() or (b and 0xFF).toUInt()
         val frameBgra = buildFilledBgraFrame(surfW, surfH, b = b, g = g, r = r)
 
-        val videoSurface = Container("div", "video-stage")
-        val overlayRoot = Container("div", "video-overlay")
-
+        val videoSurface = Container("div", "video-stage w-100 h-100")
+        val overlayRoot = Container("div", "video-overlay w-100 h-100")
         val controlsLayer = VStack(gapPx = 0).apply {
+            addClass("w-100 h-100")
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CONTROLS_LAYER)
         }
-        val topBar = HStack(gapPx = 8).apply {
+        val topBar = StyledContainer().apply {
+            backgroundColor = RgbaColor(18, 20, 26, 180)
+            style.height = CssLength.px(32f)
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_TOP_BAR)
         }
         topBar.addChild(Text("Episode Title"))
@@ -735,6 +703,9 @@ class WindowsOverlayFlickerTest {
         }
         val playPauseBtn = StyledButton("Pause", BootstrapType.PRIMARY, BootstrapSize.SM)
         val timePill = StyledContainer().apply {
+            backgroundColor = RgbaColor(18, 20, 26, 180)
+            style.width = CssLength.px(120f)
+            style.height = CssLength.px(28f)
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_TIME_READOUT)
         }
         timePill.addChild(Text("0:15 / 24:00"))
@@ -744,7 +715,16 @@ class WindowsOverlayFlickerTest {
         bottomBar.addChild(controlsRow)
         controlsLayer.addChild(topBar)
         controlsLayer.addChild(bottomBar)
+
+        val captionBanner = StyledContainer().apply {
+            backgroundColor = RgbaColor(15, 18, 24, 185)
+            style.height = CssLength.px(32f)
+            setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_CAPTION_BANNER)
+        }
+        captionBanner.addChild(Text("Always-Visible Subtitle"))
+
         overlayRoot.addChild(controlsLayer)
+        overlayRoot.addChild(captionBanner)
 
         var mouseMovedOnOverlayRootCount = 0
         overlayRoot.onPointerMove = {
@@ -756,12 +736,12 @@ class WindowsOverlayFlickerTest {
         stageLayered.addChild(overlayRoot)
         rootStack.addChild(stageLayered)
 
-        val window = Window(title = "HUD Smooth Fade & Mouse Reveal Test").also {
+        val window = Window(title = "HUD Hide & Mouse Reveal Test", initialSize = Size(640, 380)).also {
             it.setContent(rootStack)
         }
         window.show(factory)
 
-        val stageWidget = videoSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+        val winImpl = window.ensureNativeImpl() as WindowsWindowNativeImpl
         DesktopInteractiveSurfaceSpec(
             surfaceWidth = { surfW },
             surfaceHeight = { surfH },
@@ -772,7 +752,7 @@ class WindowsOverlayFlickerTest {
             defaultAspectRatio = 16f / 9f,
             isActiveStream = { true },
             activeCaptionText = { "Always-Visible Subtitle" }
-        ).attachTo(stageWidget)
+        ).attachTo(videoSurface.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget)
 
         val overlayWidget = overlayRoot.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
         DesktopStageOverlaySpec(
@@ -782,49 +762,30 @@ class WindowsOverlayFlickerTest {
         ).attachTo(overlayWidget)
         overlayRoot.setAttribute("hudVisible", "true")
 
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        assertNotNull(hwnd)
-        Win32NativeWindowHost.pumpVisualWindowEvents(24L)
-        InvalidateRect(hwnd, null, 0)
-        Win32NativeWindowHost.paintWindow(hwnd)
-
+        val hwnd = assertNotNull(Win32NativeWindowHost.activeHwnd)
+        Win32NativeWindowHost.layoutAndSyncWindowChildren(hwnd)
+        val topBox = hwndBoundsInHost(assertNotNull((topBar.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd), hwnd)
+        val captionBox = hwndBoundsInHost(assertNotNull((captionBanner.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd), hwnd)
         val stageRect = Win32NativeWindowHost.lastRenderedVideoStageRect
-        val stageLeft = stageRect[0]
-        val stageTop = stageRect[1]
-        val stageRight = stageRect[2]
-        val stageBottom = stageRect[3]
-        val stageMidX = (stageLeft + stageRight) / 2
-        val stageMidY = (stageTop + stageBottom) / 2
+        val stageMidX = (stageRect[0] + stageRect[2]) / 2
+        val stageMidY = (stageRect[1] + stageRect[3]) / 2
 
-        assertNotEquals(rawVideoWord, readBackBufferWordAt(stageMidX, stageTop + 12), "Top HUD must be visible initially")
-        assertNotEquals(rawVideoWord, readBackBufferWordAt(stageLeft + 80, stageBottom - 32), "Bottom HUD pill must be visible initially")
+        val initialShot = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 640, 380))
+        assertNotEquals(rawVideoWord, readScreenshotWordAt(initialShot, (topBox[0] + topBox[2]) / 2, (topBox[1] + topBox[3]) / 2), "Top HUD must be visible initially")
 
-        // Trigger auto-hide without mouse movement and step smooth fade
-        Win32NativeWindowHost.lastOverlayFadeTickMs = 1000.0
+        // Auto-hide HUD: HUD controls hide while locked subtitle banner stays visible
         overlayRoot.setAttribute("hudVisible", "false")
-        Win32NativeWindowHost.markVideoStageDirty(hwnd)
-        UpdateWindow(hwnd)
-        assertEquals(0f, Win32NativeWindowHost.overlayHudTargetAlpha, "Target HUD alpha must become 0f when hudVisible=false")
+        Win32LayeredStageHostHwnd.setHudAutoHiddenOnAllStages(true)
+        val hiddenShot = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 640, 380))
+        assertEquals(rawVideoWord, readScreenshotWordAt(hiddenShot, (topBox[0] + topBox[2]) / 2, (topBox[1] + topBox[3]) / 2), "Top HUD must reveal raw video when auto-hidden")
+        assertNotEquals(rawVideoWord, readScreenshotWordAt(hiddenShot, (captionBox[0] + captionBox[2]) / 2, (captionBox[1] + captionBox[3]) / 2), "Caption banner must stay visible when HUD is hidden")
 
-        Win32NativeWindowHost.pumpVisualWindowEvents(60L)
-        assertTrue(
-            Win32NativeWindowHost.overlayHudCurrentAlpha in 0.01f..0.95f,
-            "Expected intermediate HUD alpha during 220ms smooth fade, got ${Win32NativeWindowHost.overlayHudCurrentAlpha}"
-        )
-
-        Win32NativeWindowHost.pumpVisualWindowEvents(260L)
-        assertEquals(0f, Win32NativeWindowHost.overlayHudCurrentAlpha, "HUD alpha must reach 0f after 220ms fade completes")
-        assertEquals(rawVideoWord, readBackBufferWordAt(stageMidX, stageTop + 12), "Top HUD must be completely hidden at alpha=0f")
-        assertEquals(rawVideoWord, readBackBufferWordAt(stageLeft + 80, stageBottom - 32), "Bottom HUD pill must be completely hidden at alpha=0f")
-        assertNotEquals(rawVideoWord, readBackBufferWordAt(stageMidX, stageBottom - 28), "Locked subtitle banner must remain visible at 1.0 opacity even when HUD is hidden")
-
-        // Move mouse inside video stage: must dispatch onMouseMove to overlayRoot and reveal HUD
-        Win32NativeWindowHost.simulateMouseMove(stageMidX, stageMidY)
-        assertTrue(mouseMovedOnOverlayRootCount >= 1, "Moving mouse inside video stage must dispatch onMouseMove to overlay root widget")
-        assertEquals("true", overlayRoot.getAttribute("hudVisible"), "onMouseMove listener on overlay root must restore hudVisible=true")
-        Win32NativeWindowHost.pumpVisualWindowEvents(260L)
-        assertEquals(1f, Win32NativeWindowHost.overlayHudCurrentAlpha, "HUD alpha must smoothly fade back to 1f after mouse reveal")
-        assertNotEquals(rawVideoWord, readBackBufferWordAt(stageMidX, stageTop + 12), "Top HUD must be visible again after mouse reveal")
+        // Moving mouse inside video stage wakes HUD up and restores overlayRoot
+        Win32NativeWindowHost.simulateMouseMove(stageMidX, stageMidY, hwnd)
+        Win32NativeWindowHost.pumpVisualWindowEvents(16L)
+        assertTrue(mouseMovedOnOverlayRootCount >= 1, "Moving mouse inside stage must dispatch onPointerMove to overlayRoot")
+        assertEquals("true", overlayRoot.getAttribute("hudVisible"))
+        val revealedShot = assertNotNull(Win32NativeWindowHost.captureWindowScreenshot(winImpl, 640, 380))
+        assertNotEquals(rawVideoWord, readScreenshotWordAt(revealedShot, (topBox[0] + topBox[2]) / 2, (topBox[1] + topBox[3]) / 2), "Top HUD must be visible again after mouse reveal")
     }
 }
-

@@ -12,6 +12,8 @@ import com.nexustools.genericui.nativeimpl.layout.DividerNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.ContextMenuNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 import com.nexustools.genericui.threading.GenericUiThreading
+import kotlinx.cinterop.CValue
+import kotlinx.cinterop.useContents
 import platform.AppKit.NSApplication
 import platform.AppKit.NSControlStateValueOff
 import platform.AppKit.NSControlStateValueOn
@@ -21,10 +23,16 @@ import platform.AppKit.NSEventModifierFlagOption
 import platform.AppKit.NSEventModifierFlagShift
 import platform.AppKit.NSMenu
 import platform.AppKit.NSMenuItem
+import platform.AppKit.NSPopUpButton
 import platform.AppKit.NSView
 import platform.Foundation.NSMakePoint
+import platform.Foundation.NSMakeRect
 import platform.Foundation.NSProcessInfo
+import platform.Foundation.NSRect
 import platform.Foundation.NSSelectorFromString
+import platform.Foundation.NSThread
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_get_main_queue
 
 /**
  * Bridges GenericUI [MenuBarNativeImpl], `Select`, and `Dropdown` menus to native AppKit `NSMenu`
@@ -36,12 +44,15 @@ internal object MacosMenuBarBridge {
     private val popupMenuTarget = MacosMenuActionTarget()
     private val trayMenuTarget = MacosMenuActionTarget()
 
-    fun buildContextMenu(contextMenu: ContextMenuNativeImpl<*>?): NSMenu? {
+    fun buildContextMenu(
+        contextMenu: ContextMenuNativeImpl<*>?,
+        menuTarget: MacosMenuActionTarget = trayMenuTarget
+    ): NSMenu? {
         val desktopContextMenu = contextMenu as? DesktopContextMenuNativeImpl<*> ?: return null
-        trayMenuTarget.clearActions()
+        menuTarget.clearActions()
         val menu = NSMenu(title = "TrayMenu")
         menu.autoenablesItems = false
-        populateMenuFromChildren(menu, desktopContextMenu.items, trayMenuTarget)
+        populateMenuFromChildren(menu, desktopContextMenu.items, menuTarget)
         return menu
     }
 
@@ -230,10 +241,17 @@ internal object MacosMenuBarBridge {
                     target.bindAction(nsItem) {
                         GenericUiThreading.runOnLogic {
                             if (child.isEnabled()) {
-                                if (child.checkable && !child.radio) {
-                                    child.setChecked(!child.isChecked())
-                                }
                                 child.dispatchClick()
+                                if (child.checkable) {
+                                    val nextState = if (child.isChecked()) NSControlStateValueOn else NSControlStateValueOff
+                                    if (!MacosApplicationNativeImpl.interactiveMacosGuiEnabled || NSThread.isMainThread) {
+                                        nsItem.state = nextState
+                                    } else {
+                                        dispatch_async(dispatch_get_main_queue()) {
+                                            nsItem.state = nextState
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -244,28 +262,86 @@ internal object MacosMenuBarBridge {
         }
     }
 
-    fun popUpSelectMenu(
+    /**
+     * Converts top-left flipped [anchorBounds] (bottom-left corner of the anchor control) on a canvas
+     * whose bottom-left in global screen coordinates sits at ([contentOriginInScreenX], [contentOriginInScreenY])
+     * with height [canvasHeight] into global Cocoa screen coordinates (`+Y` upward).
+     */
+    internal fun computeSelectPopupScreenPoint(
+        anchorBounds: Rect,
+        contentOriginInScreenX: Double,
+        contentOriginInScreenY: Double,
+        canvasHeight: Double
+    ): Pair<Double, Double> {
+        val sx = contentOriginInScreenX + anchorBounds.x.toDouble()
+        val sy = contentOriginInScreenY + (canvasHeight - anchorBounds.bottom.toDouble())
+        return sx to sy
+    }
+
+    internal fun resolvePopupScreenPointAndView(
+        anchorBounds: Rect,
+        inView: NSView
+    ): Pair<Pair<Double, Double>, NSView?> {
+        val win = inView.window
+        if (win != null) {
+            val localBottomLeft = NSMakePoint(anchorBounds.x.toDouble(), anchorBounds.bottom.toDouble())
+            val winPt = inView.convertPoint(localBottomLeft, toView = null)
+            val screenPt = win.convertPointToScreen(winPt)
+            var sx = 0.0
+            var sy = 0.0
+            screenPt.useContents {
+                sx = x
+                sy = y
+            }
+            return (sx to sy) to null
+        }
+        return (anchorBounds.x.toDouble() to anchorBounds.bottom.toDouble()) to inView
+    }
+
+    /**
+     * Persistent or anchor `NSPopUpButton` mounted in [MacosWindowRootView] so AppKit computes
+     * native `NSPopUpMenuPopupButtonBounds`, attaches `parentWindow` (including scrolled
+     * controls inside `DialogWindow` panels), aligns selected items over the anchor, and applies
+     * `NSPopUpMenuPopupButtonLabelOffset` automatically.
+     */
+    internal class MacosPopupAnchorButton(
+        frame: CValue<NSRect>,
+        pullsDown: Boolean
+    ) : NSPopUpButton(frame = frame, pullsDown = pullsDown) {
+        override fun drawRect(dirtyRect: CValue<NSRect>) {
+            // Kept lightweight when used purely as a popup menu anchor for tests/helpers.
+        }
+    }
+
+    internal fun createSelectPopupAnchorButton(
         options: List<Pair<String, String>>,
         selectedValue: String?,
         anchorBounds: Rect,
-        inView: NSView,
         onSelected: (String) -> Unit
-    ) {
-        if (options.isEmpty()) return
-        popupMenuTarget.clearActions()
+    ): MacosPopupAnchorButton {
+        val anchorFrame = NSMakeRect(
+            anchorBounds.x.toDouble(),
+            anchorBounds.y.toDouble(),
+            anchorBounds.width.coerceAtLeast(1).toDouble(),
+            anchorBounds.height.coerceAtLeast(1).toDouble()
+        )
+        val anchorButton = MacosPopupAnchorButton(anchorFrame, pullsDown = false)
+        anchorButton.removeAllItems()
         val menu = NSMenu(title = "Select")
         menu.autoenablesItems = false
-        menu.minimumWidth = anchorBounds.width.coerceAtLeast(120).toDouble()
-        var activeItem: NSMenuItem? = null
-        for ((value, label) in options) {
+        menu.minimumWidth = anchorBounds.width.coerceAtLeast(1).toDouble()
+        var selectedIndex = -1
+        options.forEachIndexed { idx, (value, label) ->
             val item = NSMenuItem(
                 title = label.ifEmpty { value },
                 action = NSSelectorFromString("onMenuItemTriggered:"),
                 keyEquivalent = ""
             )
             val isSel = value == selectedValue
+            if (isSel && selectedIndex < 0) {
+                selectedIndex = idx
+            }
             item.state = if (isSel) NSControlStateValueOn else NSControlStateValueOff
-            if (isSel) activeItem = item
             popupMenuTarget.bindAction(item) {
                 GenericUiThreading.runOnLogic {
                     onSelected(value)
@@ -274,21 +350,31 @@ internal object MacosMenuBarBridge {
             item.target = popupMenuTarget
             menu.addItem(item)
         }
-        val location = NSMakePoint(anchorBounds.x.toDouble(), (anchorBounds.bottom + 2).toDouble())
-        menu.popUpMenuPositioningItem(activeItem, atLocation = location, inView = inView)
+        anchorButton.menu = menu
+        if (selectedIndex >= 0) {
+            anchorButton.selectItemAtIndex(selectedIndex.toLong())
+        }
+        return anchorButton
     }
 
-    fun popUpDropdownMenu(
+    internal fun createDropdownPopupAnchorButton(
         items: List<Pair<String, String>>,
         anchorBounds: Rect,
-        inView: NSView,
         onItemSelected: (String) -> Unit
-    ) {
-        if (items.isEmpty()) return
-        popupMenuTarget.clearActions()
+    ): MacosPopupAnchorButton {
+        val anchorFrame = NSMakeRect(
+            anchorBounds.x.toDouble(),
+            anchorBounds.y.toDouble(),
+            anchorBounds.width.coerceAtLeast(1).toDouble(),
+            anchorBounds.height.coerceAtLeast(1).toDouble()
+        )
+        val anchorButton = MacosPopupAnchorButton(anchorFrame, pullsDown = true)
+        anchorButton.removeAllItems()
         val menu = NSMenu(title = "Dropdown")
         menu.autoenablesItems = false
-        menu.minimumWidth = anchorBounds.width.coerceAtLeast(140).toDouble()
+        menu.minimumWidth = anchorBounds.width.coerceAtLeast(1).toDouble()
+        // AppKit pull-down menus hide item index 0 (title placeholder) and display items 1..N.
+        menu.addItem(NSMenuItem(title = "", action = null, keyEquivalent = ""))
         for ((id, label) in items) {
             if (id == "---" || label == "---") {
                 menu.addItem(NSMenuItem.separatorItem())
@@ -307,7 +393,46 @@ internal object MacosMenuBarBridge {
             item.target = popupMenuTarget
             menu.addItem(item)
         }
-        val location = NSMakePoint(anchorBounds.x.toDouble(), (anchorBounds.bottom + 2).toDouble())
-        menu.popUpMenuPositioningItem(null, atLocation = location, inView = inView)
+        anchorButton.menu = menu
+        return anchorButton
+    }
+
+    fun popUpSelectMenu(
+        options: List<Pair<String, String>>,
+        selectedValue: String?,
+        anchorBounds: Rect,
+        inView: NSView,
+        onSelected: (String) -> Unit
+    ) {
+        if (options.isEmpty()) return
+        popupMenuTarget.clearActions()
+        val anchorButton = createSelectPopupAnchorButton(options, selectedValue, anchorBounds, onSelected)
+        try {
+            inView.addSubview(anchorButton)
+            if (inView.window != null) {
+                anchorButton.performClick(null)
+            }
+        } finally {
+            anchorButton.removeFromSuperview()
+        }
+    }
+
+    fun popUpDropdownMenu(
+        items: List<Pair<String, String>>,
+        anchorBounds: Rect,
+        inView: NSView,
+        onItemSelected: (String) -> Unit
+    ) {
+        if (items.isEmpty()) return
+        popupMenuTarget.clearActions()
+        val anchorButton = createDropdownPopupAnchorButton(items, anchorBounds, onItemSelected)
+        try {
+            inView.addSubview(anchorButton)
+            if (inView.window != null) {
+                anchorButton.performClick(null)
+            }
+        } finally {
+            anchorButton.removeFromSuperview()
+        }
     }
 }

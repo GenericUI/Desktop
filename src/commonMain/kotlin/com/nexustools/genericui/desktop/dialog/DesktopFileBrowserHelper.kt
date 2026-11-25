@@ -11,7 +11,7 @@ import com.nexustools.genericui.enums.dialog.FileBrowserMode
  * - `:windows` (`IFileOpenDialog` / `IFileSaveDialog` `COMDLG_FILTERSPEC` and `FOS_PICKFOLDERS`)
  * - `:macos` (`NSOpenPanel` / `NSSavePanel` `allowedContentTypes` / `UTType` and `canChooseDirectories`)
  * - `:gtk` (`GtkFileDialog` + `GtkFileFilter` pattern lists)
- * - `:qt` (`QFileDialog` filter strings `"Images (*.png *.jpg);;All Files (*)"`)
+ * - `:kde` (`QFileDialog` filter strings `"Images (*.png *.jpg);;All Files (*)"`)
  */
 object DesktopFileBrowserHelper {
 
@@ -34,7 +34,7 @@ object DesktopFileBrowserHelper {
         return list.map { filter -> filter.description to filter.toDesktopPatternString() }
     }
 
-    fun buildQtFilterString(filters: List<FileTypeFilter>): String {
+    fun buildKdeFilterString(filters: List<FileTypeFilter>): String {
         val list = if (filters.isEmpty()) listOf(FileTypeFilter.ALL_FILES) else filters
         return list.joinToString(";;") { filter ->
             val exts = filter.normalizedExtensions
@@ -72,9 +72,9 @@ object DesktopFileBrowserHelper {
         }
 
     /**
-     * Formats filters for Qt6 `QFileDialog` (`"Description (*.ext1 *.ext2);;..."`).
+     * Formats filters for KDE `QFileDialog` (`"Description (*.ext1 *.ext2);;..."`).
      */
-    fun toQtFilterString(request: FileBrowserRequest): String =
+    fun toKdeFilterString(request: FileBrowserRequest): String =
         effectiveFilters(request).joinToString(";;") { filter ->
             val exts = filter.normalizedExtensions
             val pattern = if (exts.isEmpty() || exts.contains("*")) "*" else exts.joinToString(" ") { "*.$it" }

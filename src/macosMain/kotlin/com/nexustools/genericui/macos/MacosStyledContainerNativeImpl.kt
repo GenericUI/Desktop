@@ -1,135 +1,466 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.macos
 
-import com.nexustools.genericui.component.shell.Application
+import com.nexustools.genericui.core.NativeImpl
+import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
+import com.nexustools.genericui.desktop.core.DesktopStageOverlaySpec
+import com.nexustools.genericui.desktop.layout.DesktopContainerLayoutController
 import com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl
-import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.enums.bootstrap.OverflowBehavior
 import com.nexustools.genericui.geometry.Rect
-import com.nexustools.genericui.macos.render.MacosControlRenderUtil
-import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
-import com.nexustools.genericui.style.css.ComponentStyle
-import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.style.css.CssCursorValue
+import com.nexustools.genericui.style.css.CssFilter
+import com.nexustools.genericui.style.css.CssTransform
 import com.nexustools.genericui.style.css.StyledVisualSpec
-import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.style.transition.CssTransitionSpec
+import kotlinx.cinterop.CValue
+import platform.AppKit.NSEvent
+import platform.AppKit.NSView
+import platform.CoreGraphics.CGPoint
+import platform.Foundation.NSMakeRect
+import platform.Foundation.NSRect
 
-/**
- * macOS AppKit `NSView` + `CALayer` / `CAGradientLayer` implementation of
- * [com.nexustools.genericui.nativeimpl.layout.StyledContainerNativeImpl] supporting translucent RGBA backgrounds,
- * linear/radial gradients, rounded borders, and `TextBubble` pointer rendering while ignoring `backdrop-filter` blur on desktop.
- */
-class MacosStyledContainerNativeImpl(
-    nativeWidget: MacosViewHandle = MacosViewHandle("NSView_StyledContainer"),
-    classPrefix: String = "styled-container",
-    val tagName: String = "div"
-) : DesktopStyledContainerNativeImpl<MacosViewHandle>(nativeWidget, classPrefix) {
+internal class MacosStyledContainerView(
+    private val owner: MacosStyledContainerNativeImpl,
+    frameRect: CValue<NSRect> = NSMakeRect(0.0, 0.0, 0.0, 0.0)
+) : NSView(frameRect) {
 
-    private var explicitStyledVisuals: StyledVisualSpec = StyledVisualSpec()
+    val surfaceSupport = MacosSurfaceLayerSupport(this)
+    private val interactionController = MacosViewInteractionController(owner, this) { owner.hasWheelListener() }
+    var interactiveSurfaceView: MacosInteractiveSurfaceView? = null
+    internal var isClippingOverflow: Boolean = false
 
     init {
-        nativeWidget.attributes["tagName"] = tagName
-        nativeWidget.attributes["useSystemControlAppearance"] = "false"
-        syncMacosStyledContainerVisuals()
-    }
-
-    private fun isTextBubbleComponent(): Boolean {
-        val raw = "$tagName $componentClassPrefix".trim().lowercase()
-        val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
-        return tokens.any {
-            val norm = it.removePrefix("genericui:")
-            norm == "text-bubble" || norm == "textbubble" || norm == "gui-text-bubble"
+        setWantsLayer(true)
+        setAutoresizesSubviews(false)
+        setPostsFrameChangedNotifications(false)
+        interactionController.onVisualStateChanged = {
+            owner.setHoveredState(interactionController.isHovered)
         }
     }
 
-    private fun syncMacosStyledContainerVisuals() {
-        val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
-        val isDark = effectiveTheme == ThemeMode.DARK
-        nativeWidget.attributes["effectiveThemeMode"] = effectiveTheme
-        nativeWidget.attributes["nsAppearance"] = if (isDark) "NSAppearanceNameDarkAqua" else "NSAppearanceNameAqua"
-        nativeWidget.attributes["useSystemControlAppearance"] = "false"
+    override fun isFlipped(): Boolean = true
 
-        val resolved = getStyledVisuals()
-        nativeWidget.attributes["styledVisuals"] = resolved
-        val blurPx = resolved.backdropBlurPx ?: resolved.backdropFilter?.blur?.resolvePx()
-        if (!isTextBubbleComponent() && blurPx != null && blurPx > 0f) {
-            nativeWidget.attributes["backdropBlurPx"] = blurPx
-        } else {
-            nativeWidget.attributes.remove("backdropBlurPx")
+    override fun acceptsFirstMouse(event: NSEvent?): Boolean = true
+
+    override fun mouseDownCanMoveWindow(): Boolean = isWithinOverlayTitleBarNonControlArea(this)
+
+    override fun viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        surfaceSupport.refreshBackdropUnderlayIfNeeded(force = true)
+        if (window != null) {
+            owner.resyncChildZOrderOnWindowAttach()
         }
-        val bf = resolved.backdropFilter
-        if (!isTextBubbleComponent() && bf != null && !bf.isNone) {
-            nativeWidget.attributes["backdropFilter"] = bf
-        } else {
-            nativeWidget.attributes.remove("backdropFilter")
+        if (owner.nativeWidget.attributes["cursor"] != null || owner.nativeWidget.attributes["customCursor"] != null) {
+            window?.invalidateCursorRectsForView(this)
         }
-        resolved.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
-        resolved.backgroundGradient?.let {
-            setBackgroundGradient(it)
-            nativeWidget.attributes["backgroundGradient"] = it
-        }
-        resolved.textColor?.let { nativeWidget.attributes["textColor"] = it }
-        resolved.borderColor?.let { nativeWidget.attributes["borderColor"] = it }
-        resolved.borderWidthPx?.let { nativeWidget.attributes["borderWidthPx"] = it }
-        resolved.borderStyle?.let { nativeWidget.attributes["borderStyle"] = it }
-        resolved.borderRadiusPx?.let { nativeWidget.attributes["borderRadiusPx"] = it }
-        resolved.opacity?.let {
-            val op = it.coerceIn(0f, 1f)
-            nativeWidget.opacity = op
-            nativeWidget.attributes["opacity"] = op
-        }
-        resolved.padding?.let { nativeWidget.padding = it }
-        nativeWidget.notifyTreeInvalidated()
     }
 
-    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
-        MacosControlRenderUtil.renderStyledContainer(this, renderContext, bounds)
-
-    override fun setStyledVisuals(visuals: StyledVisualSpec) {
-        explicitStyledVisuals = visuals
-        super.setStyledVisuals(visuals)
-        syncMacosStyledContainerVisuals()
+    override fun layout() {
+        super.layout()
+        surfaceSupport.refreshBackdropUnderlayIfNeeded(force = false)
     }
 
-    override fun getStyledVisuals(): StyledVisualSpec {
-        val isDark = (Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()) == ThemeMode.DARK
-        val computedBase = StyledVisualSpec.fromComponentAndComputed(
-            componentStyle = lastComponentStyle,
-            computedStyle = getComputedStyle(),
-            snapshot = styleSnapshot,
-            darkTheme = isDark
+    override fun hitTest(point: CValue<CGPoint>): NSView? {
+        if (isHidden() || alphaValue <= 0.004) return null
+        val hit = super.hitTest(point)
+        if (hit == null) {
+            return if (!isClippingOverflow) {
+                MacosAppKitDispatch.hitTestOverflowChildren(this, point)
+            } else {
+                null
+            }
+        }
+        if (owner.nativeWidget.isSelfPointerEventsNone()) {
+            if (hit == this || MacosFocusSupport.shouldPassThroughPointerHit(hit, this)) {
+                return null
+            }
+        }
+        return hit
+    }
+
+    override fun updateTrackingAreas() {
+        super.updateTrackingAreas()
+        interactionController.refreshTrackingAreas()
+    }
+
+    override fun resetCursorRects() {
+        interactionController.applyCursorRects()
+    }
+
+    override fun cursorUpdate(event: NSEvent) {
+        interactionController.handleCursorUpdate(event)
+    }
+
+    override fun mouseDown(event: NSEvent) {
+        if (handleOverlayTitleBarMouseDown(this, event)) {
+            return
+        }
+        interactionController.handleMouseDown(event, buttonIndex = 0)
+    }
+
+    override fun mouseDragged(event: NSEvent) {
+        interactionController.handleMouseDragged(event, buttonIndex = 0)
+    }
+
+    override fun mouseUp(event: NSEvent) {
+        interactionController.handleMouseUp(event, buttonIndex = 0)
+    }
+
+    override fun rightMouseDown(event: NSEvent) {
+        interactionController.handleRightMouseDown(event)
+    }
+
+    override fun mouseEntered(event: NSEvent) {
+        interactionController.handleMouseEntered(event)
+    }
+
+    override fun mouseExited(event: NSEvent) {
+        interactionController.handleMouseExited(event)
+    }
+
+    override fun mouseMoved(event: NSEvent) {
+        interactionController.handleMouseMoved(event)
+    }
+
+    override fun scrollWheel(event: NSEvent) {
+        if (!interactionController.handleScrollWheel(event)) {
+            super.scrollWheel(event)
+        }
+    }
+}
+
+/**
+ * macOS AppKit retained [NSView] implementation of [DesktopStyledContainerNativeImpl] supporting
+ * gradients, borders, shadows, focus rings, opacity, and all 10 W3C `filter` / `backdrop-filter`
+ * operations via [MacosSurfaceLayerSupport].
+ */
+class MacosStyledContainerNativeImpl(
+    nativeWidget: MacosViewHandle,
+    classPrefix: String = "styled-container",
+    tagName: String = "genericui:styled-container"
+) : DesktopStyledContainerNativeImpl<MacosViewHandle>(nativeWidget, classPrefix, tagName) {
+
+    private var styledView: MacosStyledContainerView? = null
+
+    internal fun hasWheelListener(): Boolean = onWheelListener != null
+    private var lastVisualBoundsW: Int = -1
+    private var lastVisualBoundsH: Int = -1
+    private var zOrderSyncedInLayout: Boolean = false
+    private var lastSyncedChildOrder: List<DesktopBaseNativeImpl<*>> = emptyList()
+    private var lastSyncedBackdropCount: Int = -1
+    private var lastSyncedHasInteractiveSurface: Boolean = false
+
+    init {
+        val controller = DesktopContainerLayoutController(
+            host = this,
+            isLayeredHost = "layered" in classPrefix.lowercase() || "layered" in tagName.lowercase()
         )
-        val merged = computedBase.mergeWith(explicitStyledVisuals)
-        return if (isTextBubbleComponent()) merged.withoutBackdropFilter() else merged
+        controller.onZOrderUpdated = { ordered ->
+            zOrderSyncedInLayout = true
+            syncSubviewsWithOrder(ordered)
+        }
+        layoutController = controller
+        nativeWidget.viewMaterializer = {
+            ensureStyledView().also { syncMacosStyledContainerVisuals() }
+        }
+        if (MacosAppKitDispatch.isMainThread()) {
+            ensureStyledView()
+            syncMacosStyledContainerVisuals()
+        }
+    }
+
+    private fun ensureStyledView(): MacosStyledContainerView {
+        styledView?.let { existing ->
+            if (nativeWidget.nsView == null) nativeWidget.nsView = existing
+            return existing
+        }
+        val view = MacosStyledContainerView(this)
+        styledView = view
+        nativeWidget.nsView = view
+        view.setHidden(!nativeWidget.visible)
+        view.setToolTip(nativeWidget.tooltipText)
+        return view
+    }
+
+    private fun syncMacosStyledContainerVisuals(syncChildren: Boolean = true) {
+        if (!MacosAppKitDispatch.isMainThread()) {
+            MacosAppKitDispatch.onMainOrDefer { syncMacosStyledContainerVisuals(syncChildren = syncChildren) }
+            return
+        }
+        val view = ensureStyledView()
+        lastVisualBoundsW = nativeWidget.bounds.width
+        lastVisualBoundsH = nativeWidget.bounds.height
+        val isDark = MacosAppKitAppearance.isDarkTheme(nativeWidget)
+        val resolved = (nativeWidget.attributes["styledContainerVisuals"]
+            ?: nativeWidget.attributes["styledVisuals"]) as? StyledVisualSpec
+            ?: getStyledVisuals()
+        val computed = lastComputedStyle
+
+        val effOpacity = getOpacity().coerceIn(0f, 1f)
+        view.setAlphaValue(effOpacity.toDouble())
+
+        val compStyle = getComponentStyle()
+        val classTokens = getClassTokensSet()
+        val clipOverflow = computed?.overflowX == OverflowBehavior.HIDDEN ||
+            computed?.overflowY == OverflowBehavior.HIDDEN ||
+            computed?.overflow.equals("hidden", ignoreCase = true) ||
+            compStyle?.overflowX == OverflowBehavior.HIDDEN ||
+            compStyle?.overflowY == OverflowBehavior.HIDDEN ||
+            compStyle?.overflow == OverflowBehavior.HIDDEN ||
+            "overflow-hidden" in classTokens ||
+            "gui-layered-container" in classTokens
+        view.isClippingOverflow = clipOverflow
+        val effBackdrop = nativeWidget.attributes["backdropFilter"] as? CssFilter
+        val effForeground = nativeWidget.attributes["cssFilter"] as? CssFilter
+
+        view.surfaceSupport.applyStyledVisuals(
+            spec = resolved,
+            cornerRadii = computed?.borderRadius,
+            boxShadow = computed?.boxShadowList?.shadows?.firstOrNull(),
+            isFocused = isFocusedState(),
+            clipOverflow = clipOverflow,
+            darkTheme = isDark,
+            effectiveBackdropFilter = effBackdrop,
+            effectiveForegroundFilter = effForeground
+        )
+
+        if (syncChildren) {
+            syncSubviewsWithOrder(
+                layoutController?.resolveChildrenSortedByZIndex()
+                    ?: getLogicalChildren().filterIsInstance<DesktopBaseNativeImpl<*>>()
+            )
+        }
+    }
+
+    private fun hasBoundsDependentVisualEffects(): Boolean {
+        val effBackdrop = nativeWidget.attributes["backdropFilter"] as? CssFilter
+        if (effBackdrop != null && !effBackdrop.isNone && effBackdrop.hasActiveEffects) return true
+        val effForeground = nativeWidget.attributes["cssFilter"] as? CssFilter
+        if (effForeground != null && !effForeground.isNone && effForeground.hasActiveEffects) return true
+        if (isFocusedState()) return true
+        val resolved = (nativeWidget.attributes["styledContainerVisuals"]
+            ?: nativeWidget.attributes["styledVisuals"]) as? StyledVisualSpec
+            ?: getStyledVisuals()
+        if (resolved.backgroundGradient != null || resolved.boxShadowColor != null) return true
+        if ((resolved.borderRadiusPx ?: 0f) > 0f || (resolved.borderWidthPx ?: 0f) > 0f) return true
+        val computed = lastComputedStyle ?: return false
+        if (computed.backgroundGradient != null || computed.borderRadius != null) return true
+        if ((computed.borderRadiusPx ?: 0f) > 0f || (computed.borderWidthPx ?: 0f) > 0f) return true
+        if (computed.boxShadowList?.shadows?.isNotEmpty() == true) return true
+        return false
+    }
+
+    private fun resolveOrderedChildren(): List<DesktopBaseNativeImpl<*>> =
+        layoutController?.resolveChildrenSortedByZIndex()
+            ?: getLogicalChildren().filterIsInstance<DesktopBaseNativeImpl<*>>()
+
+    private fun isOverlayRootOrTitleBar(): Boolean {
+        if (nativeWidget.attributes["data-overlay-root"] == "true") return true
+        val role = (nativeWidget.attributes[DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE] as? String)
+            ?.trim()
+            ?.lowercase()
+        return role == DesktopStageOverlaySpec.ROLE_WINDOW_TITLE_BAR
+    }
+
+    internal fun resyncChildZOrderOnWindowAttach() {
+        if (!MacosAppKitDispatch.isMainThread() || isDisposed || styledView?.window == null) return
+        lastSyncedChildOrder = emptyList()
+        syncSubviewsWithOrder(resolveOrderedChildren())
+    }
+
+    override fun onChildZIndexInvalidated() {
+        super.onChildZIndexInvalidated()
+        lastSyncedChildOrder = emptyList()
+        if (MacosAppKitDispatch.isMainThread() && styledView != null && !isDisposed) {
+            syncSubviewsWithOrder(resolveOrderedChildren())
+        }
+        nativeWidget.requestRetainedRelayout()
+    }
+
+    private fun syncSubviewsWithOrder(orderedChildren: List<DesktopBaseNativeImpl<*>>) {
+        if (!MacosAppKitDispatch.isMainThread()) {
+            MacosAppKitDispatch.onMainOrDefer {
+                if (!isDisposed) syncSubviewsWithOrder(orderedChildren)
+            }
+            return
+        }
+        val parentView = ensureStyledView()
+        val backdropPinned = parentView.surfaceSupport.pinnedBackdropSubviews()
+        val pinnedBack = ArrayList<NSView>(1 + backdropPinned.size)
+        parentView.interactiveSurfaceView?.let { pinnedBack.add(it) }
+        pinnedBack.addAll(backdropPinned)
+
+        val childViews = ArrayList<NSView>(orderedChildren.size)
+        for (child in orderedChildren) {
+            val v = MacosAppKitDispatch.resolveOrCreateChildNsView(child)
+            if (v != null) childViews.add(v)
+        }
+        MacosAppKitDispatch.syncChildViewHierarchy(parentView, childViews, pinnedBack)
+        lastSyncedChildOrder = orderedChildren
+        lastSyncedBackdropCount = backdropPinned.size
+        lastSyncedHasInteractiveSurface = parentView.interactiveSurfaceView != null
+    }
+
+    override fun onChildAddedNative(childImpl: NativeImpl<*>, index: Int) {
+        super.onChildAddedNative(childImpl, index)
+        lastSyncedChildOrder = emptyList()
+        if (MacosAppKitDispatch.isMainThread()) {
+            syncSubviewsWithOrder(resolveOrderedChildren())
+        }
+        nativeWidget.requestRetainedRelayout()
+    }
+
+    override fun onChildRemovedNative(childImpl: NativeImpl<*>) {
+        super.onChildRemovedNative(childImpl)
+        lastSyncedChildOrder = emptyList()
+        if (MacosAppKitDispatch.isMainThread()) {
+            syncSubviewsWithOrder(resolveOrderedChildren())
+        }
+        nativeWidget.requestRetainedRelayout()
+    }
+
+    override fun onChildrenClearedNative() {
+        super.onChildrenClearedNative()
+        lastSyncedChildOrder = emptyList()
+        if (MacosAppKitDispatch.isMainThread()) {
+            syncSubviewsWithOrder(emptyList())
+        }
+        nativeWidget.requestRetainedRelayout()
+    }
+
+    override fun layoutChildrenInBounds(width: Float, height: Float) {
+        zOrderSyncedInLayout = false
+        val didLayout = layoutController?.layoutInBounds(width, height) ?: true
+        if (MacosAppKitDispatch.isMainThread()) {
+            val wasRealized = styledView != null
+            val parentView = ensureStyledView()
+            val ordered = resolveOrderedChildren()
+            if (didLayout || !wasRealized) {
+                for (child in ordered) {
+                    val childView = MacosAppKitDispatch.resolveOrCreateChildNsView(child) ?: continue
+                    MacosAppKitDispatch.applyFrameAndTransform(
+                        view = childView,
+                        bounds = child.nativeWidget.bounds,
+                        transform = (child.nativeWidget as? MacosViewHandle)?.cssTransform,
+                        useAlignmentRectExpansion = child.usesNativeControlAlignmentExpansion(),
+                        knownHandle = child.nativeWidget as? MacosViewHandle
+                    )
+                }
+            }
+            if (!zOrderSyncedInLayout) {
+                val needsOrderSync = !wasRealized ||
+                    lastSyncedHasInteractiveSurface != (parentView.interactiveSurfaceView != null) ||
+                    lastSyncedBackdropCount != parentView.surfaceSupport.pinnedBackdropSubviews().size ||
+                    ordered.size != lastSyncedChildOrder.size ||
+                    ordered.indices.any { ordered[it] !== lastSyncedChildOrder[it] }
+                if (needsOrderSync) {
+                    syncSubviewsWithOrder(ordered)
+                }
+            }
+        }
+    }
+
+    override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {
+        return layoutController?.measurePreferredSize(maxWidth, maxHeight)
+            ?: super.measureIntrinsicSize(maxWidth, maxHeight)
+    }
+
+    override fun onNativeBoundsChanged(rect: Rect) {
+        if (!MacosAppKitDispatch.isMainThread()) {
+            MacosAppKitDispatch.onMainOrDefer {
+                if (!isDisposed) onNativeBoundsChanged(nativeWidget.bounds)
+            }
+            return
+        }
+        val view = ensureStyledView()
+        MacosAppKitDispatch.applyFrameAndTransform(
+            view = view,
+            bounds = rect,
+            transform = nativeWidget.cssTransform,
+            useAlignmentRectExpansion = false,
+            knownHandle = nativeWidget
+        )
+        if (rect.width != lastVisualBoundsW || rect.height != lastVisualBoundsH) {
+            lastVisualBoundsW = rect.width
+            lastVisualBoundsH = rect.height
+            if (hasBoundsDependentVisualEffects()) {
+                syncMacosStyledContainerVisuals(syncChildren = false)
+            }
+        }
+    }
+
+    override fun onNativeVisibilityChanged(visible: Boolean) {
+        MacosAppKitDispatch.onMainOrDefer {
+            styledView?.setHidden(!visible)
+            if (visible) {
+                styledView?.surfaceSupport?.refreshBackdropUnderlayIfNeeded(force = true)
+            }
+            if (isOverlayRootOrTitleBar()) {
+                MacosNativeWindowHost.syncAllNativeOverlayTitleBars()
+            }
+            nativeWidget.requestRetainedRelayout()
+        }
+    }
+
+    override fun onNativeEnabledChanged(enabled: Boolean) {
+        syncMacosStyledContainerVisuals()
+    }
+
+    override fun onNativeOpacityChanged(opacity: Float) {
+        MacosAppKitDispatch.onMainOrDefer {
+            styledView?.setAlphaValue(opacity.coerceIn(0f, 1f).toDouble())
+            if (isOverlayRootOrTitleBar()) {
+                MacosNativeWindowHost.syncAllNativeOverlayTitleBars()
+            }
+        }
+    }
+
+    override fun onNativeTooltipChanged(tooltip: String?) {
+        styledView?.setToolTip(tooltip)
+    }
+
+    override fun onNativeCursorChanged(cursor: CssCursorValue?) {
+        styledView?.let { v -> v.window?.invalidateCursorRectsForView(v) }
+    }
+
+    override fun onNativeZIndexChanged(zIndex: Int) {
+        nativeWidget.requestRetainedRelayout()
+    }
+
+    override fun onNativeTransformChanged(transform: CssTransform?) {
+        nativeWidget.cssTransform = transform
+        val view = styledView ?: return
+        MacosAppKitDispatch.applyFrameAndTransform(view, nativeWidget.bounds, transform, useAlignmentRectExpansion = false, knownHandle = nativeWidget)
+    }
+
+    override fun onNativeStyleSynced() {
+        syncMacosStyledContainerVisuals()
     }
 
     override fun setAttribute(name: String, value: String?) {
-        if (
-            isTextBubbleComponent() &&
-            (
-                name.equals("backdropBlurPx", ignoreCase = true) ||
-                    name.equals("backdrop-filter", ignoreCase = true) ||
-                    name.equals("-webkit-backdrop-filter", ignoreCase = true)
-                )
-        ) {
-            nativeWidget.attributes.remove("backdropBlurPx")
-            nativeWidget.attributes.remove("backdropFilter")
-            return
-        }
         super.setAttribute(name, value)
-    }
-
-    override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
-        super.applyComponentBootstrap(bootstrap)
-        syncMacosStyledContainerVisuals()
-    }
-
-    override fun applyComponentStyle(style: ComponentStyle) {
-        super.applyComponentStyle(style)
-        syncMacosStyledContainerVisuals()
-    }
-
-    override fun applyComputedStyle(style: ComputedStyle) {
-        super.applyComputedStyle(style)
-        syncMacosStyledContainerVisuals()
+        if (name == "backdrop-filter" || name == "backdropFilter") {
+            val parsed = CssFilter.parse(value)
+            setStyledVisuals(
+                getStyledVisuals().copy(
+                    backdropBlurPx = parsed?.blur?.resolvePx(),
+                    backdropFilter = parsed
+                )
+            )
+        } else if (name == "backdropBlurPx" || name == "data-backdrop-blur-px") {
+            val px = value?.trim()?.removeSuffix("px")?.toFloatOrNull()
+            val cur = getStyledVisuals()
+            val nextBf = cur.backdropFilter?.copy(
+                blur = px?.takeIf { it > 0f }?.let { com.nexustools.genericui.style.css.CssLength.px(it) }
+            )
+            setStyledVisuals(cur.copy(backdropBlurPx = px, backdropFilter = nextBf))
+        } else if (name == "filter") {
+            val parsed = CssFilter.parse(value)
+            setStyledVisuals(getStyledVisuals().copy(filter = parsed))
+        }
     }
 
     override fun runNativeTransition(
@@ -149,7 +480,18 @@ class MacosStyledContainerNativeImpl(
             if (spec.durationMs <= 0f) {
                 onComplete()
             }
+            return true
         }
         return handled
+    }
+
+    override fun dispose() {
+        val view = styledView
+        styledView = null
+        MacosAppKitDispatch.onMainOrDefer {
+            view?.interactiveSurfaceView?.disposeResources()
+            view?.removeFromSuperview()
+        }
+        super.dispose()
     }
 }

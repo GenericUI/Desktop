@@ -4,7 +4,7 @@ import com.nexustools.genericui.nativeimpl.system.DefaultUiTimerNativeImpl
 import com.nexustools.genericui.nativeimpl.system.UiTimerNativeImpl
 
 /**
- * Shared desktop implementation of [UiTimerNativeImpl] across `:windows`, `:macos`, `:gtk`, and `:qt`.
+ * Shared desktop implementation of [UiTimerNativeImpl] across `:windows`, `:macos`, `:gtk`, and `:kde`.
  */
 open class DesktopUiTimerNativeImpl(
     val backendToolkit: String = "Desktop"

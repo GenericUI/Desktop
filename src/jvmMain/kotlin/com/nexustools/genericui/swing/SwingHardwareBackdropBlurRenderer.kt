@@ -1,7 +1,8 @@
 package com.nexustools.genericui.swing
 
+import com.nexustools.genericui.jvm.style.JvmBackdropCapturePlan
+import com.nexustools.genericui.jvm.style.JvmBackdropCapturePlanner
 import com.nexustools.genericui.style.css.CssFilter
-import com.nexustools.genericui.style.css.CssLength
 import com.nexustools.genericui.style.css.FastBackdropBlurKernel
 import com.nexustools.genericui.style.css.StyledVisualSpec
 import java.awt.AlphaComposite
@@ -140,7 +141,7 @@ object SwingHardwareBackdropBlurRenderer {
             val root = resolveBackdropRoot(target) ?: return
             val path = buildAncestorPath(root, target) ?: return
             val cache = obtainCache(target)
-            val blurPx = (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
+            val plan = JvmBackdropCapturePlanner.planCapture(filter, w, h, minHardwareBlurPx = 4f)
 
             val g2 = g as? Graphics2D
             val gc = if (g2 != null && !GraphicsEnvironment.isHeadless()) {
@@ -153,13 +154,13 @@ object SwingHardwareBackdropBlurRenderer {
                 null
             }
 
-            if (g2 != null && gc != null && !filter.hasPixelOps && blurPx >= 4f && w >= 8 && h >= 8) {
-                if (tryPaintHardwareVolatilePingPong(g2, gc, cache, root, path, target, w, h, blurPx, cornerRadiusPx)) {
+            if (g2 != null && gc != null && plan.supportsHardwareFastBlurOnly) {
+                if (tryPaintHardwareVolatilePingPong(g2, gc, cache, root, path, target, w, h, plan.blurPx, cornerRadiusPx)) {
                     return
                 }
             }
 
-            paintSoftwareFallback(g, cache, root, path, target, filter, blurPx, w, h, cornerRadiusPx)
+            paintSoftwareFallback(g, cache, root, path, target, plan, w, h, cornerRadiusPx)
         } finally {
             activeSet.remove(target)
         }
@@ -249,19 +250,14 @@ object SwingHardwareBackdropBlurRenderer {
         root: Container,
         path: List<Container>,
         target: JComponent,
-        filter: CssFilter,
-        blurPx: Float,
+        plan: JvmBackdropCapturePlan,
         w: Int,
         h: Int,
         cornerRadiusPx: Float
     ) {
-        val dsScale = when {
-            blurPx >= 16f && w >= 96 && h >= 96 -> 4
-            blurPx >= 6f && w >= 48 && h >= 48 -> 2
-            else -> 1
-        }
-        val capW = max(1, (w + dsScale - 1) / dsScale)
-        val capH = max(1, (h + dsScale - 1) / dsScale)
+        val dsScale = plan.downsampleScale
+        val capW = plan.captureWidth
+        val capH = plan.captureHeight
         val (capture, pixels) = cache.ensureFallback(capW, capH)
 
         val capG = capture.createGraphics()
@@ -280,14 +276,9 @@ object SwingHardwareBackdropBlurRenderer {
             capG.dispose()
         }
 
-        val scaledFilter = if (dsScale > 1 && blurPx > 0f) {
-            filter.copy(blur = CssLength.px((blurPx / dsScale.toFloat()).coerceAtLeast(1f)))
-        } else {
-            filter
-        }
         capture.getRGB(0, 0, capW, capH, pixels, 0, capW)
         FastBackdropBlurKernel.applyBackdropToArgbRegion(
-            filter = scaledFilter,
+            filter = plan.scaledFilter,
             argbPixels = pixels,
             bufferWidth = capW,
             bufferHeight = capH,
@@ -414,12 +405,38 @@ object SwingHardwareBackdropBlurRenderer {
             capG.fillRect(0, 0, container.width, container.height)
         }
         val jComp = container as? JComponent ?: return
+        val impl = jComp.getClientProperty(SwingBaseNativeImpl.CLIENT_PROPERTY_KEY) as? SwingBaseNativeImpl
         @Suppress("UNCHECKED_CAST")
         val provider = jComp.getClientProperty("styledVisualsProvider") as? (() -> StyledVisualSpec)
-        val spec = provider?.invoke()
+        val explicitSpec = provider?.invoke()
             ?: (jComp.getClientProperty("styledVisuals") as? StyledVisualSpec)
-            ?: return
-        SwingStyledContainerImpl.paintStyledSurface(capG, jComp.width, jComp.height, spec)
+        val effectiveSpec = if (impl != null &&
+            SwingSurfacePaintUtil.shouldPaintSystemSurfaceChrome(
+                nativeImpl = impl,
+                tagName = impl.componentTagName,
+                classPrefix = impl.componentClassPrefix,
+                classes = impl.getClasses()
+            )
+        ) {
+            SwingSurfacePaintUtil.resolveEffectiveSurfaceSpec(
+                nativeImpl = impl,
+                tagName = impl.componentTagName,
+                classPrefix = impl.componentClassPrefix,
+                classes = impl.getClasses(),
+                explicitSpec = explicitSpec,
+                isDark = SwingSurfacePaintUtil.isDarkThemeForComponent(jComp)
+            )
+        } else {
+            explicitSpec
+        } ?: return
+        val op = (jComp.getClientProperty("opacity") as? Float) ?: 1f
+        SwingStyledContainerImpl.paintStyledSurface(
+            g = capG,
+            width = jComp.width,
+            height = jComp.height,
+            spec = effectiveSpec.withoutBackdropFilter(),
+            componentOpacity = op
+        )
     }
 
     private fun obtainCache(target: JComponent): ComponentRenderCache {

@@ -135,16 +135,17 @@ class SwingTextInputImpl(
     }
 
     override fun setFocusedState(focused: Boolean) {
-        focusedStateVal = focused
-        com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = focused
-        if (focused && !activeEditor.isFocusOwner) {
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        focusedStateVal = effective
+        com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = effective
+        if (effective && !activeEditor.isFocusOwner) {
             activeEditor.requestFocusInWindow()
         }
     }
 
     override fun isFocusedState(): Boolean = focusedStateVal || activeEditor.isFocusOwner
 
-    fun requestFocus(): Boolean = activeEditor.requestFocusInWindow()
+    fun requestFocus(): Boolean = isEffectivelyFocusableInSwing() && isEnabled() && activeEditor.requestFocusInWindow()
 
     private fun dispatchDocumentChange() {
         if (suppressDocumentEvents) return
@@ -174,6 +175,9 @@ class SwingTextInputImpl(
         }
         activeEditor = next
         mountEditor(next)
+        if (!isEffectivelyFocusableInSwing()) {
+            applyAwtFocusableRecursive(rootPanel, false)
+        }
         rootPanel.revalidate()
         rootPanel.repaint()
     }
@@ -182,6 +186,11 @@ class SwingTextInputImpl(
         editor.document.addDocumentListener(documentListener)
         editor.addFocusListener(object : FocusAdapter() {
             override fun focusGained(e: FocusEvent?) {
+                if (!isEffectivelyFocusableInSwing()) {
+                    java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
+                    setFocusedState(false)
+                    return
+                }
                 com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = true
                 setFocusedState(true)
             }

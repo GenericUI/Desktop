@@ -17,29 +17,44 @@ open class DesktopProgressBarNativeImpl<out W : DesktopNativeWidget>(
     protected var labelText: String? = null
 
     override fun setProgress(progress: Float) {
-        progressValue = progress.coerceIn(0f, 1f)
-        nativeWidget.attributes["progress"] = progressValue
+        val clamped = progress.coerceIn(0f, 1f)
+        if (progressValue != clamped) {
+            progressValue = clamped
+            nativeWidget.attributes["progress"] = clamped
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun getProgress(): Float = progressValue
 
     override fun setIndeterminate(indeterminate: Boolean) {
-        indeterminateState = indeterminate
-        nativeWidget.attributes["indeterminate"] = indeterminate || busyState
+        val effective = indeterminate || busyState
+        if (indeterminateState != indeterminate || nativeWidget.attributes["indeterminate"] != effective) {
+            indeterminateState = indeterminate
+            nativeWidget.attributes["indeterminate"] = effective
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun isIndeterminate(): Boolean = indeterminateState
 
     override fun setBusy(busy: Boolean) {
-        busyState = busy
-        nativeWidget.attributes["busy"] = busy
-        nativeWidget.attributes["indeterminate"] = busy || indeterminateState
+        val effective = busy || indeterminateState
+        if (busyState != busy || nativeWidget.attributes["indeterminate"] != effective) {
+            busyState = busy
+            nativeWidget.attributes["busy"] = busy
+            nativeWidget.attributes["indeterminate"] = effective
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun isBusy(): Boolean = busyState
 
     override fun setLabel(label: String?) {
-        labelText = label
-        nativeWidget.attributes["label"] = label
+        if (labelText != label) {
+            labelText = label
+            nativeWidget.attributes["label"] = label
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 }

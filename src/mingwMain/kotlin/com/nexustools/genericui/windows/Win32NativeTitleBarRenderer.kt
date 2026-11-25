@@ -251,17 +251,28 @@ object Win32NativeTitleBarRenderer {
         screenX: Int,
         screenY: Int,
         isToolWindow: Boolean,
-        hasInteractiveClientRegionAt: (cx: Int, cy: Int) -> Boolean
+        hasInteractiveClientRegionAt: (cx: Int, cy: Int) -> Boolean,
+        isWindowControlAt: (cx: Int, cy: Int) -> Boolean = { _, _ -> false }
     ): LRESULT = memScoped {
         val winRect = alloc<RECT>()
         GetWindowRect(hwnd, winRect.ptr)
         val isMaximized = IsZoomed(hwnd) != 0
         val border = 6
 
+        val pt = alloc<POINT>()
+        pt.x = screenX
+        pt.y = screenY
+        ScreenToClient(hwnd, pt.ptr)
+        val cx = pt.x
+        val cy = pt.y
+
         if (!isMaximized) {
+            val overControl = isWindowControlAt(cx, cy)
+            val topBorder = if (overControl) 2 else border
+            val rightBorder = if (overControl) 2 else border
             val onLeft = screenX in winRect.left until (winRect.left + border)
-            val onRight = screenX in (winRect.right - border)..winRect.right
-            val onTop = screenY in winRect.top until (winRect.top + border)
+            val onRight = screenX in (winRect.right - rightBorder)..winRect.right
+            val onTop = screenY in winRect.top until (winRect.top + topBorder)
             val onBottom = screenY in (winRect.bottom - border)..winRect.bottom
             when {
                 onTop && onLeft -> return@memScoped HTTOPLEFT.toLong()
@@ -274,13 +285,6 @@ object Win32NativeTitleBarRenderer {
                 onBottom -> return@memScoped HTBOTTOM.toLong()
             }
         }
-
-        val pt = alloc<POINT>()
-        pt.x = screenX
-        pt.y = screenY
-        ScreenToClient(hwnd, pt.ptr)
-        val cx = pt.x
-        val cy = pt.y
 
         val hitMap = hitMapsByHwnd[hwnd.toLong()]
         val titleBarH = hitMap?.titleBarHeight ?: getDefaultTitleBarHeightPx(isToolWindow)

@@ -10,7 +10,7 @@ import com.nexustools.genericui.style.css.StyleSheetRegistry
 
 /**
  * Shared desktop implementation of [BookContainerNativeImpl] for `:windows` (`PrintDlgExW`),
- * `:macos` (`NSPrintOperation`), `:gtk` (`GtkPrintOperation`), and `:qt` (`QPrintDialog`).
+ * `:macos` (`NSPrintOperation`), `:gtk` (`GtkPrintOperation`), and `:kde` (`QPrintDialog`).
  */
 open class DesktopBookContainerNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W

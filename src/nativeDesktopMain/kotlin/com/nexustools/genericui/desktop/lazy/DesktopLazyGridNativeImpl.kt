@@ -73,19 +73,41 @@ open class DesktopLazyGridNativeImpl<out W : DesktopNativeWidget>(
         }
     }
 
-    protected open fun rematerializeVisibleWindow() {
-        val factory = itemFactoryFn ?: return
-        val visibleRange = viewportEngine.computeVisibleRange()
-        val toEvict = materializedItems.keys.filter { it !in visibleRange }
-        for (idx in toEvict) {
-            materializedItems.remove(idx)?.let { removeChildNative(it) }
-        }
-        for (idx in visibleRange) {
-            if (idx !in materializedItems) {
-                val created = factory(idx)
-                materializedItems[idx] = created
-                addChildNative(created)
+    protected fun beginViewportScrollScope() {
+        DesktopNativeWidget.activeViewportScrollHost = nativeWidget
+        DesktopNativeWidget.activeViewportScrollScopeCount.addAndGet(1)
+    }
+
+    protected fun endViewportScrollScope() {
+        val remaining = DesktopNativeWidget.activeViewportScrollScopeCount.addAndGet(-1)
+        if (remaining <= 0) {
+            if (remaining < 0) {
+                DesktopNativeWidget.activeViewportScrollScopeCount.value = 0
             }
+            if (DesktopNativeWidget.activeViewportScrollHost === nativeWidget) {
+                DesktopNativeWidget.activeViewportScrollHost = null
+            }
+        }
+    }
+
+    protected open fun rematerializeVisibleWindow() {
+        beginViewportScrollScope()
+        try {
+            val factory = itemFactoryFn ?: return
+            val visibleRange = viewportEngine.computeVisibleRange()
+            val toEvict = materializedItems.keys.filter { it !in visibleRange }
+            for (idx in toEvict) {
+                materializedItems.remove(idx)?.let { removeChildNative(it) }
+            }
+            for (idx in visibleRange) {
+                if (idx !in materializedItems) {
+                    val created = factory(idx)
+                    materializedItems[idx] = created
+                    addChildNative(created)
+                }
+            }
+        } finally {
+            endViewportScrollScope()
         }
     }
 }

@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.gtk
 
 import com.nexustools.genericui.component.layout.LayoutFactory
@@ -6,44 +8,44 @@ import com.nexustools.genericui.core.NativeFactory
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.linux.LinuxX11WindowHintsBridge
 import com.nexustools.genericui.desktop.core.DesktopCanvasWidgetHooks
-import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopDockWorkspaceNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopToolPaletteNativeImpl
 import com.nexustools.genericui.desktop.image.DesktopImageCodecHooks
 import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
-import com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl
-import com.nexustools.genericui.desktop.lazy.DesktopTreeViewNativeImpl
-import com.nexustools.genericui.desktop.shell.DesktopContextMenuNativeImpl
-import com.nexustools.genericui.desktop.shell.DesktopMenuBarNativeImpl
-import com.nexustools.genericui.desktop.shell.DesktopMenuItemNativeImpl
-import com.nexustools.genericui.desktop.shell.DesktopMenuNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopPermissionManagerNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopBookContainerNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopBottomNavigationBarNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopDividerNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopImageNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopNavbarNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopPopoverNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
 import com.nexustools.genericui.enums.system.BackendTarget
-import com.nexustools.genericui.gtk.impl.GtkButtonNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkBookContainerNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkBottomNavigationBarNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkCheckboxNativeImpl
-import com.nexustools.genericui.gtk.impl.GtkContainerNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkContextMenuNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkDividerNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkDockAreaNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkDockGroupNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkDockPanelNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkDockWorkspaceNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkDropdownNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkImageNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkLazyGridNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkLazyListNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkMarkdownViewNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkMenuBarNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkMenuItemNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkMenuNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkNavbarNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkPopoverNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkProgressBarNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkRangeSliderNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkScrollViewNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkSelectNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkSpinnerNativeImpl
-import com.nexustools.genericui.gtk.impl.GtkTabContainerNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTabNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTableNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTextInputNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTextNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkToolPaletteNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkTreeViewNativeImpl
+import com.nexustools.genericui.gtk.widget.GtkRetainedContainerSupport
 import com.nexustools.genericui.image.ImageLoader
+import com.nexustools.genericui.linux.titlebar.LinuxTitleBarProfileManager
+import com.nexustools.genericui.window.TitleCapabilities
 import com.nexustools.genericui.linux.LinuxCurlHttpClientNativeImpl
 import com.nexustools.genericui.linux.LinuxDbusNotificationManagerNativeImpl
 import com.nexustools.genericui.linux.LinuxGdkPixbufImageCodecNativeImpl
@@ -99,6 +101,7 @@ import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.MenuItemNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.MenuNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
+import com.nexustools.genericui.nativeimpl.system.AnimationNativeImpl
 import com.nexustools.genericui.nativeimpl.system.DatabaseNativeImpl
 import com.nexustools.genericui.nativeimpl.system.NetworkMonitorNativeImpl
 import com.nexustools.genericui.nativeimpl.system.NotificationManagerNativeImpl
@@ -126,6 +129,9 @@ class GtkNativeFactory : NativeFactory {
 
     override val backendName: String = "GTK4 (Libadwaita / Cairo / PangoCairo / GIO / libcurl / sqlite3)"
 
+    override val defaultTitleCapabilities: TitleCapabilities
+        get() = LinuxTitleBarProfileManager.resolveTitleCapabilities()
+
     override val layoutFactory: LayoutFactory = DesktopLayoutFactory
 
     override fun supportsTcp(): Boolean = true
@@ -141,17 +147,48 @@ class GtkNativeFactory : NativeFactory {
 
     val imageCodec: LinuxGdkPixbufImageCodecNativeImpl = LinuxGdkPixbufImageCodecNativeImpl()
 
+    private fun createCanvas2DWidgetAndApiName(): Pair<GtkWidgetHandle, String> {
+        val handle = GtkWidgetHandle("GtkDrawingArea")
+        handle.onDrawSurfaceCairo = { cr, w, h ->
+            com.nexustools.genericui.gtk.widget.GtkInteractiveSurfaceWidget.paintInteractiveSurface(handle, cr, w, h)
+        }
+        handle.widgetMaterializer = {
+            val da = com.nexustools.genericui.gtk.widget.GtkWidgetLifecycleBridge.createDrawingSurfaceForPainter(handle) { cr, w, h ->
+                com.nexustools.genericui.gtk.widget.GtkInteractiveSurfaceWidget.paintInteractiveSurface(handle, cr, w, h)
+            }
+            val impl = (handle.ownerImpl ?: handle.attributes["nativeImpl"]) as? com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl<GtkWidgetHandle>
+            if (da != null && impl != null) {
+                com.nexustools.genericui.gtk.widget.GtkWidgetLifecycleBridge.attachControllersAndState(
+                    impl = impl,
+                    rootPtr = da,
+                    focusTargetPtr = da,
+                    isTextInput = false,
+                    dispatchClickOnPrimaryRelease = true,
+                    attachClickGesture = true
+                )
+            }
+            da
+        }
+        return handle to "Cairo 2D (cairo_t) + Pango"
+    }
+
     init {
         DesktopImageCodecHooks.install(backendName)
         ImageLoader.activeNativeCodec = imageCodec
         DesktopCanvasWidgetHooks.createCanvas2DWidgetAndApiName = {
-            GtkWidgetHandle("GtkDrawingArea") to "Cairo 2D (cairo_t) + Pango"
+            createCanvas2DWidgetAndApiName()
+        }
+        DesktopCanvasWidgetHooks.createInteractiveSurfaceWidget = { _ ->
+            createCanvas2DWidgetAndApiName().first
         }
     }
 
     override fun createApplication(): ApplicationNativeImpl<*> {
         DesktopCanvasWidgetHooks.createCanvas2DWidgetAndApiName = {
-            GtkWidgetHandle("GtkDrawingArea") to "Cairo 2D (cairo_t) + Pango"
+            createCanvas2DWidgetAndApiName()
+        }
+        DesktopCanvasWidgetHooks.createInteractiveSurfaceWidget = { _ ->
+            createCanvas2DWidgetAndApiName().first
         }
         return GtkApplicationNativeImpl()
     }
@@ -159,48 +196,63 @@ class GtkNativeFactory : NativeFactory {
     override fun createWindow(): WindowNativeImpl<*> = GtkWindowNativeImpl()
 
     override fun createMenuBar(): MenuBarNativeImpl<*> =
-        DesktopMenuBarNativeImpl(GtkWidgetHandle("GtkPopoverMenuBar"))
+        GtkMenuBarNativeImpl(GtkWidgetHandle("GtkPopoverMenuBar"))
 
     override fun createMenu(): MenuNativeImpl<*> =
-        DesktopMenuNativeImpl(GtkWidgetHandle("GMenu"))
+        GtkMenuNativeImpl(GtkWidgetHandle("GMenu"))
 
     override fun createMenuItem(checkable: Boolean, radio: Boolean): MenuItemNativeImpl<*> =
-        DesktopMenuItemNativeImpl(GtkWidgetHandle("GMenuItem"), checkable, radio)
+        GtkMenuItemNativeImpl(GtkWidgetHandle("GMenuItem"), checkable, radio)
 
     override fun createContextMenu(): ContextMenuNativeImpl<*> =
-        DesktopContextMenuNativeImpl(GtkWidgetHandle("GtkPopoverMenu"))
+        GtkContextMenuNativeImpl(GtkWidgetHandle("GtkPopoverMenu"))
 
     override fun createDockWorkspace(): DockWorkspaceNativeImpl<*> =
-        DesktopDockWorkspaceNativeImpl(GtkWidgetHandle("AdwOverlaySplitView"))
+        GtkDockWorkspaceNativeImpl(GtkWidgetHandle("GtkPaned_DockWorkspace"))
 
     override fun createDockArea(): DockAreaNativeImpl<*> =
-        DesktopDockAreaNativeImpl(GtkWidgetHandle("GtkBox_DockArea"))
+        GtkDockAreaNativeImpl(GtkWidgetHandle("GtkBox_DockArea"))
 
     override fun createDockGroup(): DockGroupNativeImpl<*> =
-        DesktopDockGroupNativeImpl(GtkWidgetHandle("AdwTabView_DockGroup"))
+        GtkDockGroupNativeImpl(GtkWidgetHandle("GtkNotebook_DockGroup"))
 
     override fun createDockPanel(): DockPanelNativeImpl<*> =
-        DesktopDockPanelNativeImpl(GtkWidgetHandle("AdwBin_DockPanel"))
+        GtkDockPanelNativeImpl(GtkWidgetHandle("GtkBox_DockPanel"))
 
     override fun createDockWindow(): DockWindowNativeImpl<*> = GtkDockWindowNativeImpl()
 
     override fun createToolPalette(): ToolPaletteNativeImpl<*> =
-        DesktopToolPaletteNativeImpl(GtkWidgetHandle("GtkFlowBox_ToolPalette"))
+        GtkToolPaletteNativeImpl(GtkWidgetHandle("GtkFlowBox_ToolPalette"))
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
-        GtkContainerNativeImpl(GtkWidgetHandle("GtkBox"), classPrefix)
+        createContainer(classPrefix, "div")
+
+    override fun createContainer(classPrefix: String, tagName: String): ContainerNativeImpl<*> {
+        val isLayered = GtkRetainedContainerSupport.isLayeredHostTagOrClass(classPrefix, tagName, emptySet())
+        return GtkContainerNativeImpl(
+            nativeWidget = GtkWidgetHandle(if (isLayered) "GtkOverlay" else "GtkBox"),
+            classPrefix = classPrefix,
+            tagName = tagName
+        )
+    }
 
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
-        GtkStyledContainerNativeImpl(GtkWidgetHandle("GtkBox_Styled"), classPrefix, tagName)
+        GtkStyledContainerNativeImpl(GtkWidgetHandle("GtkOverlay_StyledContainer"), classPrefix, tagName)
+
+    override fun createStyledComponent(
+        classPrefix: String,
+        tagName: String
+    ): com.nexustools.genericui.nativeimpl.surface.StyledComponentNativeImpl<*> =
+        GtkStyledComponentNativeImpl(GtkWidgetHandle("GtkDrawingArea_StyledComponent"), classPrefix, tagName)
 
     override fun createBookContainer(): BookContainerNativeImpl<*> =
-        DesktopBookContainerNativeImpl(GtkWidgetHandle("GtkBox_BookPrintPreview"))
+        GtkBookContainerNativeImpl(GtkWidgetHandle("GtkBox_BookPrintPreview"))
 
     override fun createScrollView(): ScrollViewNativeImpl<*> =
-        DesktopScrollViewNativeImpl(GtkWidgetHandle("GtkScrolledWindow"))
+        GtkScrollViewNativeImpl(GtkWidgetHandle("GtkScrolledWindow"))
 
     override fun createDivider(): DividerNativeImpl<*> =
-        DesktopDividerNativeImpl(GtkWidgetHandle("GtkSeparator"))
+        GtkDividerNativeImpl(GtkWidgetHandle("GtkSeparator"))
 
     override fun createText(tagName: String, classPrefix: String): TextNativeImpl<*> =
         GtkTextNativeImpl(GtkWidgetHandle("GtkLabel"), tagName, classPrefix)
@@ -209,7 +261,7 @@ class GtkNativeFactory : NativeFactory {
         GtkMarkdownViewNativeImpl(GtkWidgetHandle("GtkTextView_Markdown"))
 
     override fun createImage(): ImageNativeImpl<*> =
-        DesktopImageNativeImpl(GtkWidgetHandle("GtkPicture"))
+        GtkImageNativeImpl(GtkWidgetHandle("GtkPicture"))
 
     override fun createTable(): TableNativeImpl<*> =
         GtkTableNativeImpl(GtkWidgetHandle("GtkColumnView"))
@@ -218,13 +270,13 @@ class GtkNativeFactory : NativeFactory {
         GtkButtonNativeImpl(GtkWidgetHandle("GtkButton"), classPrefix)
 
     override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> =
-        GtkStyledButtonNativeImpl(GtkWidgetHandle("GtkButton_Styled"), classPrefix)
+        GtkStyledButtonNativeImpl(GtkWidgetHandle("GtkDrawingArea_StyledButton"), classPrefix)
 
     override fun createDropdown(): DropdownNativeImpl<*> =
         GtkDropdownNativeImpl(GtkWidgetHandle("GtkMenuButton"))
 
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> =
-        GtkTextInputNativeImpl(GtkWidgetHandle(if (multiline) "GtkTextView" else "GtkEntry"), multiline)
+        GtkTextInputNativeImpl(GtkWidgetHandle(if (multiline) "GtkScrolledWindow_GtkTextView" else "GtkEntry"), multiline)
 
     override fun createSelect(): SelectNativeImpl<*> =
         GtkSelectNativeImpl(GtkWidgetHandle("GtkDropDown"))
@@ -243,13 +295,13 @@ class GtkNativeFactory : NativeFactory {
         GtkTabNativeImpl(GtkWidgetHandle(if (closable) "AdwTabPage_Closable" else "AdwTabPage"), closable)
 
     override fun createTabContainer(): TabContainerNativeImpl<*> =
-        GtkTabContainerNativeImpl(GtkWidgetHandle("AdwViewStack"))
+        GtkTabContainerNativeImpl(GtkWidgetHandle("GtkStack_Tabs"))
 
     override fun createNavbar(): NavbarNativeImpl<*> =
-        DesktopNavbarNativeImpl(GtkWidgetHandle("AdwHeaderBar"))
+        GtkNavbarNativeImpl(GtkWidgetHandle("AdwHeaderBar"))
 
     override fun createBottomNavigationBar(): BottomNavigationBarNativeImpl<*> =
-        DesktopBottomNavigationBarNativeImpl(GtkWidgetHandle("AdwViewSwitcherBar"))
+        GtkBottomNavigationBarNativeImpl(GtkWidgetHandle("AdwViewSwitcherBar"))
 
     override fun createProgressBar(): ProgressBarNativeImpl<*> =
         GtkProgressBarNativeImpl(GtkWidgetHandle("GtkProgressBar"))
@@ -258,10 +310,14 @@ class GtkNativeFactory : NativeFactory {
         GtkSpinnerNativeImpl(GtkWidgetHandle("AdwSpinner"))
 
     override fun createPopover(): PopoverNativeImpl<*> =
-        DesktopPopoverNativeImpl(GtkWidgetHandle("GtkPopover"))
+        GtkPopoverNativeImpl(GtkWidgetHandle("GtkPopover"))
 
-    override fun createDialogWindow(): DialogWindowNativeImpl<*> =
-        GtkDialogWindowNativeImpl()
+    override fun createDialogWindow(): DialogWindowNativeImpl<*> {
+        if (GtkApplicationNativeImpl.interactiveGtkGuiEnabled) {
+            GtkNativeWindowHost.prepareEventLoop()
+        }
+        return GtkDialogWindowNativeImpl()
+    }
 
     override fun createFileBrowserDialog(): FileBrowserDialogNativeImpl =
         GtkFileBrowserDialogNativeImpl()
@@ -270,13 +326,13 @@ class GtkNativeFactory : NativeFactory {
         GtkStandardDialogsNativeImpl()
 
     override fun createLazyList(): LazyListNativeImpl<*> =
-        DesktopLazyListNativeImpl(GtkWidgetHandle("GtkListView"))
+        GtkLazyListNativeImpl(GtkWidgetHandle("GtkListView"))
 
     override fun createLazyGrid(): LazyGridNativeImpl<*> =
         GtkLazyGridNativeImpl(GtkWidgetHandle("GtkGridView"))
 
     override fun createTreeView(): TreeViewNativeImpl<*> =
-        DesktopTreeViewNativeImpl(GtkWidgetHandle("GtkListView_GtkTreeListModel"))
+        GtkTreeViewNativeImpl(GtkWidgetHandle("GtkListView_GtkTreeListModel"))
 
     override fun createUiThreadDispatcher(): UiThreadDispatcherNativeImpl =
         GtkUiThreadDispatcherNativeImpl(
@@ -286,6 +342,9 @@ class GtkNativeFactory : NativeFactory {
 
     override fun createUiTimerScheduler(): UiTimerNativeImpl =
         GtkUiTimerNativeImpl()
+
+    override fun createAnimationScheduler(): AnimationNativeImpl =
+        GtkAnimationNativeImpl()
 
     override fun createPermissionManager(): PermissionManagerNativeImpl =
         DesktopPermissionManagerNativeImpl("XDG Desktop Portal PermissionStore")

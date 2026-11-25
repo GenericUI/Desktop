@@ -2,35 +2,33 @@
 
 package com.nexustools.genericui.gtk
 
-import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
-import com.nexustools.genericui.gtk.render.GtkHitRegion
-import com.nexustools.genericui.gtk.render.GtkScrollRegion
+import com.nexustools.genericui.gtk.titlebar.GtkCustomTitleBarWidget
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.StableRef
 import kotlin.time.TimeMark
 
+/**
+ * Retained GTK4 window/dialog session state holding the live `GtkWindow`, root `GtkBox`,
+ * `GtkCustomTitleBarWidget`, and content layout container.
+ */
 internal class GtkWindowSession(
     val windowKey: Long,
     val gtkWindow: COpaquePointer,
-    val drawingArea: COpaquePointer,
-    var headerBar: COpaquePointer? = null,
+    val rootVBox: COpaquePointer,
+    val rootContentHost: COpaquePointer,
+    val contentLayoutBox: COpaquePointer,
+    var titleBarWidget: GtkCustomTitleBarWidget? = null,
+    var surfaceBackgroundDa: COpaquePointer? = null,
+    var mountedMenuBarPtr: COpaquePointer? = null,
+    var mountedNavBarPtr: COpaquePointer? = null,
+    var mountedBottomNavPtr: COpaquePointer? = null,
     val windowImpl: GtkWindowNativeImpl? = null,
     val dialogImpl: DesktopDialogWindowNativeImpl<*>? = null,
     val ownerWindowKey: Long? = null
 ) {
     var sessionRef: StableRef<GtkWindowSession>? = null
-    var hitRegions: List<GtkHitRegion> = emptyList()
-    var scrollRegions: List<GtkScrollRegion> = emptyList()
-
-    var hoveredRegion: GtkHitRegion? = null
-    var hoveredWidget: DesktopNativeWidget? = null
-    var pressedRegion: GtkHitRegion? = null
-    var pressedWidget: DesktopNativeWidget? = null
-    var focusedWidget: DesktopNativeWidget? = null
-
-    var lastMouseX: Float = -1f
-    var lastMouseY: Float = -1f
+    var usesCustomLinuxTitleBar: Boolean = false
     var paintedFrameCount: Int = 0
     var lastPaintedWidth: Int = 0
     var lastPaintedHeight: Int = 0
@@ -42,5 +40,7 @@ internal class GtkWindowSession(
     var lastReportedX: Int = Int.MIN_VALUE
     var lastReportedY: Int = Int.MIN_VALUE
     var suppressMoveUntilMark: TimeMark? = null
+    var lastMouseX: Float = -1f
+    var lastMouseY: Float = -1f
     var closed: Boolean = false
 }

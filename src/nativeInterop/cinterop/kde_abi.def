@@ -1,0 +1,42 @@
+package = com.nexustools.genericui.kde.abi
+headers = stdint.h stddef.h
+---
+typedef struct {
+    uint64_t a;
+    uint64_t b;
+    uint64_t c;
+} kde_sret24_t;
+
+static inline int kde_invoke_qmetaobject_connect(
+    void *fn_ptr,
+    void *conn_dtor_ptr,
+    const void *sender,
+    int signal_index,
+    const void *receiver,
+    int method_index,
+    int type,
+    const int *types
+) {
+    typedef kde_sret24_t (*connect_fn_t)(const void *, int, const void *, int, int, const int *);
+    typedef void (*dtor_fn_t)(void *);
+    if (fn_ptr == NULL) return 0;
+    kde_sret24_t conn = ((connect_fn_t)fn_ptr)(sender, signal_index, receiver, method_index, type, types);
+    int ok = conn.a != 0ULL ? 1 : 0;
+    if (conn_dtor_ptr != NULL && conn.a != 0ULL) {
+        ((dtor_fn_t)conn_dtor_ptr)(&conn);
+    }
+    return ok;
+}
+
+static inline void kde_invoke_sret24_1(
+    void *fn_ptr,
+    const void *arg0,
+    uint64_t *out3
+) {
+    typedef kde_sret24_t (*fn1_t)(const void *);
+    if (fn_ptr == NULL || out3 == NULL) return;
+    kde_sret24_t res = ((fn1_t)fn_ptr)(arg0);
+    out3[0] = res.a;
+    out3[1] = res.b;
+    out3[2] = res.c;
+}

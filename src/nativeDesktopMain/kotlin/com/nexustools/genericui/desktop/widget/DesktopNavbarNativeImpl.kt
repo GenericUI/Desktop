@@ -51,7 +51,7 @@ open class DesktopNavbarNativeImpl<out W : DesktopNativeWidget>(
     override fun getShowBrand(): Boolean? = showBrandOverride
 
     /**
-     * Desktop backends (`Windows`, `Linux` GTK/Qt, `macOS`) hide the navbar brand title and icon
+     * Desktop backends (`Windows`, `Linux` GTK/KDE, `macOS`) hide the navbar brand title and icon
      * by default (`false`) because they already appear in the OS window titlebar directly above.
      */
     override fun isBrandVisible(): Boolean = showBrandOverride ?: false

@@ -1,34 +1,131 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.windows.impl
 
 import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.style.css.CssCursorValue
+import com.nexustools.genericui.windows.Win32ControlMessageRouter
 import com.nexustools.genericui.windows.Win32HwndHandle
-import com.nexustools.genericui.windows.render.Win32InputFieldRenderUtil
-import com.nexustools.genericui.windows.render.Win32RenderContext
+import com.nexustools.genericui.windows.Win32RetainedControlSupport
+import kotlinx.cinterop.toLong
+import platform.windows.EM_SETREADONLY
+import platform.windows.EN_CHANGE
+import platform.windows.ES_AUTOHSCROLL
+import platform.windows.ES_AUTOVSCROLL
+import platform.windows.ES_MULTILINE
+import platform.windows.ES_READONLY
+import platform.windows.ES_WANTRETURN
+import platform.windows.SendMessageW
+import platform.windows.WM_SETFONT
+import platform.windows.WS_BORDER
+import platform.windows.WS_CHILD
+import platform.windows.WS_CLIPSIBLINGS
+import platform.windows.WS_HSCROLL
+import platform.windows.WS_TABSTOP
+import platform.windows.WS_VISIBLE
+import platform.windows.WS_VSCROLL
 
 /**
- * Win32 native implementation for `CodeEditor` controls with line-number gutter.
+ * Retained Win32 monospace `"Edit"` (`ES_MULTILINE`) implementation for `CodeEditor`.
  */
 class WindowsCodeEditorNativeImpl(
-    widget: Win32HwndHandle = Win32HwndHandle("GenericUICodeEditorClass")
-) : DesktopTextInputNativeImpl<Win32HwndHandle>(widget, multiline = true), WindowsRenderableNativeImpl {
+    widget: Win32HwndHandle = Win32HwndHandle("Edit")
+) : DesktopTextInputNativeImpl<Win32HwndHandle>(widget, multiline = true) {
+
+    private var updating: Boolean = false
 
     init {
         nativeWidget.attributes["nativeImpl"] = this
-        nativeWidget.attributes["componentRole"] = "code-editor"
+        val style = WS_CHILD or WS_VISIBLE or WS_TABSTOP or WS_BORDER or WS_VSCROLL or WS_HSCROLL or
+            WS_CLIPSIBLINGS or ES_MULTILINE or ES_AUTOVSCROLL or ES_AUTOHSCROLL or ES_WANTRETURN or
+            (if (readOnlyState) ES_READONLY else 0)
+        val hwnd = Win32ControlMessageRouter.createChildHwnd(
+            handle = nativeWidget,
+            owner = this,
+            win32ClassName = "Edit",
+            dwStyle = style,
+            initialText = textValue,
+            initialWidth = 360,
+            initialHeight = 180,
+            installSubclass = true,
+            isNativeEditTarget = true
+        )
+        Win32ControlMessageRouter.obtainUiFont("Consolas", 13, 400)?.let { monoFont ->
+            nativeWidget.fontHandle = monoFont
+            SendMessageW(hwnd, WM_SETFONT.toUInt(), monoFont.toLong().toULong(), 1L)
+        }
+        nativeWidget.onCommandCallback = { notifyCode, _, _ ->
+            if (!updating && notifyCode == EN_CHANGE) {
+                val cur = Win32RetainedControlSupport.readWindowText(nativeWidget.hwnd)
+                if (textValue != cur) {
+                    textValue = cur
+                    nativeWidget.attributes["value"] = cur
+                    onValueChangedListener?.invoke(cur)
+                }
+            }
+        }
+        Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = false)
     }
 
-    override fun renderWin32(
-        ctx: Win32RenderContext,
-        left: Int,
-        top: Int,
-        right: Int,
-        fixedHeight: Int?
-    ): Int = Win32InputFieldRenderUtil.renderMultilineEditor(
-        ctx = ctx,
-        widget = nativeWidget,
-        inputImpl = this,
-        left = left,
-        top = top,
-        right = right
-    )
+    override fun setValue(value: String) {
+        super.setValue(value)
+        updating = true
+        try {
+            Win32RetainedControlSupport.setWindowTextIfChanged(nativeWidget.hwnd, value)
+        } finally {
+            updating = false
+        }
+    }
+
+    override fun setReadOnly(readOnly: Boolean) {
+        super.setReadOnly(readOnly)
+        nativeWidget.hwnd?.let {
+            SendMessageW(it, EM_SETREADONLY.toUInt(), if (readOnly) 1uL else 0uL, 0L)
+        }
+    }
+
+    override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size = Size(320, 160)
+
+    override fun onNativeBoundsChanged(rect: Rect) {
+        Win32RetainedControlSupport.onLeafBoundsChanged(nativeWidget, rect)
+    }
+
+    override fun onNativeVisibilityChanged(visible: Boolean) {
+        Win32RetainedControlSupport.onVisibilityChanged(nativeWidget, visible)
+    }
+
+    override fun onNativeEnabledChanged(enabled: Boolean) {
+        Win32RetainedControlSupport.onEnabledChanged(nativeWidget, enabled)
+    }
+
+    override fun onNativeOpacityChanged(opacity: Float) {
+        Win32RetainedControlSupport.onOpacityChanged(nativeWidget, opacity)
+    }
+
+    override fun onNativeTooltipChanged(tooltip: String?) {
+        Win32RetainedControlSupport.onTooltipChanged(nativeWidget, tooltip)
+    }
+
+    override fun onNativeCursorChanged(cursor: CssCursorValue?) {
+        Win32RetainedControlSupport.onCursorChanged(nativeWidget, cursor)
+    }
+
+    override fun onNativePointerEventsChanged(pointerEventsNone: Boolean) {
+        Win32RetainedControlSupport.onPointerEventsChanged(nativeWidget, pointerEventsNone)
+    }
+
+    override fun onNativeZIndexChanged(zIndex: Int) {
+        Win32RetainedControlSupport.onZIndexChanged(nativeWidget, zIndex)
+    }
+
+    override fun onNativeStyleSynced() {
+        Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = false)
+    }
+
+    override fun dispose() {
+        Win32RetainedControlSupport.onDispose(nativeWidget)
+        super.dispose()
+    }
 }

@@ -1,18 +1,27 @@
 package com.nexustools.genericui.desktop.core
 
 import com.nexustools.genericui.core.NativeImpl
-import com.nexustools.genericui.desktop.render.DesktopControlTintRenderUtil
-import com.nexustools.genericui.desktop.render.DesktopRenderableNativeImpl
+import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
+import com.nexustools.genericui.desktop.dock.DesktopDockWindowNativeImpl
+import com.nexustools.genericui.desktop.lazy.DesktopLazyGridNativeImpl
+import com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl
+import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopStyledComponentNativeImpl
 import com.nexustools.genericui.enums.bootstrap.*
 import com.nexustools.genericui.enums.css.CssCursor
+import com.nexustools.genericui.enums.css.CssPointerEvents
+import com.nexustools.genericui.enums.css.CssPosition
 import com.nexustools.genericui.enums.css.CssUnit
 import com.nexustools.genericui.enums.css.CssVisibility
+import com.nexustools.genericui.enums.ui.Orientation
 import com.nexustools.genericui.event.KeyEvent
 import com.nexustools.genericui.event.PointerEvent
 import com.nexustools.genericui.event.WheelEvent
 import com.nexustools.genericui.geometry.EdgeInsets
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
@@ -21,9 +30,12 @@ import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.style.css.CssCustomCursor
 import com.nexustools.genericui.style.css.CssLength
+import com.nexustools.genericui.style.css.CssProperty
+import com.nexustools.genericui.style.css.CssTransform
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
 import com.nexustools.genericui.style.mapper.BootstrapClassMapper
 import com.nexustools.genericui.style.mapper.BootstrapStyleSnapshot
+import com.nexustools.genericui.style.policy.AestheticStylePolicy
 import com.nexustools.genericui.style.transition.CssTransitionSpec
 import kotlin.math.roundToInt
 
@@ -31,12 +43,12 @@ import kotlin.math.roundToInt
  * Shared desktop base implementation of [NativeImpl] supporting dual-mode Bootstrap 5 enum styling,
  * strict user CSS class isolation (`customClasses`), [ComponentStyle], [ComponentBootstrap],
  * [CssCustomCursor], geometry, visibility, and input event callbacks across `:windows`, `:macos`,
- * `:gtk`, and `:qt`.
+ * `:gtk`, and `:kde`.
  */
 open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     override val nativeWidget: W,
     override val componentClassPrefix: String = ""
-) : NativeImpl<W>, DesktopRenderableNativeImpl {
+) : NativeImpl<W> {
 
     protected var styleSnapshot: BootstrapStyleSnapshot =
         BootstrapStyleSnapshot(componentPrefix = componentClassPrefix)
@@ -48,12 +60,19 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     protected var lastComponentStyle: ComponentStyle? = null
     protected var lastBootstrap: ComponentBootstrap? = null
     protected var customCursorState: CssCursorValue? = null
+    private var cachedEffectiveBase: ComputedStyle? = null
+    private var cachedEffectiveHovered: Boolean = false
+    private var cachedEffectiveFocused: Boolean = false
+    private var cachedEffectiveActive: Boolean = false
+    private var cachedEffectiveEnabled: Boolean = true
+    private var cachedEffectiveResult: ComputedStyle? = null
     private var backgroundGradientState: Gradient? = null
     private var backgroundColorState: RgbaColor? = null
 
     private var hoveredState: Boolean = false
     private var focusedState: Boolean = false
     private var activePressedState: Boolean = false
+    private var focusableState: Boolean = true
     private var explicitPadding: EdgeInsets? = null
     private var explicitMargin: EdgeInsets? = null
 
@@ -77,11 +96,138 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     private var batchAttachDepth: Int = 0
     private var batchStyleDirty: Boolean = false
+    private var baseInitialized: Boolean = false
+    private var lastDispatchedCursor: CssCursorValue? = null
+    private var lastPointerEventsNone: Boolean = false
+    private var lastEffectiveZIndex: Int = 0
+    private var lastResolvedTransform: CssTransform? = null
 
     init {
         nativeWidget.attributes["nativeImpl"] = this
         nativeWidget.attributes["antialiasing"] = antialiasing
         syncStyleToNativeWidget()
+        baseInitialized = true
+    }
+
+    // -------------------------------------------------------------------------
+    // Retained Native Widget Lifecycle Hooks
+    // -------------------------------------------------------------------------
+
+    protected open fun onNativeBoundsChanged(rect: Rect) {}
+
+    protected open fun onNativeVisibilityChanged(visible: Boolean) {}
+
+    protected open fun onNativeEnabledChanged(enabled: Boolean) {}
+
+    protected open fun onNativeFocusableChanged(focusable: Boolean) {}
+
+    protected open fun onNativeOpacityChanged(opacity: Float) {}
+
+    protected open fun onNativeTooltipChanged(tooltip: String?) {}
+
+    protected open fun onNativeCursorChanged(cursor: CssCursorValue?) {}
+
+    protected open fun onNativePointerEventsChanged(pointerEventsNone: Boolean) {}
+
+    protected open fun onNativeZIndexChanged(zIndex: Int) {}
+
+    protected open fun onNativeTransformChanged(transform: CssTransform?) {}
+
+    protected open fun onNativeStyleSynced() {}
+
+    fun notifyHostThemeChanged() {
+        onNativeStyleSynced()
+    }
+
+    open fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {
+        nativeWidget.preferredSize?.let { pref ->
+            if (pref.width > 0 || pref.height > 0) {
+                return pref
+            }
+        }
+        val refW = maxWidth ?: nativeWidget.bounds.width.toFloat()
+        val refH = maxHeight ?: nativeWidget.bounds.height.toFloat()
+        val styleW = (nativeWidget.attributes["styleWidth"] as? CssLength)?.resolvePx(refW)?.roundToInt()
+            ?: lastComponentStyle?.width?.resolvePx(refW)?.roundToInt()
+        val styleH = (nativeWidget.attributes["styleHeight"] as? CssLength)?.resolvePx(refH)?.roundToInt()
+            ?: lastComponentStyle?.height?.resolvePx(refH)?.roundToInt()
+        val pad = getEffectivePaddingInsets(refW, refH)
+        val bounds = nativeWidget.bounds
+        val w = styleW ?: if (bounds.width > 0) bounds.width else (pad.left + pad.right)
+        val h = styleH ?: if (bounds.height > 0) bounds.height else (pad.top + pad.bottom)
+        return Size(w.coerceAtLeast(0), h.coerceAtLeast(0))
+    }
+
+    protected fun notifyStyleSyncedIfReady() {
+        if (baseInitialized) {
+            onNativeStyleSynced()
+        }
+    }
+
+    protected fun syncPointerEventsAndZIndexHooks() {
+        if (!baseInitialized) {
+            lastPointerEventsNone = nativeWidget.isSelfPointerEventsNone()
+            lastEffectiveZIndex = nativeWidget.effectiveZIndex()
+            return
+        }
+        val peNone = nativeWidget.isSelfPointerEventsNone()
+        if (lastPointerEventsNone != peNone) {
+            lastPointerEventsNone = peNone
+            onNativePointerEventsChanged(peNone)
+        }
+        val zIdx = nativeWidget.effectiveZIndex()
+        if (lastEffectiveZIndex != zIdx) {
+            lastEffectiveZIndex = zIdx
+            (nativeWidget.parentWidget?.attributes?.get("nativeImpl") as? DesktopBaseContainerNativeImpl<*>)
+                ?.onChildZIndexInvalidated()
+            onNativeZIndexChanged(zIdx)
+        }
+    }
+
+    protected fun applyResolvedOpacity(opacity: Float, notifyTree: Boolean = false) {
+        val clamped = opacity.coerceIn(0f, 1f)
+        val changed = nativeWidget.opacity != clamped
+        nativeWidget.opacity = clamped
+        nativeWidget.attributes["opacity"] = clamped
+        if (changed) {
+            if (baseInitialized) {
+                onNativeOpacityChanged(clamped)
+            }
+            if (notifyTree) {
+                notifyTreeInvalidated()
+            }
+        }
+    }
+
+    protected fun applyCursor(cursor: CssCursorValue?, fallbackCssString: String? = null) {
+        when (cursor) {
+            is CssCustomCursor -> {
+                nativeWidget.attributes["customCursor"] = cursor
+                nativeWidget.attributes["cursor"] = cursor.fallback.cssValue
+            }
+            is CssCursor -> {
+                nativeWidget.attributes.remove("customCursor")
+                nativeWidget.attributes["cursor"] = cursor.cssValue
+            }
+            null -> {
+                nativeWidget.attributes.remove("customCursor")
+                if (fallbackCssString != null) {
+                    nativeWidget.attributes["cursor"] = fallbackCssString
+                } else {
+                    nativeWidget.attributes.remove("cursor")
+                }
+            }
+            else -> {
+                nativeWidget.attributes.remove("customCursor")
+                nativeWidget.attributes["cursor"] = cursor.toCssString()
+            }
+        }
+        if (lastDispatchedCursor != cursor) {
+            lastDispatchedCursor = cursor
+            if (baseInitialized) {
+                onNativeCursorChanged(cursor)
+            }
+        }
     }
 
     override fun beginBatchAttach() {
@@ -109,8 +255,25 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     fun hasClickListener(): Boolean = onClickListener != null
 
-    fun dispatchClick() {
-        if (nativeWidget.enabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+    fun hasPointerListeners(): Boolean =
+        onPointerDownListener != null ||
+            onPointerMoveListener != null ||
+            onPointerUpListener != null ||
+            onPointerEnterListener != null ||
+            onPointerLeaveListener != null
+
+    fun isPointerInteractionDisabled(): Boolean {
+        if (nativeWidget.isSelfPointerEventsNone()) return true
+        var cur: DesktopNativeWidget? = nativeWidget.parentWidget
+        while (cur != null) {
+            if (cur.isSubtreeHitTestBlocked()) return true
+            cur = cur.parentWidget
+        }
+        return false
+    }
+
+    open fun dispatchClick() {
+        if (nativeWidget.enabled && !isPointerInteractionDisabled()) {
             if (DesktopNativeWidget.interceptPopupClick(Float.NaN, Float.NaN, nativeWidget)) return
             onClickListener?.invoke()
         }
@@ -122,6 +285,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         ) {
             return
         }
+        val prevValue = nativeWidget.attributes[name]
         if (value == null) {
             nativeWidget.attributes.remove(name)
         } else {
@@ -133,32 +297,40 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             } else {
                 nativeWidget.rebuildClassTokensCache(componentClassPrefix)
                 syncBootstrapClassesAndStyles()
+                nativeWidget.notifyTreeInvalidated()
+            }
+        } else {
+            if (name == "pointerEvents" || name == "zIndex") {
+                syncPointerEventsAndZIndexHooks()
+            }
+            if (prevValue != value) {
+                notifyTreeInvalidated()
             }
         }
     }
 
     fun dispatchPointerDown(event: PointerEvent) {
-        if (nativeWidget.enabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+        if (nativeWidget.enabled && !isPointerInteractionDisabled()) {
             if (DesktopNativeWidget.interceptPopupPointerDown(event.x, event.y, nativeWidget)) return
             onPointerDownListener?.invoke(event)
         }
     }
 
     fun dispatchPointerMove(event: PointerEvent) {
-        if (nativeWidget.enabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+        if (nativeWidget.enabled && !isPointerInteractionDisabled()) {
             onPointerMoveListener?.invoke(event)
         }
     }
 
     fun dispatchPointerUp(event: PointerEvent) {
-        if (nativeWidget.enabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+        if (nativeWidget.enabled && !isPointerInteractionDisabled()) {
             if (DesktopNativeWidget.interceptPopupPointerUp(event.x, event.y, nativeWidget)) return
             onPointerUpListener?.invoke(event)
         }
     }
 
     fun dispatchPointerEnter(event: PointerEvent = PointerEvent()) {
-        if (!nativeWidget.enabled || styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE) return
+        if (!nativeWidget.enabled || isPointerInteractionDisabled()) return
         setHoveredState(true)
         onPointerEnterListener?.invoke(event)
     }
@@ -169,13 +341,13 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     }
 
     fun dispatchDoubleClick() {
-        if (nativeWidget.enabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+        if (nativeWidget.enabled && !isPointerInteractionDisabled()) {
             onDoubleClickListener?.invoke()
         }
     }
 
     fun dispatchContextMenu(event: PointerEvent) {
-        if (nativeWidget.enabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+        if (nativeWidget.enabled && !isPointerInteractionDisabled()) {
             onContextMenuListener?.invoke(event)
         }
     }
@@ -187,7 +359,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     }
 
     fun dispatchWheel(event: WheelEvent) {
-        if (nativeWidget.enabled && styleSnapshot.pointerEvents != BootstrapPointerEvents.NONE) {
+        if (nativeWidget.enabled && !isPointerInteractionDisabled()) {
             onWheelListener?.invoke(event)
         }
     }
@@ -221,7 +393,12 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["enumClasses"] = enumClassSet
         nativeWidget.attributes["styleSnapshot"] = styleSnapshot
         if (styleSnapshot.display == DisplayMode.NONE) {
-            nativeWidget.visible = false
+            if (nativeWidget.visible) {
+                nativeWidget.visible = false
+                if (baseInitialized) {
+                    onNativeVisibilityChanged(false)
+                }
+            }
         } else if (styleSnapshot.visibility == BootstrapVisibility.INVISIBLE) {
             nativeWidget.attributes["visibilityHidden"] = true
         } else {
@@ -234,100 +411,28 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     protected open fun syncBootstrapClassesAndStyles() {
         val tokens = nativeWidget.cachedAllClassTokens
 
-        fun spacingTokenPx(prefix: String): Int? {
-            for (scale in 0..5) {
-                if ("$prefix-$scale" in tokens) {
-                    return when (scale) {
-                        0 -> 0
-                        1 -> 4
-                        2 -> 8
-                        3 -> 16
-                        4 -> 24
-                        5 -> 48
-                        else -> 0
-                    }
-                }
-            }
-            return null
-        }
-
-        // Sync padding from explicit, StyledVisualSpec, ComponentStyle, or Bootstrap snapshot/tokens
-        val styledPad = (nativeWidget.attributes["styledButtonVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
-            ?: (nativeWidget.attributes["styledContainerVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
-        val resolvedPad = explicitPadding ?: styledPad ?: run {
-            val pAll = styleSnapshot.paddingAll?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("p")
-            val pX = styleSnapshot.paddingX?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("px") ?: pAll
-            val pY = styleSnapshot.paddingY?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("py") ?: pAll
-            val pTop = styleSnapshot.paddingTop?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("pt") ?: pY ?: 0
-            val pBottom = styleSnapshot.paddingBottom?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("pb") ?: pY ?: 0
-            val pLeft = styleSnapshot.paddingStart?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("ps") ?: pX ?: 0
-            val pRight = styleSnapshot.paddingEnd?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("pe") ?: pX ?: 0
-            val comp = lastComponentStyle
-            if (comp != null) {
-                val refW = nativeWidget.bounds.width.toFloat()
-                val refH = nativeWidget.bounds.height.toFloat()
-                val base = comp.padding?.toEdgeInsets(refW, refH)
-                EdgeInsets(
-                    top = comp.paddingTop?.resolvePx(refH)?.roundToInt() ?: base?.top ?: pTop,
-                    right = comp.paddingRight?.resolvePx(refW)?.roundToInt() ?: base?.right ?: pRight,
-                    bottom = comp.paddingBottom?.resolvePx(refH)?.roundToInt() ?: base?.bottom ?: pBottom,
-                    left = comp.paddingLeft?.resolvePx(refW)?.roundToInt() ?: base?.left ?: pLeft
-                )
-            } else {
-                EdgeInsets(top = pTop, right = pRight, bottom = pBottom, left = pLeft)
-            }
-        }
-        if (explicitPadding != null || styledPad != null || resolvedPad != EdgeInsets.ZERO) {
-            nativeWidget.padding = resolvedPad
-        }
-
-        // Sync margin from explicit, ComponentStyle, or Bootstrap snapshot/tokens
-        val resolvedMargin = explicitMargin ?: run {
-            val mAll = styleSnapshot.marginAll?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("m")
-            val mX = styleSnapshot.marginX?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("mx") ?: mAll
-            val mY = styleSnapshot.marginY?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("my") ?: mAll
-            val mTop = styleSnapshot.marginTop?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("mt") ?: mY ?: 0
-            val mBottom = styleSnapshot.marginBottom?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("mb") ?: mY ?: 0
-            val mLeft = styleSnapshot.marginStart?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("ms") ?: mX ?: 0
-            val mRight = styleSnapshot.marginEnd?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx("me") ?: mX ?: 0
-            val comp = lastComponentStyle
-            if (comp != null) {
-                val refW = nativeWidget.bounds.width.toFloat()
-                val refH = nativeWidget.bounds.height.toFloat()
-                val base = comp.margin?.toEdgeInsets(refW, refH)
-                EdgeInsets(
-                    top = comp.marginTop?.resolvePx(refH)?.roundToInt() ?: base?.top ?: mTop,
-                    right = comp.marginRight?.resolvePx(refW)?.roundToInt() ?: base?.right ?: mRight,
-                    bottom = comp.marginBottom?.resolvePx(refH)?.roundToInt() ?: base?.bottom ?: mBottom,
-                    left = comp.marginLeft?.resolvePx(refW)?.roundToInt() ?: base?.left ?: mLeft
-                )
-            } else {
-                EdgeInsets(top = mTop, right = mRight, bottom = mBottom, left = mLeft)
-            }
-        }
-        if (explicitMargin != null || resolvedMargin != EdgeInsets.ZERO) {
-            nativeWidget.margin = resolvedMargin
-        }
+        // Sync padding and margin from explicit, StyledVisualSpec, ComponentStyle, ComputedStyle, or Bootstrap snapshot/tokens
+        syncResolvedBoxSpacing(tokens)
 
         // Sync gap / row-gap / column-gap
         val gapPx = lastComponentStyle?.gap?.resolvePx()?.roundToInt()
             ?: styleSnapshot.gap?.toPixels()?.coerceAtLeast(0)
-            ?: spacingTokenPx("gap")
-            ?: spacingTokenPx("g")
+            ?: spacingTokenPx(tokens, TOKENS_GAP)
+            ?: spacingTokenPx(tokens, TOKENS_G)
         if (gapPx != null) {
             nativeWidget.attributes["gapPx"] = gapPx
         }
         val rowGapPx = lastComponentStyle?.rowGap?.resolvePx()?.roundToInt()
             ?: styleSnapshot.rowGap?.toPixels()?.coerceAtLeast(0)
-            ?: spacingTokenPx("row-gap")
-            ?: spacingTokenPx("gy")
+            ?: spacingTokenPx(tokens, TOKENS_ROW_GAP)
+            ?: spacingTokenPx(tokens, TOKENS_GY)
         if (rowGapPx != null) {
             nativeWidget.attributes["rowGapPx"] = rowGapPx
         }
         val colGapPx = lastComponentStyle?.columnGap?.resolvePx()?.roundToInt()
             ?: styleSnapshot.columnGap?.toPixels()?.coerceAtLeast(0)
-            ?: spacingTokenPx("column-gap")
-            ?: spacingTokenPx("gx")
+            ?: spacingTokenPx(tokens, TOKENS_COLUMN_GAP)
+            ?: spacingTokenPx(tokens, TOKENS_GX)
         if (colGapPx != null) {
             nativeWidget.attributes["columnGapPx"] = colGapPx
         }
@@ -336,7 +441,12 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         when {
             styleSnapshot.display == DisplayMode.NONE || "d-none" in tokens -> {
                 nativeWidget.attributes["display"] = "none"
-                nativeWidget.visible = false
+                if (nativeWidget.visible) {
+                    nativeWidget.visible = false
+                    if (baseInitialized) {
+                        onNativeVisibilityChanged(false)
+                    }
+                }
             }
             styleSnapshot.display == DisplayMode.FLEX || "d-flex" in tokens -> {
                 nativeWidget.attributes["display"] = "flex"
@@ -413,16 +523,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         }
 
         // Sync position and overflow
-        when {
-            styleSnapshot.position == PositionMode.ABSOLUTE || "position-absolute" in tokens ->
-                nativeWidget.attributes["position"] = "absolute"
-            styleSnapshot.position == PositionMode.RELATIVE || "position-relative" in tokens ->
-                nativeWidget.attributes["position"] = "relative"
-            styleSnapshot.position == PositionMode.FIXED || "position-fixed" in tokens ->
-                nativeWidget.attributes["position"] = "fixed"
-            styleSnapshot.position == PositionMode.STICKY || "position-sticky" in tokens ->
-                nativeWidget.attributes["position"] = "sticky"
-        }
+        syncResolvedLayoutAndInteractionAttributes()
         when {
             styleSnapshot.overflow == OverflowBehavior.HIDDEN || "overflow-hidden" in tokens ->
                 nativeWidget.attributes["overflow"] = "hidden"
@@ -448,6 +549,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             nativeWidget.attributes.remove("backdropFilter")
             nativeWidget.attributes.remove("backdropBlurPx")
         }
+        notifyStyleSyncedIfReady()
     }
 
     protected open fun onStyleChanged() {
@@ -500,20 +602,6 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         val updated = LinkedHashSet(styleSnapshot.customClasses)
         if (!updated.addAll(tokens)) return
         styleSnapshot = styleSnapshot.copy(customClasses = updated)
-        if (tokens.all {
-                it == "row-hovered" ||
-                    it == "hovered" ||
-                    it == "hud-cursor-hidden" ||
-                    it == "hud-visible" ||
-                    it == "hud-hidden"
-            }
-        ) {
-            cachedClassTokens = null
-            nativeWidget.attributes["bootstrapClass"] = styleSnapshot.customClasses.joinToString(" ")
-            nativeWidget.attributes["styleSnapshot"] = styleSnapshot
-            nativeWidget.rebuildClassTokensCache(componentClassPrefix)
-            return
-        }
         onStyleChanged()
     }
 
@@ -523,20 +611,6 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         val updated = LinkedHashSet(styleSnapshot.customClasses)
         if (!updated.removeAll(tokens.toSet())) return
         styleSnapshot = styleSnapshot.copy(customClasses = updated)
-        if (tokens.all {
-                it == "row-hovered" ||
-                    it == "hovered" ||
-                    it == "hud-cursor-hidden" ||
-                    it == "hud-visible" ||
-                    it == "hud-hidden"
-            }
-        ) {
-            cachedClassTokens = null
-            nativeWidget.attributes["bootstrapClass"] = styleSnapshot.customClasses.joinToString(" ")
-            nativeWidget.attributes["styleSnapshot"] = styleSnapshot
-            nativeWidget.rebuildClassTokensCache(componentClassPrefix)
-            return
-        }
         onStyleChanged()
     }
 
@@ -554,22 +628,47 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         lastComponentStyle = style
         nativeWidget.attributes["componentStyle"] = style
 
-        backgroundColorState = style.backgroundColor
-        if (style.backgroundColor != null) {
-            nativeWidget.attributes["backgroundColor"] = style.backgroundColor
+        if (acceptsAestheticSkinStyles()) {
+            backgroundColorState = style.backgroundColor
+            if (style.backgroundColor != null) {
+                nativeWidget.attributes["backgroundColor"] = style.backgroundColor
+            } else {
+                nativeWidget.attributes.remove("backgroundColor")
+            }
+
+            style.backgroundImage?.gradient?.let {
+                backgroundGradientState = it
+                nativeWidget.attributes["backgroundGradient"] = it
+            }
         } else {
+            backgroundColorState = null
             nativeWidget.attributes.remove("backgroundColor")
+            backgroundGradientState = null
+            nativeWidget.attributes.remove("backgroundGradient")
         }
 
-        style.backgroundImage?.gradient?.let {
-            backgroundGradientState = it
-            nativeWidget.attributes["backgroundGradient"] = it
-        }
-
-        if (style.color != null) {
-            nativeWidget.attributes["textColor"] = style.color
+        if (acceptsTypographyStyles()) {
+            if (style.color != null) {
+                nativeWidget.attributes["textColor"] = style.color
+            } else {
+                nativeWidget.attributes.remove("textColor")
+            }
+            val resolvedFontSizePx = style.fontSize?.resolvePx()
+            if (resolvedFontSizePx != null) {
+                nativeWidget.attributes["fontSizePx"] = resolvedFontSizePx
+            } else {
+                nativeWidget.attributes.remove("fontSizePx")
+            }
+            val resolvedFontWeight = style.fontWeight ?: styleSnapshot.fontWeight
+            if (resolvedFontWeight != null) {
+                nativeWidget.attributes["fontWeight"] = resolvedFontWeight.name
+            } else {
+                nativeWidget.attributes.remove("fontWeight")
+            }
         } else {
             nativeWidget.attributes.remove("textColor")
+            nativeWidget.attributes.remove("fontSizePx")
+            nativeWidget.attributes.remove("fontWeight")
         }
 
         if (style.accentColor != null) {
@@ -592,43 +691,160 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         }
 
         if (style.opacity != null) {
-            val op = style.opacity!!.coerceIn(0f, 1f)
-            nativeWidget.opacity = op
-            nativeWidget.attributes["opacity"] = op
+            applyResolvedOpacity(style.opacity!!, notifyTree = false)
         }
 
-        if (style.zIndex != null) {
-            nativeWidget.attributes["zIndex"] = style.zIndex
+        val fgFilter = style.filter ?: lastComputedStyle?.filter
+        if (fgFilter != null && !fgFilter.isNone) {
+            nativeWidget.attributes["cssFilter"] = fgFilter
         } else {
-            nativeWidget.attributes.remove("zIndex")
+            nativeWidget.attributes.remove("cssFilter")
         }
 
         if (style.cursor != null) {
             setCustomCursor(style.cursor)
         }
 
-        if (style.visibility == CssVisibility.HIDDEN || style.visibility == CssVisibility.COLLAPSE) {
+        val compVisHidden = lastComponentStyle?.visibility == CssVisibility.HIDDEN ||
+            lastComponentStyle?.visibility == CssVisibility.COLLAPSE ||
+            lastComputedStyle?.visibility == CssVisibility.HIDDEN ||
+            lastComputedStyle?.visibility == CssVisibility.COLLAPSE ||
+            styleSnapshot.visibility == BootstrapVisibility.INVISIBLE
+        if (compVisHidden) {
             nativeWidget.attributes["visibilityHidden"] = true
+        } else {
+            nativeWidget.attributes.remove("visibilityHidden")
         }
 
-        style.width?.let { nativeWidget.attributes["styleWidth"] = it }
-        style.height?.let { nativeWidget.attributes["styleHeight"] = it }
-        style.minWidth?.let { nativeWidget.attributes["styleMinWidth"] = it }
-        style.minHeight?.let { nativeWidget.attributes["styleMinHeight"] = it }
-        style.maxWidth?.let { nativeWidget.attributes["styleMaxWidth"] = it }
-        style.maxHeight?.let { nativeWidget.attributes["styleMaxHeight"] = it }
-        style.flexGrow?.let { nativeWidget.attributes["flexGrow"] = it }
-        style.flexShrink?.let { nativeWidget.attributes["flexShrink"] = it }
-        style.flexBasis?.let { nativeWidget.attributes["flexBasis"] = it }
-        style.top?.let { nativeWidget.attributes["styleTop"] = it }
-        style.right?.let { nativeWidget.attributes["styleRight"] = it }
-        style.bottom?.let { nativeWidget.attributes["styleBottom"] = it }
-        style.left?.let { nativeWidget.attributes["styleLeft"] = it }
-        style.aspectRatio?.let { nativeWidget.attributes["aspectRatio"] = it }
+        syncResolvedLayoutAndInteractionAttributes()
         if (batchAttachDepth > 0) {
             batchStyleDirty = true
         } else {
             syncBootstrapClassesAndStyles()
+            nativeWidget.notifyTreeInvalidated()
+        }
+    }
+
+    private fun syncResolvedLayoutAndInteractionAttributes() {
+        val tokens = nativeWidget.cachedAllClassTokens
+        val comp = lastComponentStyle
+        val sheet = lastComputedStyle
+        val prevPointerEventsAttr = nativeWidget.attributes["pointerEvents"]
+        val prevCursorAttr = nativeWidget.attributes["cursor"]
+        val prevCustomCursorAttr = nativeWidget.attributes["customCursor"]
+
+        fun putOrRemove(key: String, value: Any?) {
+            if (value != null) {
+                nativeWidget.attributes[key] = value
+            } else {
+                nativeWidget.attributes.remove(key)
+            }
+        }
+
+        putOrRemove("styleWidth", comp?.width ?: sheet?.width)
+        putOrRemove("styleHeight", comp?.height ?: sheet?.height)
+        putOrRemove("styleMinWidth", comp?.minWidth ?: sheet?.minWidth)
+        putOrRemove("styleMinHeight", comp?.minHeight ?: sheet?.minHeight)
+        putOrRemove("styleMaxWidth", comp?.maxWidth ?: sheet?.maxWidth)
+        putOrRemove("styleMaxHeight", comp?.maxHeight ?: sheet?.maxHeight)
+        putOrRemove("flexGrow", comp?.flexGrow ?: sheet?.flexGrow ?: nativeWidget.attributes["flexGrow"])
+        putOrRemove("flexShrink", comp?.flexShrink ?: sheet?.flexShrink ?: nativeWidget.attributes["flexShrink"])
+        putOrRemove("flexBasis", comp?.flexBasis ?: sheet?.flexBasis)
+
+        val resolvedTop = comp?.top ?: sheet?.top
+        val resolvedRight = comp?.right ?: sheet?.right
+        val resolvedBottom = comp?.bottom ?: sheet?.bottom
+        val resolvedLeft = comp?.left ?: sheet?.left
+        putOrRemove("styleTop", resolvedTop)
+        putOrRemove("styleRight", resolvedRight)
+        putOrRemove("styleBottom", resolvedBottom)
+        putOrRemove("styleLeft", resolvedLeft)
+        putOrRemove("top", sheet?.top ?: comp?.top?.toCssString())
+        putOrRemove("left", sheet?.left ?: comp?.left?.toCssString())
+
+        comp?.aspectRatio?.let { nativeWidget.attributes["aspectRatio"] = it }
+
+        val resolvedPosition = comp?.position?.cssValue
+            ?: sheet?.position?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            ?: when {
+                styleSnapshot.position == PositionMode.ABSOLUTE || "position-absolute" in tokens -> "absolute"
+                styleSnapshot.position == PositionMode.RELATIVE || "position-relative" in tokens -> "relative"
+                styleSnapshot.position == PositionMode.FIXED || "position-fixed" in tokens -> "fixed"
+                styleSnapshot.position == PositionMode.STICKY || "position-sticky" in tokens -> "sticky"
+                else -> null
+            }
+        if (resolvedPosition != null && resolvedPosition != "static") {
+            nativeWidget.attributes["position"] = resolvedPosition
+        } else {
+            nativeWidget.attributes.remove("position")
+        }
+
+        val sheetPeImportant = sheet != null &&
+            sheet.isImportant(CssProperty.POINTER_EVENTS) &&
+            (sheet.hasProperty(CssProperty.POINTER_EVENTS) || !sheet.pointerEventsEnabled)
+        val compPeImportant = comp?.pointerEvents != null && comp.isImportant(CssProperty.POINTER_EVENTS)
+        val resolvedPointerEvents = when {
+            sheetPeImportant && !compPeImportant -> if (sheet!!.pointerEventsEnabled) "auto" else "none"
+            comp?.pointerEvents == CssPointerEvents.NONE -> "none"
+            comp?.pointerEvents == CssPointerEvents.AUTO -> "auto"
+            sheet != null && (sheet.hasProperty(CssProperty.POINTER_EVENTS) || !sheet.pointerEventsEnabled) ->
+                if (sheet.pointerEventsEnabled) "auto" else "none"
+            styleSnapshot.pointerEvents == BootstrapPointerEvents.NONE || "pe-none" in tokens -> "none"
+            styleSnapshot.pointerEvents == BootstrapPointerEvents.AUTO || "pe-auto" in tokens -> "auto"
+            else -> null
+        }
+        putOrRemove("pointerEvents", resolvedPointerEvents)
+
+        val resolvedOverflow = comp?.overflow?.name?.lowercase()
+            ?: sheet?.overflow?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            ?: when {
+                styleSnapshot.overflow == OverflowBehavior.HIDDEN || "overflow-hidden" in tokens -> "hidden"
+                styleSnapshot.overflow == OverflowBehavior.AUTO || "overflow-auto" in tokens -> "auto"
+                styleSnapshot.overflow == OverflowBehavior.SCROLL || "overflow-scroll" in tokens -> "scroll"
+                styleSnapshot.overflow == OverflowBehavior.VISIBLE -> "visible"
+                else -> null
+            }
+        val resolvedOverflowX = comp?.overflowX?.name?.lowercase()
+            ?: sheet?.overflowX?.name?.lowercase()
+        val resolvedOverflowY = comp?.overflowY?.name?.lowercase()
+            ?: sheet?.overflowY?.name?.lowercase()
+        putOrRemove("overflow", resolvedOverflow)
+        putOrRemove("overflowX", resolvedOverflowX)
+        putOrRemove("overflowY", resolvedOverflowY)
+
+        val resolvedZIndex = comp?.zIndex ?: sheet?.zIndex
+        putOrRemove("zIndex", resolvedZIndex)
+        syncPointerEventsAndZIndexHooks()
+
+        val t2d = comp?.transform ?: sheet?.transform2D
+        val tStr = comp?.transform?.toCssString() ?: sheet?.transform ?: t2d?.toCssString()
+        if (t2d != null) {
+            nativeWidget.attributes["transform2D"] = t2d
+        } else {
+            nativeWidget.attributes.remove("transform2D")
+        }
+        if (tStr != null && !tStr.equals("none", ignoreCase = true)) {
+            nativeWidget.attributes["transform"] = tStr
+        } else {
+            nativeWidget.attributes.remove("transform")
+        }
+        val parsedTransform = t2d?.let { CssTransform.fromTransform2D(it) }
+            ?: tStr?.let { CssTransform.parse(it) }
+        setResolvedTransform(parsedTransform)
+
+        val resolvedCursor: CssCursorValue? = customCursorState
+            ?: comp?.cursor
+            ?: sheet?.customCursor
+            ?: sheet?.cursor?.let { CssCursor.fromCss(it) }
+        applyCursor(
+            cursor = resolvedCursor,
+            fallbackCssString = if (resolvedCursor == null) sheet?.cursor else null
+        )
+        if (nativeWidget.attributes["cursor"] != prevCursorAttr ||
+            nativeWidget.attributes["customCursor"] != prevCustomCursorAttr ||
+            nativeWidget.attributes["pointerEvents"] != prevPointerEventsAttr
+        ) {
+            DesktopNativeWidget.onCursorUpdated?.invoke()
         }
     }
 
@@ -647,25 +863,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     override fun setCustomCursor(cursor: CssCursorValue?) {
         if (customCursorState == cursor) return
         customCursorState = cursor
-        when (cursor) {
-            null -> {
-                nativeWidget.attributes.remove("customCursor")
-                nativeWidget.attributes.remove("cursor")
-            }
-            is CssCustomCursor -> {
-                nativeWidget.attributes["customCursor"] = cursor
-                nativeWidget.attributes["cursor"] = cursor.fallback.cssValue
-            }
-            is CssCursor -> {
-                nativeWidget.attributes.remove("customCursor")
-                nativeWidget.attributes["cursor"] = cursor.cssValue
-            }
-            else -> {
-                val css = cursor.toCssString()
-                nativeWidget.attributes["cursor"] = css
-            }
-        }
-        DesktopNativeWidget.onCursorUpdated?.invoke()
+        syncResolvedLayoutAndInteractionAttributes()
     }
 
     fun getCustomCursor(): CssCursorValue? =
@@ -858,6 +1056,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     override fun setVisible(visible: Boolean) {
         if (nativeWidget.visible != visible) {
             nativeWidget.visible = visible
+            onNativeVisibilityChanged(visible)
             nativeWidget.notifyTreeInvalidated()
         }
     }
@@ -875,28 +1074,81 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         }
         if (nativeWidget.enabled != enabled) {
             nativeWidget.enabled = enabled
+            onNativeEnabledChanged(enabled)
             nativeWidget.notifyTreeInvalidated()
         }
     }
 
     override fun isEnabled(): Boolean = nativeWidget.enabled
 
+    override fun setFocusable(focusable: Boolean) {
+        val changed = focusableState != focusable || nativeWidget.focusable != focusable
+        focusableState = focusable
+        nativeWidget.focusable = focusable
+        if (!focusable) {
+            setFocusedState(false)
+        }
+        if (changed) {
+            onNativeFocusableChanged(focusable)
+            nativeWidget.onEffectiveFocusableChanged(focusable)
+            nativeWidget.notifyTreeInvalidated(visualOnly = true)
+        }
+    }
+
+    override fun isFocusable(): Boolean = focusableState
+
     override fun setOpacity(opacity: Float) {
-        nativeWidget.opacity = opacity.coerceIn(0f, 1f)
+        applyResolvedOpacity(opacity, notifyTree = true)
     }
 
     override fun getOpacity(): Float = nativeWidget.opacity
 
     override fun setTooltipText(tooltip: String?) {
-        nativeWidget.tooltipText = tooltip
+        if (nativeWidget.tooltipText != tooltip) {
+            nativeWidget.tooltipText = tooltip
+            onNativeTooltipChanged(tooltip)
+        }
     }
 
     override fun getTooltipText(): String? = nativeWidget.tooltipText
 
+    open fun setBounds(rect: Rect) {
+        if (nativeWidget.bounds != rect) {
+            nativeWidget.bounds = rect
+            onNativeBoundsChanged(rect)
+        }
+    }
+
+    open fun setResolvedTransform(transform: CssTransform?) {
+        val normalized = transform?.takeIf { !it.isIdentity }
+        if (normalized != null) {
+            nativeWidget.attributes["resolvedTransform"] = normalized
+        } else {
+            nativeWidget.attributes.remove("resolvedTransform")
+        }
+        if (lastResolvedTransform != normalized) {
+            lastResolvedTransform = normalized
+            if (baseInitialized) {
+                onNativeTransformChanged(normalized)
+            }
+        }
+    }
+
     override fun setPreferredSize(size: Size?) {
+        val prevSize = nativeWidget.preferredSize
         nativeWidget.preferredSize = size
-        if (size != null) {
-            nativeWidget.bounds = Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, size.width, size.height)
+        val nextBounds = if (size != null) {
+            Rect(nativeWidget.bounds.x, nativeWidget.bounds.y, size.width, size.height)
+        } else {
+            nativeWidget.bounds
+        }
+        val boundsChanged = nextBounds != nativeWidget.bounds
+        if (boundsChanged) {
+            nativeWidget.bounds = nextBounds
+            onNativeBoundsChanged(nextBounds)
+        }
+        if (prevSize != size || boundsChanged) {
+            notifyTreeInvalidated()
         }
     }
 
@@ -910,17 +1162,79 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
                 return Rect(DesktopNativeWidget.activePopupHitTestX + 100000, DesktopNativeWidget.activePopupHitTestY + 100000, 0, 0)
             }
         }
-        return nativeWidget.bounds
+        val local = nativeWidget.bounds
+        val selfImpl = nativeWidget.attributes["nativeImpl"]
+        if (selfImpl is DesktopWindowNativeImpl<*> ||
+            selfImpl is DesktopDialogWindowNativeImpl<*> ||
+            selfImpl is DesktopDockWindowNativeImpl<*> ||
+            nativeWidget.attributes["genericuiWindowRootHost"] == true
+        ) {
+            return local
+        }
+        var wx = local.x
+        var wy = local.y
+        var anc: DesktopNativeWidget? = nativeWidget.parentWidget
+        while (anc != null) {
+            val ancImpl = anc.attributes["nativeImpl"]
+            if (ancImpl is DesktopWindowNativeImpl<*> ||
+                ancImpl is DesktopDialogWindowNativeImpl<*> ||
+                ancImpl is DesktopDockWindowNativeImpl<*> ||
+                anc.attributes["genericuiWindowRootHost"] == true
+            ) {
+                wx += (anc.attributes["contentOffsetX"] as? Int) ?: 0
+                wy += (anc.attributes["contentOffsetY"] as? Int) ?: 0
+                break
+            }
+            wx += anc.bounds.x + ((anc.attributes["tabContentOffsetX"] as? Int) ?: 0)
+            wy += anc.bounds.y + ((anc.attributes["tabContentOffsetY"] as? Int) ?: 0)
+            when (ancImpl) {
+                is DesktopScrollViewNativeImpl<*> -> {
+                    wx -= ancImpl.currentScrollX()
+                    wy -= ancImpl.currentScrollY()
+                }
+                is DesktopLazyListNativeImpl<*> -> {
+                    val scrollPx = ancImpl.viewportEngine.scrollOffsetPx.roundToInt()
+                    if ((anc.attributes["orientation"] as? Orientation) == Orientation.HORIZONTAL) {
+                        wx -= scrollPx
+                    } else {
+                        wy -= scrollPx
+                    }
+                }
+                is DesktopLazyGridNativeImpl<*> -> {
+                    wy -= ancImpl.viewportEngine.scrollOffsetPx.roundToInt()
+                }
+            }
+            anc = anc.parentWidget
+        }
+        return Rect(wx, wy, local.width, local.height)
     }
 
     override fun setPadding(padding: EdgeInsets) {
-        explicitPadding = padding
-        nativeWidget.padding = padding
+        val nextExplicit = if (padding == EdgeInsets.ZERO) null else padding
+        val changed = explicitPadding != nextExplicit || nativeWidget.padding != padding
+        explicitPadding = nextExplicit
+        if (nextExplicit != null) {
+            nativeWidget.padding = nextExplicit
+        } else {
+            syncBootstrapClassesAndStyles()
+        }
+        if (changed) {
+            notifyTreeInvalidated()
+        }
     }
 
     override fun setMargin(margin: EdgeInsets) {
-        explicitMargin = margin
-        nativeWidget.margin = margin
+        val nextExplicit = if (margin == EdgeInsets.ZERO) null else margin
+        val changed = explicitMargin != nextExplicit || nativeWidget.margin != margin
+        explicitMargin = nextExplicit
+        if (nextExplicit != null) {
+            nativeWidget.margin = nextExplicit
+        } else {
+            syncBootstrapClassesAndStyles()
+        }
+        if (changed) {
+            notifyTreeInvalidated()
+        }
     }
 
     fun getEffectivePaddingInsets(
@@ -1018,55 +1332,209 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun applyComputedStyle(style: ComputedStyle) {
+        val prevStyle = lastComputedStyle
         lastComputedStyle = style
-        style.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
-        style.backgroundGradient?.let {
-            backgroundGradientState = it
-            nativeWidget.attributes["backgroundGradient"] = it
-        }
-        style.textColor?.let { nativeWidget.attributes["textColor"] = it }
-        style.accentColor?.let { nativeWidget.attributes["accentColor"] = it }
-        style.opacity.let { nativeWidget.opacity = it }
-        style.transform?.let { nativeWidget.attributes["transform"] = it }
-        style.transition?.let { nativeWidget.attributes["transition"] = it }
-        style.backgroundImageUrl?.let { nativeWidget.attributes["backgroundImageUrl"] = it }
-        style.textShadow?.let { nativeWidget.attributes["textShadow"] = it }
-        style.boxShadow?.let { nativeWidget.attributes["boxShadow"] = it }
-        style.zIndex?.let { nativeWidget.attributes["zIndex"] = it }
-        style.left?.let { nativeWidget.attributes["left"] = it }
-        style.top?.let { nativeWidget.attributes["top"] = it }
-        val prevCursorAttr = nativeWidget.attributes["cursor"]
-        style.customCursor?.let { setCustomCursor(it) }
-            ?: style.cursor?.let {
-                nativeWidget.attributes["cursor"] = it
+        if (acceptsAestheticSkinStyles()) {
+            style.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
+                ?: run { if (lastComponentStyle?.backgroundColor == null) nativeWidget.attributes.remove("backgroundColor") }
+            style.backgroundGradient?.let {
+                backgroundGradientState = it
+                nativeWidget.attributes["backgroundGradient"] = it
             }
-        if (nativeWidget.attributes["cursor"] != prevCursorAttr) {
-            DesktopNativeWidget.onCursorUpdated?.invoke()
+        } else {
+            backgroundColorState = null
+            nativeWidget.attributes.remove("backgroundColor")
+            backgroundGradientState = null
+            nativeWidget.attributes.remove("backgroundGradient")
         }
+        if (acceptsTypographyStyles()) {
+            style.textColor?.let { nativeWidget.attributes["textColor"] = it }
+            val resolvedFontSizePx = lastComponentStyle?.fontSize?.resolvePx() ?: style.fontSizePx
+            if (resolvedFontSizePx != null) {
+                nativeWidget.attributes["fontSizePx"] = resolvedFontSizePx
+            } else {
+                nativeWidget.attributes.remove("fontSizePx")
+            }
+            val resolvedWeight = lastComponentStyle?.fontWeight?.name
+                ?: styleSnapshot.fontWeight?.name
+                ?: style.fontWeightNumeric
+            if (resolvedWeight != null) {
+                nativeWidget.attributes["fontWeight"] = resolvedWeight
+            } else {
+                nativeWidget.attributes.remove("fontWeight")
+            }
+        } else {
+            nativeWidget.attributes.remove("textColor")
+            nativeWidget.attributes.remove("fontSizePx")
+            nativeWidget.attributes.remove("fontWeight")
+        }
+        style.accentColor?.let { nativeWidget.attributes["accentColor"] = it }
+        val resolvedOp = (style.opacity ?: lastComponentStyle?.opacity ?: 1f).coerceIn(0f, 1f)
+        applyResolvedOpacity(resolvedOp, notifyTree = false)
+        if (style.transition != null) nativeWidget.attributes["transition"] = style.transition else nativeWidget.attributes.remove("transition")
+        if (style.backgroundImageUrl != null) nativeWidget.attributes["backgroundImageUrl"] = style.backgroundImageUrl else nativeWidget.attributes.remove("backgroundImageUrl")
+        if (style.textShadow != null) nativeWidget.attributes["textShadow"] = style.textShadow else nativeWidget.attributes.remove("textShadow")
+        if (style.boxShadow != null) nativeWidget.attributes["boxShadow"] = style.boxShadow else nativeWidget.attributes.remove("boxShadow")
         if (!acceptsAestheticSkinStyles()) {
             nativeWidget.attributes.remove("backdropFilter")
             nativeWidget.attributes.remove("backdropBlurPx")
+        } else {
+            val bf = lastComponentStyle?.backdropFilter ?: style.backdropFilter
+            if (bf != null && !bf.isNone) {
+                nativeWidget.attributes["backdropFilter"] = bf
+                bf.blur?.resolvePx()?.takeIf { it > 0f }?.let {
+                    nativeWidget.attributes["backdropBlurPx"] = it
+                } ?: nativeWidget.attributes.remove("backdropBlurPx")
+            } else {
+                nativeWidget.attributes.remove("backdropFilter")
+                nativeWidget.attributes.remove("backdropBlurPx")
+            }
+        }
+        val computedFgFilter = lastComponentStyle?.filter ?: style.filter
+        if (computedFgFilter != null && !computedFgFilter.isNone) {
+            nativeWidget.attributes["cssFilter"] = computedFgFilter
+        } else {
+            nativeWidget.attributes.remove("cssFilter")
+        }
+        if (style.visibility == CssVisibility.HIDDEN || style.visibility == CssVisibility.COLLAPSE) {
+            nativeWidget.attributes["visibilityHidden"] = true
+        } else if (lastComponentStyle?.visibility != CssVisibility.HIDDEN &&
+            lastComponentStyle?.visibility != CssVisibility.COLLAPSE &&
+            styleSnapshot.visibility != BootstrapVisibility.INVISIBLE
+        ) {
+            nativeWidget.attributes.remove("visibilityHidden")
         }
         nativeWidget.attributes["computedStyle"] = style
+        if (prevStyle == null ||
+            prevStyle.padding != style.padding ||
+            prevStyle.paddingTop != style.paddingTop ||
+            prevStyle.paddingRight != style.paddingRight ||
+            prevStyle.paddingBottom != style.paddingBottom ||
+            prevStyle.paddingLeft != style.paddingLeft ||
+            prevStyle.margin != style.margin ||
+            prevStyle.marginTop != style.marginTop ||
+            prevStyle.marginRight != style.marginRight ||
+            prevStyle.marginBottom != style.marginBottom ||
+            prevStyle.marginLeft != style.marginLeft
+        ) {
+            syncResolvedBoxSpacing(nativeWidget.cachedAllClassTokens)
+        }
+        syncResolvedLayoutAndInteractionAttributes()
+        notifyStyleSyncedIfReady()
+        notifyTreeInvalidated()
     }
 
-    override fun acceptsAestheticSkinStyles(): Boolean {
+    private fun syncResolvedBoxSpacing(tokens: Set<String>) {
+        val styledPad = (nativeWidget.attributes["styledButtonVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
+            ?: (nativeWidget.attributes["styledComponentVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
+            ?: (nativeWidget.attributes["styledContainerVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
+        val resolvedPad = explicitPadding ?: styledPad ?: run {
+            val pAll = styleSnapshot.paddingAll?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_P)
+            val pX = styleSnapshot.paddingX?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_PX) ?: pAll
+            val pY = styleSnapshot.paddingY?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_PY) ?: pAll
+            val pTop = styleSnapshot.paddingTop?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_PT) ?: pY ?: 0
+            val pBottom = styleSnapshot.paddingBottom?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_PB) ?: pY ?: 0
+            val pLeft = styleSnapshot.paddingStart?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_PS) ?: pX ?: 0
+            val pRight = styleSnapshot.paddingEnd?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_PE) ?: pX ?: 0
+            val comp = lastComponentStyle
+            val sheet = lastComputedStyle
+            if (comp != null || sheet != null) {
+                val refW = nativeWidget.bounds.width.toFloat()
+                val refH = nativeWidget.bounds.height.toFloat()
+                val compBase = comp?.padding?.toEdgeInsets(refW, refH)
+                val sheetBase = sheet?.padding?.toEdgeInsets(refW, refH)
+                EdgeInsets(
+                    top = comp?.paddingTop?.resolvePx(refH)?.roundToInt()
+                        ?: compBase?.top
+                        ?: sheet?.paddingTop?.resolvePx(refH)?.roundToInt()
+                        ?: sheetBase?.top
+                        ?: pTop,
+                    right = comp?.paddingRight?.resolvePx(refW)?.roundToInt()
+                        ?: compBase?.right
+                        ?: sheet?.paddingRight?.resolvePx(refW)?.roundToInt()
+                        ?: sheetBase?.right
+                        ?: pRight,
+                    bottom = comp?.paddingBottom?.resolvePx(refH)?.roundToInt()
+                        ?: compBase?.bottom
+                        ?: sheet?.paddingBottom?.resolvePx(refH)?.roundToInt()
+                        ?: sheetBase?.bottom
+                        ?: pBottom,
+                    left = comp?.paddingLeft?.resolvePx(refW)?.roundToInt()
+                        ?: compBase?.left
+                        ?: sheet?.paddingLeft?.resolvePx(refW)?.roundToInt()
+                        ?: sheetBase?.left
+                        ?: pLeft
+                )
+            } else {
+                EdgeInsets(top = pTop, right = pRight, bottom = pBottom, left = pLeft)
+            }
+        }
+        nativeWidget.padding = resolvedPad
+
+        val resolvedMargin = explicitMargin ?: run {
+            val mAll = styleSnapshot.marginAll?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_M)
+            val mX = styleSnapshot.marginX?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_MX) ?: mAll
+            val mY = styleSnapshot.marginY?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_MY) ?: mAll
+            val mTop = styleSnapshot.marginTop?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_MT) ?: mY ?: 0
+            val mBottom = styleSnapshot.marginBottom?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_MB) ?: mY ?: 0
+            val mLeft = styleSnapshot.marginStart?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_MS) ?: mX ?: 0
+            val mRight = styleSnapshot.marginEnd?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_ME) ?: mX ?: 0
+            val comp = lastComponentStyle
+            val sheet = lastComputedStyle
+            if (comp != null || sheet != null) {
+                val refW = nativeWidget.bounds.width.toFloat()
+                val refH = nativeWidget.bounds.height.toFloat()
+                val compBase = comp?.margin?.toEdgeInsets(refW, refH)
+                val sheetBase = sheet?.margin?.toEdgeInsets(refW, refH)
+                EdgeInsets(
+                    top = comp?.marginTop?.resolvePx(refH)?.roundToInt()
+                        ?: compBase?.top
+                        ?: sheet?.marginTop?.resolvePx(refH)?.roundToInt()
+                        ?: sheetBase?.top
+                        ?: mTop,
+                    right = comp?.marginRight?.resolvePx(refW)?.roundToInt()
+                        ?: compBase?.right
+                        ?: sheet?.marginRight?.resolvePx(refW)?.roundToInt()
+                        ?: sheetBase?.right
+                        ?: mRight,
+                    bottom = comp?.marginBottom?.resolvePx(refH)?.roundToInt()
+                        ?: compBase?.bottom
+                        ?: sheet?.marginBottom?.resolvePx(refH)?.roundToInt()
+                        ?: sheetBase?.bottom
+                        ?: mBottom,
+                    left = comp?.marginLeft?.resolvePx(refW)?.roundToInt()
+                        ?: compBase?.left
+                        ?: sheet?.marginLeft?.resolvePx(refW)?.roundToInt()
+                        ?: sheetBase?.left
+                        ?: mLeft
+                )
+            } else {
+                EdgeInsets(top = mTop, right = mRight, bottom = mBottom, left = mLeft)
+            }
+        }
+        nativeWidget.margin = resolvedMargin
+    }
+
+    open fun acceptsAestheticSkinStyles(): Boolean {
         if (isHostedInCustomStyleEngine()) return true
+        if (this is DesktopStyledComponentNativeImpl<*>) return true
         val role = nativeWidget.attributes["componentRole"] as? String ?: ""
         return role == "styled-button" ||
+            role == "styled-component" ||
             role == "styled-container" ||
             nativeWidget.attributes.containsKey("styledButtonVisuals") ||
+            nativeWidget.attributes.containsKey("styledComponentVisuals") ||
             nativeWidget.attributes.containsKey("styledContainerVisuals")
     }
 
-    override fun acceptsTypographyStyles(): Boolean {
+    open fun acceptsTypographyStyles(): Boolean {
         if (acceptsAestheticSkinStyles()) return true
         val cls = nativeWidget.nativeClassName.lowercase()
         val role = (nativeWidget.attributes["componentRole"] as? String ?: "").lowercase()
         return cls in TYPOGRAPHY_WIDGET_CLASSES || role in TYPOGRAPHY_WIDGET_ROLES
     }
 
-    override fun isHostedInCustomStyleEngine(): Boolean {
+    open fun isHostedInCustomStyleEngine(): Boolean {
         var cur: DesktopNativeWidget? = nativeWidget
         while (cur != null) {
             if (cur.attributes["customStyleEngine"] == true ||
@@ -1080,30 +1548,22 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         return false
     }
 
-    override fun resolveNativeControlTint(darkTheme: Boolean): RgbaColor? {
-        val semanticType = styleSnapshot.type?.takeIf { it != BootstrapType.NONE }
-            ?: styleSnapshot.backgroundType?.takeIf { it != BootstrapType.NONE }
-            ?: return null
-        return DesktopControlTintRenderUtil.resolveBootstrapTintOrNull(semanticType, darkTheme)
-    }
-
-    override fun resolveNativeControlForeground(darkTheme: Boolean): RgbaColor? {
-        styleSnapshot.textColorType?.takeIf { it != BootstrapType.NONE }?.let {
-            return BootstrapColorPalette.resolveColor(it, darkTheme)
-        }
-        val semanticType = styleSnapshot.type?.takeIf { it != BootstrapType.NONE } ?: return null
-        return DesktopControlTintRenderUtil.resolveBootstrapForegroundOrNull(
-            type = semanticType,
-            outlineMode = styleSnapshot.outline,
-            hovered = hoveredState,
-            pressed = activePressedState,
-            darkMode = darkTheme
-        )
+    open fun acceptsBootstrapSemanticColors(): Boolean {
+        if (isHostedInCustomStyleEngine()) return true
+        if (this is ButtonNativeImpl<*>) return true
+        val tagName = (nativeWidget.attributes["tagName"] as? String)
+            ?: (nativeWidget.attributes["data-genericui-tag"] as? String)
+            ?: nativeWidget.nativeClassName
+        return AestheticStylePolicy.isBootstrapSpecificNonControlTagOrPrefix(tagName, componentClassPrefix) ||
+            AestheticStylePolicy.isStandardButtonTagOrPrefix(tagName, componentClassPrefix)
     }
 
     override fun setBackgroundGradient(gradient: Gradient?) {
-        backgroundGradientState = gradient
-        nativeWidget.attributes["backgroundGradient"] = gradient
+        if (backgroundGradientState != gradient || nativeWidget.attributes["backgroundGradient"] != gradient) {
+            backgroundGradientState = gradient
+            nativeWidget.attributes["backgroundGradient"] = gradient
+            notifyTreeInvalidated()
+        }
     }
 
     override fun getBackgroundGradient(): Gradient? =
@@ -1121,7 +1581,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     override fun isHoveredState(): Boolean = hoveredState
 
     override fun setFocusedState(focused: Boolean) {
-        val effective = focused && nativeWidget.enabled
+        val effective = focused && nativeWidget.enabled && focusableState && nativeWidget.isEffectivelyFocusable()
         if (focusedState == effective) return
         focusedState = effective
         nativeWidget.attributes["focused"] = effective
@@ -1140,15 +1600,37 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     fun getComputedStyle(): ComputedStyle? = lastComputedStyle
 
-    fun resolveEffectiveStyle(): ComputedStyle? =
-        lastComputedStyle?.resolveForState(
-            hovered = hoveredState,
-            focused = focusedState,
-            active = activePressedState,
-            enabled = nativeWidget.enabled
+    fun resolveEffectiveStyle(): ComputedStyle? {
+        val base = lastComputedStyle ?: return null
+        val hov = hoveredState
+        val foc = focusedState
+        val act = activePressedState
+        val ena = nativeWidget.enabled
+        if (base === cachedEffectiveBase &&
+            hov == cachedEffectiveHovered &&
+            foc == cachedEffectiveFocused &&
+            act == cachedEffectiveActive &&
+            ena == cachedEffectiveEnabled
+        ) {
+            return cachedEffectiveResult
+        }
+        val resolved = base.resolveForState(
+            hovered = hov,
+            focused = foc,
+            active = act,
+            enabled = ena
         )
+        cachedEffectiveBase = base
+        cachedEffectiveHovered = hov
+        cachedEffectiveFocused = foc
+        cachedEffectiveActive = act
+        cachedEffectiveEnabled = ena
+        cachedEffectiveResult = resolved
+        return resolved
+    }
 
     fun resolveSemanticBootstrapColor(darkTheme: Boolean = false): RgbaColor? {
+        if (!acceptsBootstrapSemanticColors()) return null
         val semanticType = styleSnapshot.type?.takeIf { it.isSemantic }
             ?: styleSnapshot.backgroundType?.takeIf { it.isSemantic }
             ?: return null
@@ -1156,6 +1638,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
     }
 
     fun resolveSemanticBootstrapForeground(darkTheme: Boolean = false): RgbaColor? {
+        if (!acceptsBootstrapSemanticColors()) return null
         styleSnapshot.textColorType?.takeIf { it.isSemantic }?.let {
             return BootstrapColorPalette.resolveColor(it, darkTheme)
         }
@@ -1188,7 +1671,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             ?: lastComponentStyle?.backgroundImage?.gradient
             ?: backgroundGradientState
 
-    override fun supportsNativeTransitions(): Boolean = true
+    override fun supportsNativeTransitions(): Boolean = false
 
     override fun configureNativeTransitions(specs: List<CssTransitionSpec>) {
         nativeWidget.attributes["nativeTransitionSpecs"] = specs
@@ -1200,10 +1683,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         toValue: String,
         spec: CssTransitionSpec,
         onComplete: () -> Unit
-    ): Boolean {
-        nativeWidget.attributes["activeNativeTransition:$property"] = "$fromValue->$toValue@${spec.durationMs}ms"
-        return true
-    }
+    ): Boolean = false
 
     override fun setOnClick(listener: (() -> Unit)?) {
         onClickListener = listener
@@ -1261,6 +1741,37 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     companion object {
         private val WHITESPACE_REGEX = Regex("\\s+")
+        private val SPACING_SCALE_PX = intArrayOf(0, 4, 8, 16, 24, 48)
+        private fun spacingTokens(prefix: String): Array<String> = Array(6) { "$prefix-$it" }
+        private val TOKENS_P = spacingTokens("p")
+        private val TOKENS_PX = spacingTokens("px")
+        private val TOKENS_PY = spacingTokens("py")
+        private val TOKENS_PT = spacingTokens("pt")
+        private val TOKENS_PB = spacingTokens("pb")
+        private val TOKENS_PS = spacingTokens("ps")
+        private val TOKENS_PE = spacingTokens("pe")
+        private val TOKENS_M = spacingTokens("m")
+        private val TOKENS_MX = spacingTokens("mx")
+        private val TOKENS_MY = spacingTokens("my")
+        private val TOKENS_MT = spacingTokens("mt")
+        private val TOKENS_MB = spacingTokens("mb")
+        private val TOKENS_MS = spacingTokens("ms")
+        private val TOKENS_ME = spacingTokens("me")
+        private val TOKENS_GAP = spacingTokens("gap")
+        private val TOKENS_G = spacingTokens("g")
+        private val TOKENS_ROW_GAP = spacingTokens("row-gap")
+        private val TOKENS_GY = spacingTokens("gy")
+        private val TOKENS_COLUMN_GAP = spacingTokens("column-gap")
+        private val TOKENS_GX = spacingTokens("gx")
+
+        private fun spacingTokenPx(tokens: Set<String>, candidates: Array<String>): Int? {
+            if (tokens.isEmpty()) return null
+            for (scale in 0..5) {
+                if (candidates[scale] in tokens) return SPACING_SCALE_PX[scale]
+            }
+            return null
+        }
+
         private val TYPOGRAPHY_WIDGET_CLASSES = setOf(
             "label",
             "text",

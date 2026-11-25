@@ -14,6 +14,7 @@ import com.nexustools.genericui.style.color.ImageTintMode
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.theme.SystemThemeDetector
+import java.awt.AlphaComposite
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
@@ -32,24 +33,44 @@ import kotlinx.coroutines.Job
  */
 class SwingImageImpl : SwingBaseNativeImpl(
     object : JLabel() {
+        override fun contains(x: Int, y: Int): Boolean {
+            val impl = getClientProperty(CLIENT_PROPERTY_KEY) as? SwingBaseNativeImpl ?: return super.contains(x, y)
+            return impl.hitTestContains(this, x, y, super.contains(x, y))
+        }
+
         override fun paintComponent(g: Graphics?) {
-            val g2 = g as? Graphics2D
+            val componentOpacity = ((getClientProperty("opacity") as? Float) ?: 1f).coerceIn(0f, 1f)
+            if (componentOpacity <= SwingSurfacePaintUtil.OPACITY_SKIP_THRESHOLD) return
+            val g2 = g?.create() as? Graphics2D
             if (g2 != null) {
-                val aa = getClientProperty("antialiasing") as? Boolean ?: true
-                g2.setRenderingHint(
-                    RenderingHints.KEY_ANTIALIASING,
-                    if (aa) RenderingHints.VALUE_ANTIALIAS_ON else RenderingHints.VALUE_ANTIALIAS_OFF
-                )
-                g2.setRenderingHint(
-                    RenderingHints.KEY_INTERPOLATION,
-                    if (aa) RenderingHints.VALUE_INTERPOLATION_BICUBIC else RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR
-                )
-                g2.setRenderingHint(
-                    RenderingHints.KEY_RENDERING,
-                    if (aa) RenderingHints.VALUE_RENDER_QUALITY else RenderingHints.VALUE_RENDER_SPEED
-                )
+                try {
+                    if (componentOpacity < 0.999f) {
+                        g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, componentOpacity)
+                    }
+                    val aa = getClientProperty("antialiasing") as? Boolean ?: true
+                    g2.setRenderingHint(
+                        RenderingHints.KEY_ANTIALIASING,
+                        if (aa) RenderingHints.VALUE_ANTIALIAS_ON else RenderingHints.VALUE_ANTIALIAS_OFF
+                    )
+                    g2.setRenderingHint(
+                        RenderingHints.KEY_INTERPOLATION,
+                        if (aa) RenderingHints.VALUE_INTERPOLATION_BICUBIC else RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR
+                    )
+                    g2.setRenderingHint(
+                        RenderingHints.KEY_RENDERING,
+                        if (aa) RenderingHints.VALUE_RENDER_QUALITY else RenderingHints.VALUE_RENDER_SPEED
+                    )
+                    val ownerImpl = getClientProperty(CLIENT_PROPERTY_KEY) as? SwingImageImpl
+                    val drawn = if (ownerImpl != null) ownerImpl.paintScaledImageIfReady(g2, this) else false
+                    if (!drawn) {
+                        super.paintComponent(g2)
+                    }
+                } finally {
+                    g2.dispose()
+                }
+            } else {
+                super.paintComponent(g)
             }
-            super.paintComponent(g)
         }
     },
     "img-fluid"
@@ -305,17 +326,84 @@ class SwingImageImpl : SwingBaseNativeImpl(
         )
     }
 
+    internal var cachedBufferedImage: java.awt.image.BufferedImage? = null
+
+    internal fun paintScaledImageIfReady(g2: Graphics2D, label: JLabel): Boolean {
+        val img = cachedBufferedImage ?: (label.icon as? ImageIcon)?.image ?: return false
+        val iw = img.getWidth(null)
+        val ih = img.getHeight(null)
+        val w = label.width
+        val h = label.height
+        if (iw <= 0 || ih <= 0 || w <= 0 || h <= 0) return false
+        when (objectFitVal) {
+            ObjectFit.FILL -> {
+                g2.drawImage(img, 0, 0, w, h, null)
+            }
+            ObjectFit.COVER -> {
+                val scale = maxOf(w.toDouble() / iw.toDouble(), h.toDouble() / ih.toDouble())
+                val dw = (iw * scale).toInt().coerceAtLeast(1)
+                val dh = (ih * scale).toInt().coerceAtLeast(1)
+                val dx = (w - dw) / 2
+                val dy = (h - dh) / 2
+                val prevClip = g2.clip
+                g2.clipRect(0, 0, w, h)
+                g2.drawImage(img, dx, dy, dw, dh, null)
+                g2.clip = prevClip
+            }
+            ObjectFit.NONE -> {
+                val dx = (w - iw) / 2
+                val dy = (h - ih) / 2
+                val prevClip = g2.clip
+                g2.clipRect(0, 0, w, h)
+                g2.drawImage(img, dx, dy, iw, ih, null)
+                g2.clip = prevClip
+            }
+            ObjectFit.SCALE_DOWN -> {
+                val scale = minOf(1.0, w.toDouble() / iw.toDouble(), h.toDouble() / ih.toDouble())
+                val dw = (iw * scale).toInt().coerceAtLeast(1)
+                val dh = (ih * scale).toInt().coerceAtLeast(1)
+                g2.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh, null)
+            }
+            ObjectFit.CONTAIN -> {
+                val scale = minOf(w.toDouble() / iw.toDouble(), h.toDouble() / ih.toDouble())
+                val dw = (iw * scale).toInt().coerceAtLeast(1)
+                val dh = (ih * scale).toInt().coerceAtLeast(1)
+                g2.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh, null)
+            }
+        }
+        return true
+    }
+
+    internal fun measureNaturalOrScaledSize(availableWidthPx: Int, explicitHeightPx: Int?): com.nexustools.genericui.geometry.Size {
+        val natW = renderedBuffer?.width ?: cachedBufferedImage?.width ?: nativeWidget.icon?.iconWidth ?: 48
+        val natH = renderedBuffer?.height ?: cachedBufferedImage?.height ?: nativeWidget.icon?.iconHeight ?: 48
+        val safeNatW = natW.coerceAtLeast(1)
+        val safeNatH = natH.coerceAtLeast(1)
+        if (explicitHeightPx != null && explicitHeightPx > 0) {
+            val scaledW = ((safeNatW.toDouble() / safeNatH.toDouble()) * explicitHeightPx).toInt().coerceAtLeast(1)
+            return com.nexustools.genericui.geometry.Size(scaledW.coerceAtMost(availableWidthPx.coerceAtLeast(1)), explicitHeightPx)
+        }
+        if (availableWidthPx in 1 until safeNatW) {
+            val scaledH = ((safeNatH.toDouble() / safeNatW.toDouble()) * availableWidthPx).toInt().coerceAtLeast(1)
+            return com.nexustools.genericui.geometry.Size(availableWidthPx, scaledH)
+        }
+        return com.nexustools.genericui.geometry.Size(safeNatW, safeNatH)
+    }
+
     private fun applyBufferIcon(rawBuffer: ImageBuffer) {
         val effective = resolveEffectiveBuffer(rawBuffer)
         renderedBuffer = effective
         val bimg = SwingControlTintRenderUtil.imageBufferToBufferedImage(effective)
+        cachedBufferedImage = bimg
         nativeWidget.putClientProperty("imageBuffer", effective)
         nativeWidget.icon = ImageIcon(bimg)
         nativeWidget.text = ""
+        invalidateLayoutHierarchy()
     }
 
     private fun applyDisplayOnlyBuffer(placeholderBuffer: ImageBuffer) {
         val bimg = SwingControlTintRenderUtil.imageBufferToBufferedImage(placeholderBuffer)
+        cachedBufferedImage = bimg
         nativeWidget.putClientProperty("placeholderShowing", true)
         nativeWidget.icon = ImageIcon(bimg)
         nativeWidget.text = ""

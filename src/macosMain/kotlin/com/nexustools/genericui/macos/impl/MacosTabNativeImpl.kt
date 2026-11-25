@@ -1,65 +1,80 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.macos.impl
 
+import com.nexustools.genericui.component.tabs.TabIconPlacement
+import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTabNativeImpl
-import com.nexustools.genericui.enums.bootstrap.BootstrapType
-import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.macos.MacosViewHandle
-import com.nexustools.genericui.macos.render.MacosControlRenderUtil
-import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
-import com.nexustools.genericui.style.css.ComponentStyle
-import com.nexustools.genericui.style.css.ComputedStyle
 
 /**
- * macOS AppKit `NSTabViewItem` implementation of [com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl].
+ * macOS AppKit retained tab header item implementation of [DesktopTabNativeImpl].
  */
-open class MacosTabNativeImpl(
-    nativeWidget: MacosViewHandle = MacosViewHandle("NSTabViewItem"),
-    closable: Boolean = false
-) : DesktopTabNativeImpl<MacosViewHandle>(nativeWidget, closable) {
+class MacosTabNativeImpl(
+    nativeWidget: MacosViewHandle,
+    initialClosable: Boolean = false
+) : DesktopTabNativeImpl<MacosViewHandle>(nativeWidget, initialClosable) {
 
-    init {
-        syncAppearance()
-    }
-
-    protected open fun syncAppearance() {
-        MacosControlRenderUtil.syncStandardControlAppearance(this, "NSTabViewItem")
-    }
-
-    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
-        MacosControlRenderUtil.renderTab(this, renderContext, bounds)
+    internal var onTabUpdatedHook: (() -> Unit)? = null
+    internal var onTabSelectedChangedHook: ((Boolean) -> Unit)? = null
 
     override fun setTitleNative(title: String) {
         super.setTitleNative(title)
-        syncAppearance()
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setIconNative(icon: String?) {
+        super.setIconNative(icon)
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setIconSizePxNative(sizePx: Int) {
+        super.setIconSizePxNative(sizePx)
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setIconPlacementNative(placement: TabIconPlacement) {
+        super.setIconPlacementNative(placement)
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setClosableNative(closable: Boolean) {
+        super.setClosableNative(closable)
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setDirtyNative(dirty: Boolean) {
+        super.setDirtyNative(dirty)
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setPinnedNative(pinned: Boolean) {
+        super.setPinnedNative(pinned)
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setEditableNative(editable: Boolean) {
+        super.setEditableNative(editable)
+        onTabUpdatedHook?.invoke()
+    }
+
+    override fun setBadgeNative(badgeText: String?, variantCss: String?) {
+        super.setBadgeNative(badgeText, variantCss)
+        onTabUpdatedHook?.invoke()
     }
 
     override fun setSelectedNative(selected: Boolean) {
         super.setSelectedNative(selected)
-        syncAppearance()
+        val hook = onTabSelectedChangedHook
+        if (hook != null) {
+            hook.invoke(selected)
+        } else {
+            onTabUpdatedHook?.invoke()
+        }
     }
 
-    override fun setType(type: BootstrapType?) {
-        super.setType(type)
-        syncAppearance()
-    }
-
-    override fun setBackgroundType(type: BootstrapType?) {
-        super.setBackgroundType(type)
-        syncAppearance()
-    }
-
-    override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
-        super.applyComponentBootstrap(bootstrap)
-        syncAppearance()
-    }
-
-    override fun applyComponentStyle(style: ComponentStyle) {
-        super.applyComponentStyle(style)
-        syncAppearance()
-    }
-
-    override fun applyComputedStyle(style: ComputedStyle) {
-        super.applyComputedStyle(style)
-        syncAppearance()
+    override fun setCustomHeaderComponentNative(customImpl: NativeImpl<*>?) {
+        super.setCustomHeaderComponentNative(customImpl)
+        onTabUpdatedHook?.invoke()
     }
 }

@@ -1,156 +1,106 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.gtk
 
-import com.nexustools.genericui.component.shell.Application
+import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl
-import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.geometry.Rect
-import com.nexustools.genericui.gtk.render.GtkControlRenderUtil
-import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
-import com.nexustools.genericui.style.css.ComponentStyle
-import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.gtk.widget.GtkInteractiveSurfaceWidget
+import com.nexustools.genericui.gtk.widget.GtkRetainedContainerSupport
+import com.nexustools.genericui.gtk.widget.GtkSurfaceRenderHelper
+import com.nexustools.genericui.gtk.widget.GtkWidgetLifecycleBridge
+import com.nexustools.genericui.linux.style.LinuxBackdropFilterController
+import com.nexustools.genericui.style.css.CssTransform
 import com.nexustools.genericui.style.css.StyledVisualSpec
-import com.nexustools.genericui.style.theme.SystemThemeDetector
-import com.nexustools.genericui.style.transition.CssTransitionSpec
+import kotlinx.cinterop.COpaquePointer
 
 /**
- * GTK4 / Cairo `GtkBox` implementation of [com.nexustools.genericui.nativeimpl.layout.StyledContainerNativeImpl]
- * supporting translucent RGBA backgrounds, linear/radial gradients, rounded borders, and `TextBubble` pointer
- * rendering while ignoring `backdrop-filter` blur on desktop.
+ * Retained GTK4 custom-styled container rendering gradients, CSS borders (solid/dashed/dotted/double),
+ * box shadows, all 10 `backdrop-filter` ops via [LinuxBackdropFilterController], and GSK/Cairo
+ * foreground filters behind a `GtkCustomLayout` child container (`GtkOverlay`).
  */
-class GtkStyledContainerNativeImpl(
-    nativeWidget: GtkWidgetHandle = GtkWidgetHandle("GtkBox_Styled"),
+open class GtkStyledContainerNativeImpl(
+    nativeWidget: GtkWidgetHandle = GtkWidgetHandle("GtkOverlay_StyledContainer"),
     classPrefix: String = "styled-container",
-    val tagName: String = "div"
-) : DesktopStyledContainerNativeImpl<GtkWidgetHandle>(nativeWidget, classPrefix) {
-
-    private var explicitStyledVisuals: StyledVisualSpec = StyledVisualSpec()
+    tagName: String = "div"
+) : DesktopStyledContainerNativeImpl<GtkWidgetHandle>(nativeWidget, classPrefix, tagName) {
 
     init {
         nativeWidget.attributes["tagName"] = tagName
         nativeWidget.attributes["useSystemControlAppearance"] = "false"
-        syncGtkStyledContainerVisuals()
-    }
-
-    private fun isTextBubbleComponent(): Boolean {
-        val raw = "$tagName $componentClassPrefix".trim().lowercase()
-        val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
-        return tokens.any {
-            val norm = it.removePrefix("genericui:")
-            norm == "text-bubble" || norm == "textbubble" || norm == "gui-text-bubble"
-        }
-    }
-
-    private fun syncGtkStyledContainerVisuals() {
-        val effectiveTheme = Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()
-        val isDark = effectiveTheme == ThemeMode.DARK
-        nativeWidget.attributes["effectiveThemeMode"] = effectiveTheme
-        nativeWidget.attributes["gtkPreferDarkTheme"] = isDark
-        nativeWidget.attributes["adwColorScheme"] = if (isDark) "ADW_COLOR_SCHEME_FORCE_DARK" else "ADW_COLOR_SCHEME_FORCE_LIGHT"
-        nativeWidget.attributes["useSystemControlAppearance"] = "false"
-
-        val resolved = getStyledVisuals()
-        nativeWidget.attributes["styledVisuals"] = resolved
-        val blurPx = resolved.backdropBlurPx ?: resolved.backdropFilter?.blur?.resolvePx()
-        if (!isTextBubbleComponent() && blurPx != null && blurPx > 0f) {
-            nativeWidget.attributes["backdropBlurPx"] = blurPx
-        } else {
-            nativeWidget.attributes.remove("backdropBlurPx")
-        }
-        val bf = resolved.backdropFilter
-        if (!isTextBubbleComponent() && bf != null && !bf.isNone) {
-            nativeWidget.attributes["backdropFilter"] = bf
-        } else {
-            nativeWidget.attributes.remove("backdropFilter")
-        }
-        resolved.backgroundColor?.let { nativeWidget.attributes["backgroundColor"] = it }
-        resolved.backgroundGradient?.let {
-            setBackgroundGradient(it)
-            nativeWidget.attributes["backgroundGradient"] = it
-        }
-        resolved.textColor?.let { nativeWidget.attributes["textColor"] = it }
-        resolved.borderColor?.let { nativeWidget.attributes["borderColor"] = it }
-        resolved.borderWidthPx?.let { nativeWidget.attributes["borderWidthPx"] = it }
-        resolved.borderStyle?.let { nativeWidget.attributes["borderStyle"] = it }
-        resolved.borderRadiusPx?.let { nativeWidget.attributes["borderRadiusPx"] = it }
-        resolved.opacity?.let {
-            val op = it.coerceIn(0f, 1f)
-            nativeWidget.opacity = op
-            nativeWidget.attributes["opacity"] = op
-        }
-        resolved.padding?.let { nativeWidget.padding = it }
-        nativeWidget.notifyTreeInvalidated()
-    }
-
-    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
-        GtkControlRenderUtil.renderStyledContainer(this, renderContext, bounds)
-
-    override fun setStyledVisuals(visuals: StyledVisualSpec) {
-        explicitStyledVisuals = visuals
-        super.setStyledVisuals(visuals)
-        syncGtkStyledContainerVisuals()
-    }
-
-    override fun getStyledVisuals(): StyledVisualSpec {
-        val isDark = (Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()) == ThemeMode.DARK
-        val computedBase = StyledVisualSpec.fromComponentAndComputed(
-            componentStyle = lastComponentStyle,
-            computedStyle = getComputedStyle(),
-            snapshot = styleSnapshot,
-            darkTheme = isDark
+        nativeWidget.hasCustomSurfaceBackground = true
+        val isLayered = GtkRetainedContainerSupport.isLayeredHostTagOrClass(
+            classPrefix = classPrefix,
+            tagName = tagName,
+            classes = nativeWidget.cachedAllClassTokens
         )
-        val merged = computedBase.mergeWith(explicitStyledVisuals)
-        return if (isTextBubbleComponent()) merged.withoutBackdropFilter() else merged
+        layoutController = GtkRetainedContainerSupport.initializeContainer(
+            host = this,
+            isLayeredHost = isLayered,
+            useSurfaceOverlay = true,
+            surfacePainter = { cr, width, height -> paintStyledContainerSurface(cr, width, height) }
+        )
     }
 
-    override fun setAttribute(name: String, value: String?) {
-        if (
-            isTextBubbleComponent() &&
-            (
-                name.equals("backdropBlurPx", ignoreCase = true) ||
-                    name.equals("backdrop-filter", ignoreCase = true) ||
-                    name.equals("-webkit-backdrop-filter", ignoreCase = true)
-                )
-        ) {
-            nativeWidget.attributes.remove("backdropBlurPx")
-            nativeWidget.attributes.remove("backdropFilter")
-            return
-        }
-        super.setAttribute(name, value)
-    }
-
-    override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
-        super.applyComponentBootstrap(bootstrap)
-        syncGtkStyledContainerVisuals()
-    }
-
-    override fun applyComponentStyle(style: ComponentStyle) {
-        super.applyComponentStyle(style)
-        syncGtkStyledContainerVisuals()
-    }
-
-    override fun applyComputedStyle(style: ComputedStyle) {
-        super.applyComputedStyle(style)
-        syncGtkStyledContainerVisuals()
-    }
-
-    override fun runNativeTransition(
-        property: String,
-        fromValue: String?,
-        toValue: String,
-        spec: CssTransitionSpec,
-        onComplete: () -> Unit
-    ): Boolean {
-        val handled = super.runNativeTransition(property, fromValue, toValue, spec, onComplete)
-        if (property.equals("opacity", ignoreCase = true)) {
-            val fromAlpha = (fromValue?.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
-            val targetAlpha = (toValue.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
-            nativeWidget.attributes["transitionFromOpacity"] = fromAlpha
-            nativeWidget.attributes["transitionToOpacity"] = targetAlpha
-            setOpacity(targetAlpha)
-            if (spec.durationMs <= 0f) {
-                onComplete()
+    private fun paintStyledContainerSurface(cr: COpaquePointer, width: Int, height: Int) {
+        if (nativeWidget.interactiveSurfaceSpec != null) {
+            if (GtkInteractiveSurfaceWidget.paintInteractiveSurface(nativeWidget, cr, width, height)) {
+                return
             }
         }
-        return handled
+        val dark = GtkRetainedContainerSupport.resolveDarkTheme()
+        val visuals = getStyledVisuals()
+        val computed = getComputedStyle()
+        val paintSpec = GtkSurfaceRenderHelper.fromStyledVisualSpec(
+            spec = visuals,
+            cornerRadii = computed?.borderRadius,
+            backdropFilter = nativeWidget.attributes["backdropFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.backdropFilter,
+            foregroundFilter = nativeWidget.attributes["cssFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.filter,
+            opacity = getOpacity(),
+            darkTheme = dark
+        )
+        val hasBackdrop = GtkSurfaceRenderHelper.effectiveBackdropFilter(paintSpec)?.let {
+            LinuxBackdropFilterController.shared.hasActiveEffects(it)
+        } == true
+        val behindCapture: (() -> IntArray?)? = if (hasBackdrop) {
+            { GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(this, width, height) }
+        } else {
+            null
+        }
+        GtkSurfaceRenderHelper.paintSurface(
+            cr = cr,
+            width = width,
+            height = height,
+            spec = paintSpec,
+            behindBgraCapture = behindCapture
+        )
+    }
+
+    override fun onChildAddedNative(childImpl: NativeImpl<*>, index: Int) {
+        GtkRetainedContainerSupport.attachChildWidgetIfRealized(this, childImpl)
+    }
+
+    override fun onChildRemovedNative(childImpl: NativeImpl<*>) {
+        GtkRetainedContainerSupport.detachChildWidget(this, childImpl)
+    }
+
+    override fun onChildrenClearedNative() {
+        GtkRetainedContainerSupport.clearChildWidgets(this)
+    }
+
+    override fun onNativeBoundsChanged(rect: Rect) = GtkWidgetLifecycleBridge.onBoundsChanged(this, rect)
+    override fun onNativeVisibilityChanged(visible: Boolean) = GtkWidgetLifecycleBridge.onVisibilityChanged(this, visible)
+    override fun onNativeEnabledChanged(enabled: Boolean) = GtkWidgetLifecycleBridge.onEnabledChanged(this, enabled)
+    override fun onNativeOpacityChanged(opacity: Float) = GtkWidgetLifecycleBridge.onOpacityChanged(this, opacity)
+    override fun onNativeTooltipChanged(tooltip: String?) = GtkWidgetLifecycleBridge.onTooltipChanged(this, tooltip)
+    override fun onNativeCursorChanged(cursor: CssCursorValue?) = GtkWidgetLifecycleBridge.onCursorChanged(this, cursor)
+    override fun onNativePointerEventsChanged(pointerEventsNone: Boolean) = GtkWidgetLifecycleBridge.onPointerEventsChanged(this, pointerEventsNone)
+    override fun onNativeZIndexChanged(zIndex: Int) = GtkWidgetLifecycleBridge.onZIndexChanged(this, zIndex)
+    override fun onNativeTransformChanged(transform: CssTransform?) = GtkWidgetLifecycleBridge.onTransformChanged(this, transform)
+
+    override fun onNativeStyleSynced() {
+        GtkRetainedContainerSupport.syncOverflowPolicy(this)
+        GtkWidgetLifecycleBridge.onStyleSynced(this)
     }
 }

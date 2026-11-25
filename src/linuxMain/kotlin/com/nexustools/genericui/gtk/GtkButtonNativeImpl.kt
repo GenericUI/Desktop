@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package com.nexustools.genericui.gtk
 
 import com.nexustools.genericui.desktop.widget.DesktopButtonNativeImpl
@@ -5,127 +7,316 @@ import com.nexustools.genericui.enums.bootstrap.BootstrapSize
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
-import com.nexustools.genericui.gtk.render.GtkControlRenderUtil
+import com.nexustools.genericui.gtk.widget.GtkCustomLayoutManager
+import com.nexustools.genericui.gtk.widget.GtkRetainedContainerSupport
+import com.nexustools.genericui.gtk.widget.GtkWidgetLifecycleBridge
+import com.nexustools.genericui.linux.LinuxGlibGioBindings
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
+import com.nexustools.genericui.style.color.BootstrapColorPalette
+import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.style.css.CssCursorValue
+import com.nexustools.genericui.style.css.CssTransform
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
-import com.nexustools.genericui.style.transition.CssTransitionSpec
+import com.nexustools.genericui.style.theme.ThemeConfig
+import kotlinx.cinterop.COpaquePointer
+import kotlinx.cinterop.StableRef
+import kotlinx.cinterop.asStableRef
+import kotlinx.cinterop.reinterpret
+import kotlinx.cinterop.staticCFunction
 
 /**
- * GTK4 / Libadwaita `GtkButton` implementation of [com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl].
+ * Retained GTK4 button implementation always wrapping a genuine `GtkButton`.
  *
- * Non-styled [GtkButtonNativeImpl] instances use native GTK4 / Libadwaita control rendering (`ADW_COLOR_SCHEME_FORCE_DARK` /
- * `ADW_COLOR_SCHEME_FORCE_LIGHT` / `ADW_COLOR_SCHEME_DEFAULT` for Dark / Light / Auto themes), ignore aesthetic and
- * typography `ComponentStyle` overrides unless hosted in a custom style engine, and support [BootstrapType] tinting
- * via [GtkControlRenderUtil].
+ * - Default mode (`BootstrapType.NONE` and `!outline`) leaves the native `GtkButton` unmodified.
+ * - Semantic modes style the genuine `GtkButton` via Libadwaita/GTK4 CSS classes (`suggested-action`,
+ *   `destructive-action`, `flat`, `pill`, `gui-btn-*`) and a theme-derived `GtkCssProvider`.
  */
 open class GtkButtonNativeImpl(
     nativeWidget: GtkWidgetHandle = GtkWidgetHandle("GtkButton"),
     classPrefix: String = "btn"
 ) : DesktopButtonNativeImpl<GtkWidgetHandle>(nativeWidget, classPrefix) {
 
+    private var clickRef: StableRef<GtkButtonNativeImpl>? = null
+
     init {
-        syncGtkButtonAppearance()
+        nativeWidget.ownerImpl = this
+        syncButtonModeMetadata()
+        nativeWidget.widgetMaterializer = { materializeButtonWidget() }
     }
 
-    protected open fun syncGtkButtonAppearance() {
-        GtkControlRenderUtil.syncStandardControlAppearance(this, "gtk_render_background+gtk_render_frame[button]")
+    protected fun syncButtonModeMetadata() {
+        val nativeDefault = isNativeDefaultButtonMode()
+        nativeWidget.updateActiveGtkClassName("GtkButton")
+        nativeWidget.attributes["useSystemControlAppearance"] = nativeDefault.toString()
+        nativeWidget.onDrawSurfaceCairo = null
     }
 
-    override fun measureDesktopNode(parentWidthPx: Int, parentHeightPx: Int, dpiScale: Float): Size =
-        GtkControlRenderUtil.measureButton(this, dpiScale)
+    private fun materializeButtonWidget(): COpaquePointer? {
+        nativeWidget.realGtkWidgetPtr?.let { return it }
+        if (!Gtk4DynamicBindings.ensureGtkInitialized()) return null
+        val btn = Gtk4DynamicBindings.gtkButtonNew() ?: return null
+        Gtk4DynamicBindings.gtkWidgetSetFocusable(btn, true)
+        clickRef?.dispose()
+        val ref = StableRef.create(this)
+        clickRef = ref
+        LinuxGlibGioBindings.signalConnect(
+            instance = btn,
+            signalName = "clicked",
+            handler = gtkButtonClickedCb.reinterpret(),
+            userData = ref.asCPointer()
+        )
+        GtkWidgetLifecycleBridge.attachControllersAndState(
+            impl = this,
+            rootPtr = btn,
+            focusTargetPtr = btn,
+            isTextInput = false,
+            dispatchClickOnPrimaryRelease = false,
+            attachClickGesture = true
+        )
+        syncButtonModeMetadata()
+        syncLabelAndCssClassesToLiveWidget(btn)
+        return btn
+    }
 
-    override fun renderDesktopNode(renderContext: Any, bounds: Rect): Boolean =
-        GtkControlRenderUtil.renderButton(this, renderContext, bounds)
+    private fun resolveSemanticCssClasses(): Set<String> {
+        val out = LinkedHashSet<String>()
+        val bType = getType()?.takeIf { it != BootstrapType.NONE }
+            ?: getBackgroundType()?.takeIf { it != BootstrapType.NONE }
+        val outline = isOutline()
+        if (bType == null && !outline) {
+            return out
+        }
+        if ("rounded-pill" in nativeWidget.gtkCssClasses || (nativeWidget.attributes["roundedPill"] as? Boolean == true)) {
+            out.add("pill")
+        }
+        when {
+            bType == BootstrapType.LINK -> {
+                out.add("flat")
+                out.add("gui-btn-link")
+            }
+            outline -> {
+                out.add("gui-btn-outline")
+                val effective = bType ?: BootstrapType.SECONDARY
+                out.add("gui-btn-${effective.cssSuffix}")
+            }
+            bType != null -> {
+                out.add("gui-btn-${bType.cssSuffix}")
+                when (bType) {
+                    BootstrapType.PRIMARY -> out.add("suggested-action")
+                    BootstrapType.DANGER -> out.add("destructive-action")
+                    else -> Unit
+                }
+            }
+        }
+        return out
+    }
+
+    private fun syncLabelAndCssClassesToLiveWidget(
+        targetPtr: COpaquePointer? = nativeWidget.realGtkWidgetPtr
+    ) {
+        val ptr = targetPtr ?: return
+        val icon = getIcon()?.takeIf { it.isNotBlank() }
+        val text = getText()
+        val labelText = if (icon != null && text.isNotEmpty()) "$icon $text" else (icon ?: text)
+        Gtk4DynamicBindings.gtkButtonSetLabel(ptr, labelText)
+
+        ensureThemeButtonCssProvider()
+        for (cls in MANAGED_SEMANTIC_CLASSES) {
+            Gtk4DynamicBindings.gtkWidgetRemoveCssClass(ptr, cls)
+        }
+        for (cls in resolveSemanticCssClasses()) {
+            Gtk4DynamicBindings.gtkWidgetAddCssClass(ptr, cls)
+        }
+        Gtk4DynamicBindings.gtkWidgetQueueDraw(ptr)
+    }
+
+    override fun onButtonModeChanged() {
+        syncButtonModeMetadata()
+        syncLabelAndCssClassesToLiveWidget()
+    }
+
+    override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {
+        val ptr = nativeWidget.realGtkWidgetPtr
+        if (ptr != null) {
+            val (w, h) = GtkCustomLayoutManager.measureGtkWidgetIntrinsic(ptr, maxWidth, maxHeight)
+            return Size(w.coerceAtLeast(36), h.coerceAtLeast(32))
+        }
+        val base = super.measureIntrinsicSize(maxWidth, maxHeight)
+        val icon = getIcon()?.takeIf { it.isNotBlank() }
+        val label = getText()
+        val display = if (icon != null && label.isNotEmpty()) "$icon $label" else (icon ?: label)
+        val estW = (display.length * 8 + 24).coerceAtLeast(base.width).coerceAtLeast(36)
+        val estH = when (styleSnapshot.size) {
+            BootstrapSize.SMALL -> 28
+            BootstrapSize.LARGE -> 42
+            else -> 34
+        }.coerceAtLeast(base.height)
+        return Size(estW, estH)
+    }
 
     override fun setText(text: String) {
         super.setText(text)
-        syncGtkButtonAppearance()
+        syncLabelAndCssClassesToLiveWidget()
     }
 
     override fun setIcon(icon: String?) {
         super.setIcon(icon)
-        syncGtkButtonAppearance()
+        syncLabelAndCssClassesToLiveWidget()
     }
 
     override fun setSize(size: BootstrapSize?) {
         super.setSize(size)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
     }
-
-    override fun setAttribute(name: String, value: String?) {
-        if (
-            name.equals("backdropBlurPx", ignoreCase = true) ||
-            name.equals("backdrop-filter", ignoreCase = true) ||
-            name.equals("-webkit-backdrop-filter", ignoreCase = true)
-        ) {
-            nativeWidget.attributes.remove("backdropBlurPx")
-            return
-        }
-        super.setAttribute(name, value)
-    }
-
-    override fun setBackgroundGradient(gradient: Gradient?) {
-        super.setBackgroundGradient(null)
-        nativeWidget.attributes.remove("backgroundGradient")
-    }
-
-    override fun getBackgroundGradient(): Gradient? = null
 
     override fun setType(type: BootstrapType?) {
         super.setType(type)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
     }
 
     override fun setBackgroundType(type: BootstrapType?) {
         super.setBackgroundType(type)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
     }
 
     override fun setTextColorType(type: BootstrapType?) {
         super.setTextColorType(type)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
     }
 
     override fun setOutline(outline: Boolean) {
         super.setOutline(outline)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        super.setAttribute(name, value)
+        onButtonModeChanged()
+    }
+
+    override fun setBackgroundGradient(gradient: Gradient?) {
+        super.setBackgroundGradient(gradient)
+        onButtonModeChanged()
     }
 
     override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
         super.applyComponentBootstrap(bootstrap)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
     }
 
     override fun applyComponentStyle(style: ComponentStyle) {
         super.applyComponentStyle(style)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
     }
 
     override fun applyComputedStyle(style: ComputedStyle) {
         super.applyComputedStyle(style)
-        syncGtkButtonAppearance()
+        onButtonModeChanged()
     }
 
-    override fun runNativeTransition(
-        property: String,
-        fromValue: String?,
-        toValue: String,
-        spec: CssTransitionSpec,
-        onComplete: () -> Unit
-    ): Boolean {
-        val handled = super.runNativeTransition(property, fromValue, toValue, spec, onComplete)
-        if (property.equals("opacity", ignoreCase = true)) {
-            val fromAlpha = (fromValue?.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
-            val targetAlpha = (toValue.toFloatOrNull() ?: getOpacity()).coerceIn(0f, 1f)
-            nativeWidget.attributes["transitionFromOpacity"] = fromAlpha
-            nativeWidget.attributes["transitionToOpacity"] = targetAlpha
-            setOpacity(targetAlpha)
-            if (spec.durationMs <= 0f) {
-                onComplete()
+    override fun onNativeBoundsChanged(rect: Rect) = GtkWidgetLifecycleBridge.onBoundsChanged(this, rect)
+    override fun onNativeVisibilityChanged(visible: Boolean) = GtkWidgetLifecycleBridge.onVisibilityChanged(this, visible)
+    override fun onNativeEnabledChanged(enabled: Boolean) = GtkWidgetLifecycleBridge.onEnabledChanged(this, enabled)
+    override fun onNativeOpacityChanged(opacity: Float) = GtkWidgetLifecycleBridge.onOpacityChanged(this, opacity)
+    override fun onNativeTooltipChanged(tooltip: String?) = GtkWidgetLifecycleBridge.onTooltipChanged(this, tooltip)
+    override fun onNativeCursorChanged(cursor: CssCursorValue?) = GtkWidgetLifecycleBridge.onCursorChanged(this, cursor)
+    override fun onNativePointerEventsChanged(pointerEventsNone: Boolean) = GtkWidgetLifecycleBridge.onPointerEventsChanged(this, pointerEventsNone)
+    override fun onNativeZIndexChanged(zIndex: Int) = GtkWidgetLifecycleBridge.onZIndexChanged(this, zIndex)
+    override fun onNativeTransformChanged(transform: CssTransform?) = GtkWidgetLifecycleBridge.onTransformChanged(this, transform)
+    override fun onNativeStyleSynced() {
+        syncButtonModeMetadata()
+        syncLabelAndCssClassesToLiveWidget()
+        GtkWidgetLifecycleBridge.onStyleSynced(this)
+    }
+
+    override fun dispose() {
+        clickRef?.dispose()
+        clickRef = null
+        super.dispose()
+    }
+
+    companion object {
+        private val MANAGED_SEMANTIC_CLASSES = listOf(
+            "suggested-action",
+            "destructive-action",
+            "flat",
+            "pill",
+            "gui-btn-outline",
+            "gui-btn-primary",
+            "gui-btn-secondary",
+            "gui-btn-success",
+            "gui-btn-danger",
+            "gui-btn-warning",
+            "gui-btn-info",
+            "gui-btn-light",
+            "gui-btn-dark",
+            "gui-btn-link"
+        )
+
+        private var buttonCssProvider: COpaquePointer? = null
+        private var lastThemeKey: String? = null
+
+        private fun ensureThemeButtonCssProvider() {
+            val dark = GtkRetainedContainerSupport.resolveDarkTheme()
+            val cfg = BootstrapColorPalette.activeThemeConfig
+            val key = "$dark|${cfg.hashCode()}"
+            if (lastThemeKey == key && buttonCssProvider != null) return
+            val display = Gtk4DynamicBindings.gdkDisplayGetDefault() ?: return
+            val provider = buttonCssProvider ?: Gtk4DynamicBindings.gtkCssProviderNew()?.also { p ->
+                buttonCssProvider = p
+                Gtk4DynamicBindings.gtkStyleContextAddProviderForDisplay(display, p)
+            } ?: return
+            val css = buildButtonThemeCss(dark, cfg)
+            Gtk4DynamicBindings.gtkCssProviderLoadCss(provider, css)
+            lastThemeKey = key
+        }
+
+        private fun rgbaCss(c: RgbaColor): String =
+            "rgba(${c.r}, ${c.g}, ${c.b}, ${(c.a / 255.0).coerceIn(0.0, 1.0)})"
+
+        private fun buildButtonThemeCss(dark: Boolean, cfg: ThemeConfig): String {
+            val sb = StringBuilder(1024)
+            for (t in listOf(
+                BootstrapType.PRIMARY,
+                BootstrapType.SECONDARY,
+                BootstrapType.SUCCESS,
+                BootstrapType.DANGER,
+                BootstrapType.WARNING,
+                BootstrapType.INFO,
+                BootstrapType.LIGHT,
+                BootstrapType.DARK
+            )) {
+                val bg = BootstrapColorPalette.resolveColor(t, dark, cfg)
+                val fg = BootstrapColorPalette.resolveForegroundOn(t, dark, cfg)
+                val bgCss = rgbaCss(bg)
+                val fgCss = rgbaCss(fg)
+                sb.append("button.gui-btn-${t.cssSuffix}:not(.gui-btn-outline) { ")
+                    .append("background-color: ").append(bgCss).append("; ")
+                    .append("background-image: none; ")
+                    .append("color: ").append(fgCss).append("; ")
+                    .append("border-color: ").append(bgCss).append("; }\n")
+                sb.append("button.gui-btn-outline.gui-btn-${t.cssSuffix} { ")
+                    .append("background-color: transparent; ")
+                    .append("background-image: none; ")
+                    .append("color: ").append(bgCss).append("; ")
+                    .append("border: 1.5px solid ").append(bgCss).append("; }\n")
+                sb.append("button.gui-btn-outline.gui-btn-${t.cssSuffix}:hover { ")
+                    .append("background-color: ").append(bgCss).append("; ")
+                    .append("color: ").append(fgCss).append("; }\n")
+            }
+            val linkColor = rgbaCss(BootstrapColorPalette.resolveColor(BootstrapType.PRIMARY, dark, cfg))
+            sb.append("button.gui-btn-link { background-color: transparent; background-image: none; color: ")
+                .append(linkColor).append("; }\n")
+            return sb.toString()
+        }
+
+        private val gtkButtonClickedCb = staticCFunction<COpaquePointer?, COpaquePointer?, Unit> { _, userData ->
+            val impl = userData?.asStableRef<GtkButtonNativeImpl>()?.get() ?: return@staticCFunction
+            if (!impl.nativeWidget.pointerEventsNone && impl.nativeWidget.enabled) {
+                impl.dispatchClick()
             }
         }
-        return handled
     }
 }

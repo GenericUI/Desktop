@@ -156,8 +156,23 @@ class WindowsFullscreenExitTest {
         listOf(wp.rcNormalPosition.left, wp.rcNormalPosition.top, wp.rcNormalPosition.right, wp.rcNormalPosition.bottom)
     }
 
-    private fun hasHitRegionFor(widget: DesktopNativeWidget): Boolean =
-        Win32NativeWindowHost.getLastRenderedHitRegionsSnapshot().any { it.widget === widget }
+    private fun hasHitRegionFor(widget: DesktopNativeWidget): Boolean {
+        val hwnd = Win32NativeWindowHost.activeHwnd ?: return false
+        val childHwnd = (widget as? Win32HwndHandle)?.hwnd ?: return false
+        if (platform.windows.IsWindow(childHwnd) == 0 || platform.windows.IsWindowVisible(childHwnd) == 0) return false
+        if (platform.windows.GetParent(childHwnd) == Win32ControlMessageRouter.getOrCreateParkingHwnd()) return false
+        if (widget.bounds.width <= 0 || widget.bounds.height <= 0) return false
+        val pt = memScoped {
+            val c = alloc<RECT>()
+            GetClientRect(childHwnd, c.ptr)
+            val p = alloc<platform.windows.POINT>()
+            p.x = ((c.right - c.left) / 2).coerceAtLeast(1)
+            p.y = ((c.bottom - c.top) / 2).coerceAtLeast(1)
+            platform.windows.MapWindowPoints(childHwnd, hwnd, p.ptr, 1u)
+            p.x to p.y
+        }
+        return Win32ControlMessageRouter.findDeepestHitChildHwnd(hwnd, pt.first, pt.second) == childHwnd
+    }
 
     /** Enters element fullscreen on [FullscreenScene.stack] and verifies the fullscreen video stage covers the client. */
     private fun enterFullscreenAndVerify(scene: FullscreenScene, hwnd: HWND) {
@@ -325,12 +340,18 @@ class WindowsFullscreenExitTest {
 
         enterFullscreenAndVerify(scene, hwnd)
 
-        val fsBtnHit = Win32NativeWindowHost.getLastRenderedHitRegionsSnapshot()
-            .lastOrNull { it.widget === scene.fullscreenButtonWidget }
-        assertNotNull(fsBtnHit, "Precondition: Fullscreen button in stage overlay must have a hit region while in fullscreen")
-        val clickX = (fsBtnHit.left + fsBtnHit.right) / 2
-        val clickY = (fsBtnHit.top + fsBtnHit.bottom) / 2
-        Win32NativeWindowHost.simulateMouseClick(clickX, clickY)
+        val fsBtnHwnd = assertNotNull((scene.fullscreenButtonWidget as? Win32HwndHandle)?.hwnd, "Precondition: Fullscreen button must own a retained HWND")
+        assertTrue(platform.windows.IsWindowVisible(fsBtnHwnd) != 0, "Fullscreen button HWND must be visible during fullscreen")
+        val fsPt = memScoped {
+            val c = alloc<RECT>()
+            GetClientRect(fsBtnHwnd, c.ptr)
+            val p = alloc<platform.windows.POINT>()
+            p.x = ((c.right - c.left) / 2).coerceAtLeast(1)
+            p.y = ((c.bottom - c.top) / 2).coerceAtLeast(1)
+            platform.windows.MapWindowPoints(fsBtnHwnd, hwnd, p.ptr, 1u)
+            p.x to p.y
+        }
+        Win32NativeWindowHost.simulateMouseClick(fsPt.first, fsPt.second, hwnd)
         Win32NativeWindowHost.pumpVisualWindowEvents(48L)
 
         assertFalse(scene.stack.isFullscreen(), "Video stack must not report fullscreen after clicking Fullscreen button")

@@ -12,6 +12,7 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
     multiline: Boolean = false
 ) : DesktopBaseNativeImpl<W>(nativeWidget, "form-control"), TextInputNativeImpl<W> {
 
+    private var lastControlVariant: String? = null
     protected var textValue: String = ""
     protected var placeholderText: String = ""
     protected var labelText: String? = null
@@ -24,6 +25,37 @@ open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
     init {
         if (multiline) {
             nativeWidget.attributes["multiline"] = true
+        }
+    }
+
+    val controlVariant: String?
+        get() = resolveControlVariant()
+
+    fun resolveControlVariant(): String? =
+        (nativeWidget.attributes["data-control-variant"] as? String)
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotEmpty() }
+
+    protected open fun onVariantChanged(variant: String?) {}
+
+    override fun setAttribute(name: String, value: String?) {
+        super<DesktopBaseNativeImpl>.setAttribute(name, value)
+        if (name == "data-control-variant") {
+            val nextVariant = resolveControlVariant()
+            if (lastControlVariant != nextVariant) {
+                lastControlVariant = nextVariant
+                onVariantChanged(nextVariant)
+            }
+        }
+    }
+
+    override fun syncStyleToNativeWidget() {
+        super.syncStyleToNativeWidget()
+        val nextVariant = resolveControlVariant()
+        if (lastControlVariant != nextVariant) {
+            lastControlVariant = nextVariant
+            onVariantChanged(nextVariant)
         }
     }
 

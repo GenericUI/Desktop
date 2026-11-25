@@ -47,10 +47,12 @@ import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.CssLength
 import com.nexustools.genericui.util.CacheDirectory
 import com.nexustools.genericui.util.ConfigDirectory
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.UIntVar
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.convert
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
@@ -58,6 +60,23 @@ import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import kotlinx.coroutines.runBlocking
+import platform.AppKit.NSApplication
+import platform.AppKit.NSBackingStoreBuffered
+import platform.AppKit.NSButton
+import platform.AppKit.NSTextField
+import platform.AppKit.NSView
+import platform.AppKit.NSWindow
+import platform.AppKit.NSWindowStyleMaskBorderless
+import platform.CoreGraphics.CGBitmapContextCreate
+import platform.CoreGraphics.CGBitmapContextGetData
+import platform.CoreGraphics.CGColorSpaceCreateDeviceRGB
+import platform.CoreGraphics.CGColorSpaceRelease
+import platform.CoreGraphics.CGContextDrawImage
+import platform.CoreGraphics.CGContextRelease
+import platform.CoreGraphics.CGImageAlphaInfo
+import platform.CoreGraphics.CGRectMake
+import platform.CoreGraphics.kCGBitmapByteOrder32Big
+import platform.Foundation.NSMakeRect
 import platform.Foundation.NSTemporaryDirectory
 import platform.Foundation.NSUUID
 import platform.darwin.DISPATCH_TIME_FOREVER
@@ -275,8 +294,57 @@ class MacosAsyncIoDatabaseAndNetworkingTest {
         }
     }
 
+    private fun captureRetainedViewRgbaBytes(view: NSView, width: Int, height: Int): ByteArray {
+        NSApplication.sharedApplication
+        val win = NSWindow(
+            contentRect = NSMakeRect(0.0, 0.0, width.toDouble(), height.toDouble()),
+            styleMask = NSWindowStyleMaskBorderless,
+            backing = NSBackingStoreBuffered,
+            defer = false
+        )
+        win.setReleasedWhenClosed(false)
+        val host = NSView(frame = NSMakeRect(0.0, 0.0, width.toDouble(), height.toDouble()))
+        view.setFrame(NSMakeRect(0.0, 0.0, width.toDouble(), height.toDouble()))
+        host.addSubview(view)
+        win.setContentView(host)
+        host.layoutSubtreeIfNeeded()
+        return try {
+            val rect = NSMakeRect(0.0, 0.0, width.toDouble(), height.toDouble())
+            val rep = assertNotNull(host.bitmapImageRepForCachingDisplayInRect(rect))
+            host.cacheDisplayInRect(rect, toBitmapImageRep = rep)
+            val cg = assertNotNull(rep.CGImage)
+            val cs = assertNotNull(CGColorSpaceCreateDeviceRGB())
+            val ctx = assertNotNull(
+                CGBitmapContextCreate(
+                    data = null,
+                    width = width.convert(),
+                    height = height.convert(),
+                    bitsPerComponent = 8.convert(),
+                    bytesPerRow = (width * 4).convert(),
+                    space = cs,
+                    bitmapInfo = kCGBitmapByteOrder32Big or CGImageAlphaInfo.kCGImageAlphaPremultipliedLast.value
+                )
+            )
+            CGColorSpaceRelease(cs)
+            try {
+                CGContextDrawImage(ctx, CGRectMake(0.0, 0.0, width.toDouble(), height.toDouble()), cg)
+                val ptr = assertNotNull(CGBitmapContextGetData(ctx)).reinterpret<ByteVar>()
+                val out = ByteArray(width * height * 4)
+                out.usePinned { pinned ->
+                    platform.posix.memcpy(pinned.addressOf(0), ptr, out.size.toULong())
+                }
+                out
+            } finally {
+                CGContextRelease(ctx)
+            }
+        } finally {
+            view.removeFromSuperview()
+            win.close()
+        }
+    }
+
     @Test
-    fun testMacosPerComponentNativeImplsAndControlRenderUtil() {
+    fun testMacosPerComponentNativeImplsAndRetainedAppKitControls() {
         val factory = MacosNativeFactory()
         val prevFactory = GenericUI.activeFactory
         try {
@@ -292,25 +360,22 @@ class MacosAsyncIoDatabaseAndNetworkingTest {
                 }
             )
             assertFalse(buttonImpl.acceptsAestheticSkinStyles())
-            assertFalse(buttonImpl.nativeWidget.attributes.containsKey("backgroundColor"))
-            assertFalse(buttonImpl.nativeWidget.attributes.containsKey("textColor"))
-            assertEquals("true", buttonImpl.nativeWidget.attributes["useSystemControlAppearance"])
-            assertEquals("unmodified_native_control", buttonImpl.nativeWidget.attributes["nativeControlRenderMode"])
+            assertTrue(buttonImpl.isNativeDefaultButtonMode())
+            val nativeButtonView = assertNotNull(buttonImpl.nativeWidget.nsView)
+            assertTrue(nativeButtonView is NSButton, "Default unstyled Button must mount a genuine NSButton")
 
-            val nativePixels = IntArray(96 * 28)
-            buttonImpl.renderDesktopNode(nativePixels, Rect(0, 0, 96, 28))
-            assertEquals(false, buttonImpl.nativeWidget.attributes["renderedOffscreenEmptyTextSprite"])
-            assertTrue(nativePixels.any { ((it ushr 24) and 0xFF) > 0 })
+            buttonImpl.setBounds(Rect(0, 0, 96, 28))
+            val nativePixels = captureRetainedViewRgbaBytes(nativeButtonView, 96, 28)
+            assertTrue((3 until nativePixels.size step 4).any { (nativePixels[it].toInt() and 0xFF) > 0 })
 
             buttonImpl.setType(BootstrapType.PRIMARY)
-            assertEquals("false", buttonImpl.nativeWidget.attributes["useSystemControlAppearance"])
-            assertEquals("offscreen_empty_text_sprite_tint", buttonImpl.nativeWidget.attributes["nativeControlRenderMode"])
+            assertFalse(buttonImpl.isNativeDefaultButtonMode())
+            val semanticButtonView = assertNotNull(buttonImpl.nativeWidget.nsView) as NSButton
+            assertNotNull(semanticButtonView.bezelColor, "Primary semantic Button must tint genuine NSButton via bezelColor")
 
-            val tintedPixels = IntArray(96 * 28)
-            buttonImpl.renderDesktopNode(tintedPixels, Rect(0, 0, 96, 28))
-            assertEquals(true, buttonImpl.nativeWidget.attributes["renderedOffscreenEmptyTextSprite"])
-            assertEquals(true, buttonImpl.nativeWidget.attributes["contrastingTextRenderedAfterTint"])
-            assertTrue(tintedPixels.any { ((it ushr 24) and 0xFF) > 0 })
+            buttonImpl.setBounds(Rect(0, 0, 96, 28))
+            val tintedPixels = captureRetainedViewRgbaBytes(semanticButtonView, 96, 28)
+            assertTrue((3 until tintedPixels.size step 4).any { (tintedPixels[it].toInt() and 0xFF) > 0 })
 
             val textImpl = factory.createText() as MacosTextNativeImpl
             textImpl.setText("Hello macOS")
@@ -321,9 +386,10 @@ class MacosAsyncIoDatabaseAndNetworkingTest {
                     fontWeight = FontWeight.BOLD
                 }
             )
+            assertTrue(textImpl.nativeWidget.nsView is NSTextField)
             assertEquals(RgbaColor(0x11, 0x22, 0x33), textImpl.nativeWidget.attributes["textColor"])
-            assertEquals(18f, textImpl.nativeWidget.attributes["fontSizePx"])
-            assertEquals("BOLD", textImpl.nativeWidget.attributes["fontWeight"])
+            assertEquals(18f, textImpl.getComponentStyle()?.fontSize?.resolvePx())
+            assertEquals(FontWeight.BOLD, textImpl.getComponentStyle()?.fontWeight)
 
             val markdownImpl = factory.createMarkdownView() as MacosMarkdownViewNativeImpl
             markdownImpl.setMarkdown("# Heading")

@@ -6,6 +6,7 @@ import com.nexustools.genericui.geometry.Rect
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CFunction
 import kotlinx.cinterop.COpaquePointer
+import kotlinx.cinterop.COpaquePointerVar
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.IntVar
@@ -21,6 +22,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
+import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import platform.posix.getenv
@@ -35,9 +37,13 @@ internal object LinuxX11WindowHintsBridge {
 
     const val NET_WM_STATE_REMOVE: Long = 0L
     const val NET_WM_STATE_ADD: Long = 1L
+    const val NET_WM_STATE_TOGGLE: Long = 2L
+    const val NET_WM_MOVERESIZE_MOVE: Long = 8L
+    const val MWM_HINTS_DECORATIONS: ULong = 2uL
     const val CLIENT_MESSAGE: Int = 33
     const val SUBSTRUCTURE_NOTIFY_MASK: Long = 1L shl 19
     const val SUBSTRUCTURE_REDIRECT_MASK: Long = 1L shl 20
+    const val P_MIN_SIZE: Long = 1L shl 4
     const val P_ASPECT: Long = 1L shl 7
     const val DEFAULT_ASPECT_SCALE: Int = 10000
 
@@ -61,6 +67,10 @@ internal object LinuxX11WindowHintsBridge {
     private var fnXMoveWindow: CPointer<CFunction<(COpaquePointer?, ULong, Int, Int) -> Int>>? = null
     private var fnXTranslateCoordinates: CPointer<CFunction<(COpaquePointer?, ULong, ULong, Int, Int, CPointer<IntVar>?, CPointer<IntVar>?, CPointer<ULongVar>?) -> Int>>? = null
     private var fnXQueryTree: CPointer<CFunction<(COpaquePointer?, ULong, CPointer<ULongVar>?, CPointer<ULongVar>?, CPointer<CPointerVar<ULongVar>>?, CPointer<UIntVar>?) -> Int>>? = null
+    private var fnXGetWindowProperty: CPointer<CFunction<(COpaquePointer?, ULong, ULong, Long, Long, Int, ULong, CPointer<ULongVar>?, CPointer<IntVar>?, CPointer<ULongVar>?, CPointer<ULongVar>?, CPointer<COpaquePointerVar>?) -> Int>>? = null
+    private var fnXChangeProperty: CPointer<CFunction<(COpaquePointer?, ULong, ULong, ULong, Int, Int, COpaquePointer?, Int) -> Int>>? = null
+    private var fnXUngrabPointer: CPointer<CFunction<(COpaquePointer?, ULong) -> Int>>? = null
+    private var fnXSetErrorHandler: CPointer<CFunction<(COpaquePointer?) -> COpaquePointer?>>? = null
 
     fun ensureLoaded(): Boolean = lock.withLock {
         if (librariesLoaded) return x11Available
@@ -84,6 +94,10 @@ internal object LinuxX11WindowHintsBridge {
             fnXMoveWindow = LinuxDynamicLibraryLoader.symbol(x11, "XMoveWindow")?.reinterpret()
             fnXTranslateCoordinates = LinuxDynamicLibraryLoader.symbol(x11, "XTranslateCoordinates")?.reinterpret()
             fnXQueryTree = LinuxDynamicLibraryLoader.symbol(x11, "XQueryTree")?.reinterpret()
+            fnXGetWindowProperty = LinuxDynamicLibraryLoader.symbol(x11, "XGetWindowProperty")?.reinterpret()
+            fnXChangeProperty = LinuxDynamicLibraryLoader.symbol(x11, "XChangeProperty")?.reinterpret()
+            fnXUngrabPointer = LinuxDynamicLibraryLoader.symbol(x11, "XUngrabPointer")?.reinterpret()
+            fnXSetErrorHandler = LinuxDynamicLibraryLoader.symbol(x11, "XSetErrorHandler")?.reinterpret()
         }
 
         x11Available = fnXOpenDisplay != null &&
@@ -142,6 +156,26 @@ internal object LinuxX11WindowHintsBridge {
         }
     }
 
+    fun applySizeHintsMinSizeBuffer(
+        hintsPtr: COpaquePointer,
+        minWidthPx: Int?,
+        minHeightPx: Int?
+    ) {
+        val longPtr = hintsPtr.reinterpret<LongVar>()
+        val intPtr = hintsPtr.reinterpret<IntVar>()
+        val w = minWidthPx?.takeIf { it > 0 } ?: 0
+        val h = minHeightPx?.takeIf { it > 0 } ?: 0
+        if (w > 0 || h > 0) {
+            longPtr[0] = longPtr[0] or P_MIN_SIZE
+            intPtr[6] = w
+            intPtr[7] = h
+        } else {
+            longPtr[0] = longPtr[0] and P_MIN_SIZE.inv()
+            intPtr[6] = 0
+            intPtr[7] = 0
+        }
+    }
+
     fun populateNetWmStateEventBuffer(
         eventBuf: CPointer<LongVar>,
         display: COpaquePointer?,
@@ -184,7 +218,7 @@ internal object LinuxX11WindowHintsBridge {
         if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return false
         val dpy = fnXOpenDisplay?.invoke(null) ?: return false
         return try {
-            val ok = applyNormalAspectHints(dpy, windowXid, aspectRatio)
+            val ok = applyNormalSizeAndAspectHints(dpy, windowXid, aspectRatio, null, null)
             if (ok) {
                 fnXFlush?.invoke(dpy)
             }
@@ -263,12 +297,18 @@ internal object LinuxX11WindowHintsBridge {
         }
     }
 
-    fun syncWindowHints(windowXid: ULong, alwaysOnTop: Boolean, aspectRatio: Double?): Boolean {
+    fun syncWindowHints(
+        windowXid: ULong,
+        alwaysOnTop: Boolean,
+        aspectRatio: Double?,
+        minWidthPx: Int? = null,
+        minHeightPx: Int? = null
+    ): Boolean {
         if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return false
         val dpy = fnXOpenDisplay?.invoke(null) ?: return false
         return try {
             sendNetWmStateAbove(dpy, windowXid, alwaysOnTop)
-            applyNormalAspectHints(dpy, windowXid, aspectRatio)
+            applyNormalSizeAndAspectHints(dpy, windowXid, aspectRatio, minWidthPx, minHeightPx)
             fnXFlush?.invoke(dpy)
             true
         } finally {
@@ -300,10 +340,12 @@ internal object LinuxX11WindowHintsBridge {
         (fnXSendEvent?.invoke(display, rootWin, 0, mask, eventBuf) ?: 0) != 0
     }
 
-    private fun applyNormalAspectHints(
+    private fun applyNormalSizeAndAspectHints(
         display: COpaquePointer,
         windowXid: ULong,
-        aspectRatio: Double?
+        aspectRatio: Double?,
+        minWidthPx: Int? = null,
+        minHeightPx: Int? = null
     ): Boolean {
         val hints = fnXAllocSizeHints?.invoke() ?: return false
         return try {
@@ -313,10 +355,269 @@ internal object LinuxX11WindowHintsBridge {
                 fnXGetWMNormalHints?.invoke(display, windowXid, hints, supplied.ptr)
             }
             applySizeHintsAspectRatioBuffer(hints, aspectRatio)
+            applySizeHintsMinSizeBuffer(hints, minWidthPx, minHeightPx)
             fnXSetWMNormalHints?.invoke(display, windowXid, hints)
             true
         } finally {
             fnXFree?.invoke(hints)
+        }
+    }
+
+    fun queryEwmhWmName(): String? = lock.withLock {
+        if (!isDisplayEnvironmentPresent() || !ensureLoaded()) return@withLock null
+        if (fnXGetWindowProperty == null) return@withLock null
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return@withLock null
+        val nonFatalHandler = staticCFunction { _: COpaquePointer?, _: COpaquePointer? -> 0 }
+        val prevHandler = fnXSetErrorHandler?.invoke(nonFatalHandler)
+        try {
+            val rootWin = fnXDefaultRootWindow?.invoke(dpy) ?: 0uL
+            if (rootWin == 0uL) return@withLock null
+            val wmCheckAtom = memScoped { fnXInternAtom?.invoke(dpy, "_NET_SUPPORTING_WM_CHECK".cstr.ptr, 1) ?: 0uL }
+            if (wmCheckAtom == 0uL) return@withLock null
+            val wmWin = readWindowPropertyWindowId(dpy, rootWin, wmCheckAtom) ?: return@withLock null
+            if (wmWin == 0uL) return@withLock null
+            val selfCheck = readWindowPropertyWindowId(dpy, wmWin, wmCheckAtom)
+            if (selfCheck != null && selfCheck != 0uL && selfCheck != wmWin) {
+                return@withLock null
+            }
+            val netWmNameAtom = memScoped { fnXInternAtom?.invoke(dpy, "_NET_WM_NAME".cstr.ptr, 1) ?: 0uL }
+            val wmName = if (netWmNameAtom != 0uL) readWindowPropertyString(dpy, wmWin, netWmNameAtom) else null
+            if (!wmName.isNullOrBlank()) return@withLock wmName.trim()
+
+            val wmClassAtom = memScoped { fnXInternAtom?.invoke(dpy, "WM_CLASS".cstr.ptr, 1) ?: 0uL }
+            val wmClass = if (wmClassAtom != 0uL) readWindowPropertyString(dpy, wmWin, wmClassAtom) else null
+            if (!wmClass.isNullOrBlank()) return@withLock wmClass.trim()
+
+            val icccmNameAtom = memScoped { fnXInternAtom?.invoke(dpy, "WM_NAME".cstr.ptr, 1) ?: 0uL }
+            val icccmName = if (icccmNameAtom != 0uL) readWindowPropertyString(dpy, wmWin, icccmNameAtom) else null
+            icccmName?.trim()?.takeIf { it.isNotEmpty() }
+        } finally {
+            if (fnXSetErrorHandler != null) {
+                fnXSetErrorHandler?.invoke(prevHandler)
+            }
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    fun sendNetWmState(
+        windowXid: ULong,
+        stateAtom1: String,
+        stateAtom2: String? = null,
+        action: Long = NET_WM_STATE_ADD
+    ): Boolean {
+        if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return false
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return false
+        return try {
+            memScoped {
+                val netWmState = fnXInternAtom?.invoke(dpy, "_NET_WM_STATE".cstr.ptr, 0) ?: 0uL
+                val atom1 = fnXInternAtom?.invoke(dpy, stateAtom1.cstr.ptr, 0) ?: 0uL
+                val atom2 = if (stateAtom2 != null) fnXInternAtom?.invoke(dpy, stateAtom2.cstr.ptr, 0) ?: 0uL else 0uL
+                val rootWin = fnXDefaultRootWindow?.invoke(dpy) ?: 0uL
+                if (netWmState == 0uL || atom1 == 0uL || rootWin == 0uL) return@memScoped false
+
+                val eventBuf = allocArray<LongVar>(24)
+                populateNetWmStateEventBuffer(
+                    eventBuf = eventBuf,
+                    display = dpy,
+                    windowXid = windowXid,
+                    netWmStateAtom = netWmState,
+                    stateAtom = atom1,
+                    add = action == NET_WM_STATE_ADD
+                )
+                eventBuf[7] = action
+                eventBuf[9] = atom2.toLong()
+                val mask = SUBSTRUCTURE_REDIRECT_MASK or SUBSTRUCTURE_NOTIFY_MASK
+                val ok = (fnXSendEvent?.invoke(dpy, rootWin, 0, mask, eventBuf) ?: 0) != 0
+                fnXFlush?.invoke(dpy)
+                ok
+            }
+        } finally {
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    fun initiateSystemMove(windowXid: ULong, rootX: Int, rootY: Int): Boolean {
+        if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return false
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return false
+        return try {
+            memScoped {
+                val moveResizeAtom = fnXInternAtom?.invoke(dpy, "_NET_WM_MOVERESIZE".cstr.ptr, 0) ?: 0uL
+                val rootWin = fnXDefaultRootWindow?.invoke(dpy) ?: 0uL
+                if (moveResizeAtom == 0uL || rootWin == 0uL) return@memScoped false
+                fnXUngrabPointer?.invoke(dpy, 0uL)
+
+                val eventBuf = allocArray<LongVar>(24)
+                for (i in 0 until 24) eventBuf[i] = 0L
+                val intPtr = eventBuf.reinterpret<IntVar>()
+                intPtr[0] = CLIENT_MESSAGE
+                intPtr[4] = 1
+                intPtr[12] = 32
+                eventBuf[3] = dpy.rawValue.toLong()
+                eventBuf[4] = windowXid.toLong()
+                eventBuf[5] = moveResizeAtom.toLong()
+                eventBuf[7] = rootX.toLong()
+                eventBuf[8] = rootY.toLong()
+                eventBuf[9] = NET_WM_MOVERESIZE_MOVE
+                eventBuf[10] = 1L // Button1
+                eventBuf[11] = 1L // Normal application source indication
+
+                val mask = SUBSTRUCTURE_REDIRECT_MASK or SUBSTRUCTURE_NOTIFY_MASK
+                val ok = (fnXSendEvent?.invoke(dpy, rootWin, 0, mask, eventBuf) ?: 0) != 0
+                fnXFlush?.invoke(dpy)
+                ok
+            }
+        } finally {
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    fun showWindowMenu(windowXid: ULong, rootX: Int, rootY: Int): Boolean {
+        if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return false
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return false
+        return try {
+            memScoped {
+                val menuAtom = fnXInternAtom?.invoke(dpy, "_GTK_SHOW_WINDOW_MENU".cstr.ptr, 0) ?: 0uL
+                val rootWin = fnXDefaultRootWindow?.invoke(dpy) ?: 0uL
+                if (menuAtom == 0uL || rootWin == 0uL) return@memScoped false
+                fnXUngrabPointer?.invoke(dpy, 0uL)
+
+                val eventBuf = allocArray<LongVar>(24)
+                for (i in 0 until 24) eventBuf[i] = 0L
+                val intPtr = eventBuf.reinterpret<IntVar>()
+                intPtr[0] = CLIENT_MESSAGE
+                intPtr[4] = 1
+                intPtr[12] = 32
+                eventBuf[3] = dpy.rawValue.toLong()
+                eventBuf[4] = windowXid.toLong()
+                eventBuf[5] = menuAtom.toLong()
+                eventBuf[7] = 0L // device_id
+                eventBuf[8] = rootX.toLong()
+                eventBuf[9] = rootY.toLong()
+
+                val mask = SUBSTRUCTURE_REDIRECT_MASK or SUBSTRUCTURE_NOTIFY_MASK
+                val ok = (fnXSendEvent?.invoke(dpy, rootWin, 0, mask, eventBuf) ?: 0) != 0
+                fnXFlush?.invoke(dpy)
+                ok
+            }
+        } finally {
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    fun setMotifDecorations(windowXid: ULong, decorated: Boolean): Boolean {
+        if (windowXid == 0uL || !isDisplayEnvironmentPresent() || !ensureLoaded()) return false
+        val changeProp = fnXChangeProperty ?: return false
+        val dpy = fnXOpenDisplay?.invoke(null) ?: return false
+        return try {
+            memScoped {
+                val motifAtom = fnXInternAtom?.invoke(dpy, "_MOTIF_WM_HINTS".cstr.ptr, 0) ?: 0uL
+                if (motifAtom == 0uL) return@memScoped false
+                val hints = allocArray<ULongVar>(5)
+                hints[0] = MWM_HINTS_DECORATIONS
+                hints[1] = 0uL
+                hints[2] = if (decorated) 1uL else 0uL
+                hints[3] = 0uL
+                hints[4] = 0uL
+                changeProp.invoke(dpy, windowXid, motifAtom, motifAtom, 32, 0, hints, 5)
+                fnXFlush?.invoke(dpy)
+                true
+            }
+        } finally {
+            fnXCloseDisplay?.invoke(dpy)
+        }
+    }
+
+    private fun readWindowPropertyWindowId(
+        display: COpaquePointer,
+        windowXid: ULong,
+        propertyAtom: ULong
+    ): ULong? = memScoped {
+        val getProp = fnXGetWindowProperty ?: return@memScoped null
+        val actualType = alloc<ULongVar>()
+        val actualFormat = alloc<IntVar>()
+        val nitems = alloc<ULongVar>()
+        val bytesAfter = alloc<ULongVar>()
+        val propVar = alloc<COpaquePointerVar>()
+        actualType.value = 0uL
+        actualFormat.value = 0
+        nitems.value = 0uL
+        bytesAfter.value = 0uL
+        propVar.value = null
+
+        val rc = getProp.invoke(
+            display,
+            windowXid,
+            propertyAtom,
+            0L,
+            1L,
+            0,
+            0uL, // AnyPropertyType
+            actualType.ptr,
+            actualFormat.ptr,
+            nitems.ptr,
+            bytesAfter.ptr,
+            propVar.ptr
+        )
+        val prop = propVar.value
+        try {
+            if (rc != 0 || prop == null || actualFormat.value != 32 || nitems.value < 1uL) {
+                return@memScoped null
+            }
+            prop.reinterpret<ULongVar>()[0]
+        } finally {
+            if (prop != null) fnXFree?.invoke(prop)
+        }
+    }
+
+    private fun readWindowPropertyString(
+        display: COpaquePointer,
+        windowXid: ULong,
+        propertyAtom: ULong
+    ): String? = memScoped {
+        val getProp = fnXGetWindowProperty ?: return@memScoped null
+        val actualType = alloc<ULongVar>()
+        val actualFormat = alloc<IntVar>()
+        val nitems = alloc<ULongVar>()
+        val bytesAfter = alloc<ULongVar>()
+        val propVar = alloc<COpaquePointerVar>()
+        actualType.value = 0uL
+        actualFormat.value = 0
+        nitems.value = 0uL
+        bytesAfter.value = 0uL
+        propVar.value = null
+
+        val rc = getProp.invoke(
+            display,
+            windowXid,
+            propertyAtom,
+            0L,
+            512L,
+            0,
+            0uL, // AnyPropertyType
+            actualType.ptr,
+            actualFormat.ptr,
+            nitems.ptr,
+            bytesAfter.ptr,
+            propVar.ptr
+        )
+        val prop = propVar.value
+        try {
+            if (rc != 0 || prop == null || actualFormat.value != 8 || nitems.value == 0uL) {
+                return@memScoped null
+            }
+            val count = nitems.value.toInt().coerceIn(0, 4096)
+            val bytePtr = prop.reinterpret<ByteVar>()
+            val out = ByteArray(count)
+            var validLen = 0
+            for (i in 0 until count) {
+                val b = bytePtr[i]
+                if (b == 0.toByte()) break
+                out[i] = b
+                validLen++
+            }
+            if (validLen == 0) null else out.copyOf(validLen).decodeToString()
+        } finally {
+            if (prop != null) fnXFree?.invoke(prop)
         }
     }
 }

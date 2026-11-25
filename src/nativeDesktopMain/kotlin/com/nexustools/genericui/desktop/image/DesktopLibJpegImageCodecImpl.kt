@@ -18,7 +18,7 @@ import com.nexustools.genericui.nativeimpl.image.ImageCodecNativeImpl
 /**
  * Shared Desktop implementation of [ImageCodecNativeImpl] combining native OS image loaders
  * (`IWICImagingFactory` WIC on `:windows`, `CGImageSource`/`CGImageDestination` ImageIO on `:macos`,
- * `GdkPixbuf` on `:gtk`, and `QImage`/`QImageReader`/`QImageWriter` on `:qt`) with direct
+ * `GdkPixbuf` on `:gtk`, and `QImage`/`QImageReader`/`QImageWriter` on `:kde`) with direct
  * `libjpeg` (`libjpeg-turbo` [LibJpegCodec]), `libpng` ([LibPngCodec]), and `libwebp` ([LibWebpCodec])
  * scanline decompression and compression hooks.
  */

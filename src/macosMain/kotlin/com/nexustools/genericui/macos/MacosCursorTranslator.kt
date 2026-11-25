@@ -6,11 +6,13 @@ import com.nexustools.genericui.image.ImageBuffer
 import com.nexustools.genericui.image.codec.LibPngCodec
 import com.nexustools.genericui.style.css.CssCustomCursor
 import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.objcPtr
 import kotlinx.cinterop.usePinned
 import platform.AppKit.NSCursor
 import platform.AppKit.NSImage
 import platform.Foundation.NSData
 import platform.Foundation.NSMakePoint
+import platform.Foundation.NSMakeSize
 import platform.Foundation.dataWithBytes
 
 /**
@@ -21,6 +23,11 @@ object MacosCursorTranslator {
 
     private val encodedPngCache = mutableMapOf<String, ByteArray>()
     private val nativeCursorCache = mutableMapOf<String, NSCursor>()
+    private val hiddenBlankCursor: NSCursor by lazy {
+        val pngBytes = encodeToNsImagePngBytes(ImageBuffer(width = 1, height = 1))
+        buildNsCursorFromPngBytes(pngBytes, hotSpotX = 0.0, hotSpotY = 0.0)
+            ?: NSCursor(image = NSImage(size = NSMakeSize(1.0, 1.0)), hotSpot = NSMakePoint(0.0, 0.0))
+    }
 
     /**
      * Resolves [cursor] into an [ImageBuffer] (rasterizing SVG or decoding PNG if needed) and encodes
@@ -49,17 +56,33 @@ object MacosCursorTranslator {
         val key = buildCacheKey(cursor)
         nativeCursorCache[key]?.let { return it }
         val pngBytes = encodeToNsImagePngBytes(cursor) ?: return null
+        val hotX = cursor.hotspotX.coerceIn(0, (cursor.widthPx - 1).coerceAtLeast(0)).toDouble()
+        val hotY = cursor.hotspotY.coerceIn(0, (cursor.heightPx - 1).coerceAtLeast(0)).toDouble()
+        val nativeCursor = buildNsCursorFromPngBytes(pngBytes, hotX, hotY) ?: return null
+        nativeCursorCache[key] = nativeCursor
+        return nativeCursor
+    }
+
+    private fun buildNsCursorFromPngBytes(
+        pngBytes: ByteArray,
+        hotSpotX: Double,
+        hotSpotY: Double
+    ): NSCursor? {
         if (pngBytes.isEmpty()) return null
         val nsData = pngBytes.usePinned { pinned ->
             NSData.dataWithBytes(pinned.addressOf(0), pngBytes.size.toULong())
         }
         val nsImage = NSImage(data = nsData)
-        val hotX = cursor.hotspotX.coerceIn(0, (cursor.widthPx - 1).coerceAtLeast(0)).toDouble()
-        val hotY = cursor.hotspotY.coerceIn(0, (cursor.heightPx - 1).coerceAtLeast(0)).toDouble()
-        val nativeCursor = NSCursor(image = nsImage, hotSpot = NSMakePoint(hotX, hotY))
-        nativeCursorCache[key] = nativeCursor
-        return nativeCursor
+        return NSCursor(image = nsImage, hotSpot = NSMakePoint(hotSpotX, hotSpotY))
     }
+
+    internal fun isSameCursor(a: NSCursor?, b: NSCursor?): Boolean {
+        if (a === b) return true
+        if (a == null || b == null) return false
+        return a.objcPtr() == b.objcPtr() || a == b
+    }
+
+    internal fun isHiddenCursor(cursor: NSCursor?): Boolean = isSameCursor(cursor, hiddenBlankCursor)
 
     /**
      * Resolves a cache key + AppKit [NSCursor] pair from an optional [CssCustomCursor],
@@ -91,7 +114,7 @@ object MacosCursorTranslator {
             "grab" -> "grab" to NSCursor.openHandCursor
             "grabbing" -> "grabbing" to NSCursor.closedHandCursor
             "not-allowed", "no-drop" -> "not-allowed" to NSCursor.operationNotAllowedCursor
-            "none" -> "none" to NSCursor.arrowCursor
+            "none" -> "none" to hiddenBlankCursor
             else -> if (isTextInput) {
                 "ibeam" to NSCursor.IBeamCursor
             } else {

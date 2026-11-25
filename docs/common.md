@@ -3,7 +3,7 @@
 > **Module Guide**: [**`:desktop` (`../README.md`)**](../README.md) | **Related**: [`shared.md`](shared.md) · [`nativeCommon.md`](nativeCommon.md) · [`linuxCommon.md`](linuxCommon.md)
 
 ## Overview
-The `commonMain` source set of `:desktop` (`desktopCommon` variant scope) holds platform-agnostic pure-Kotlin desktop infrastructure shared across all five desktop targets (`Windows`, `MacOS`, `Gtk`, `Qt`, and `Swing`). It targets `jvm()`, `mingwX64()`, `macosArm64()`, `linuxX64()`, and `linuxArm64()`, sitting directly above `:common` and `:system`.
+The `commonMain` source set of `:desktop` (`desktopCommon` variant scope) holds platform-agnostic pure-Kotlin desktop infrastructure shared across all five desktop targets (`Windows`, `MacOS`, `Gtk`, `Kde`, and `Swing`). It targets `jvm()`, `mingwX64()`, `macosArm64()`, `linuxX64()`, and `linuxArm64()`, sitting directly above `:common` and `:system`.
 
 ---
 
@@ -29,5 +29,5 @@ The `commonMain` source set of `:desktop` (`desktopCommon` variant scope) holds 
   └── :system
         └── :desktop (commonMain / desktopCommon)
               ├── jvmMain (JVM Swing, + :jvm)
-              └── nativeDesktopMain (Native cinterop: Win32, macOS + :apple, Linux GTK4 & Qt6)
+              └── nativeDesktopMain (Native cinterop: Win32, macOS + :apple, Linux GTK4 & KDE)
 ```

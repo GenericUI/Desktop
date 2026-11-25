@@ -13,15 +13,17 @@ Cross-backend desktop code inside the consolidated `:desktop` KMP module is laye
 
 2. **[`nativeDesktopMain` (`nativeDesktopCommon`, `nativeCommon.md`)](nativeCommon.md)** — `mingwX64`, `macosArm64`, `linuxX64`, `linuxArm64`:
    - `DesktopBaseNativeImpl`, `DesktopBaseContainerNativeImpl`, `DesktopNativeWidget` (`com.nexustools.genericui.desktop.core`)
-   - `DesktopRenderableNativeImpl`, `DesktopControlTintRenderUtil` (`com.nexustools.genericui.desktop.render`)
-   - `DesktopStyledContainerNativeImpl`, `DesktopStyledButtonNativeImpl` (`com.nexustools.genericui.desktop.widget`, forwarding CSS `backdropFilter` while `TextBubble` strips it)
+   - `DesktopContainerLayoutController` (`com.nexustools.genericui.desktop.layout`) — drives nested native OS child widget geometry from `BrowserLayoutEngine`
+   - `DesktopStyledWidgetDelegate` (`com.nexustools.genericui.desktop.style`) — coordinates `StyledWidgetVisualController`, gradients, and all 10 `CssFilter` / `backdrop-filter` ops
+   - `DesktopButtonNativeImpl`, `DesktopStyledComponentNativeImpl`, `DesktopStyledContainerNativeImpl`, `DesktopStyledButtonNativeImpl` (`com.nexustools.genericui.desktop.widget`)
    - `DesktopWindowNativeImpl`, `DesktopApplicationNativeImpl` (`com.nexustools.genericui.desktop.shell`)
    - `DesktopMultiWindowDockCoordinator`, `DesktopDockWorkspaceNativeImpl` (`com.nexustools.genericui.desktop.dock`)
    - `DesktopLazyListNativeImpl`, `DesktopLazyGridNativeImpl`, `DesktopTreeViewNativeImpl` (`com.nexustools.genericui.desktop.lazy`)
    - `DesktopConfigDirectoryHelper`, `DesktopUserDirectoryNativeImpl` (`com.nexustools.genericui.desktop.system`)
    - `DesktopLibJpegImageCodecImpl` (`com.nexustools.genericui.desktop.image`)
 
-3. **[`linuxMain` (`linuxCommon`, `linuxCommon.md`)](linuxCommon.md)** — `linuxX64`, `linuxArm64`, shared by **`Gtk`** & **`Qt`**:
+3. **[`linuxMain` (`linuxCommon`, `linuxCommon.md`)](linuxCommon.md)** — `linuxX64`, `linuxArm64`, shared by **`Gtk`** & **`Kde`**:
+   - Toolkit-agnostic `linux/style/` helpers (`LinuxStyledSurfaceHelper`, `LinuxBackdropFilterController`, zero `gtk` or `kde` imports)
    - `LinuxResourceResolverImpl` (ELF `.rodata` `genericui_res_lookup_*` / `genericui_res_lookup_app` symbols via `dlsym`)
    - `LinuxXdgConfigDirectoryImpl`, `LinuxXdgCacheDirectoryImpl`, `LinuxXdgPreferenceStoreImpl`
    - `LinuxPosixFileSystemNativeImpl`, `LinuxSqliteDatabaseNativeImpl`, `LinuxCurlHttpClientNativeImpl`, `LinuxPosixTcpSocketNativeImpl`, `LinuxPosixUdpSocketNativeImpl`, `LinuxRfc6455WebSocketNativeImpl`, `LinuxGioNetworkMonitorNativeImpl`, `LinuxDbusNotificationManagerNativeImpl`, `LinuxGdkPixbufImageCodecNativeImpl`, `LinuxX11WindowHintsBridge`

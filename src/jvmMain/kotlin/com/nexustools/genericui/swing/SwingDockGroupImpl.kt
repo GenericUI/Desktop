@@ -1,26 +1,28 @@
 package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.core.NativeImpl
+import com.nexustools.genericui.enums.bootstrap.FlexDirection
 import com.nexustools.genericui.enums.dock.DockGroupMode
 import com.nexustools.genericui.nativeimpl.dock.DockGroupNativeImpl
+import com.nexustools.genericui.enums.css.CssDisplay
 import java.awt.BorderLayout
-import javax.swing.BoxLayout
+import java.awt.Dimension
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JTabbedPane
 
 /**
- * Java Swing implementation of [DockGroupNativeImpl] supporting tabbed (`JTabbedPane`) as well as
- * vertical/horizontal stacked split dock groups.
+ * Java Swing [DockGroupNativeImpl] supporting tabbed panels ([JTabbedPane]) and proportional
+ * horizontal/vertical flex splits without overlapping or clipping panel bodies.
  */
 class SwingDockGroupImpl : SwingBaseContainerNativeImpl(
-    JPanel(BorderLayout()),
+    JPanel(BorderLayout()).apply { isOpaque = false },
     "dock-group"
 ), DockGroupNativeImpl<JComponent> {
 
     private val rootPanel: JPanel = nativeWidget as JPanel
     val tabbedPane: JTabbedPane = JTabbedPane()
-    private val stackedPanel: JPanel = JPanel()
+    private val stackedPanel: JPanel = SwingContainerImpl.SwingLayoutPanel()
     private val managedChildren = mutableListOf<Pair<NativeImpl<*>, JComponent>>()
 
     private var modeVal: DockGroupMode = DockGroupMode.TABBED
@@ -28,12 +30,21 @@ class SwingDockGroupImpl : SwingBaseContainerNativeImpl(
     private var suppressTabEvents: Boolean = false
 
     init {
+        rootPanel.isOpaque = false
+        stackedPanel.isOpaque = false
         rootPanel.add(tabbedPane, BorderLayout.CENTER)
         tabbedPane.addChangeListener {
             if (!suppressTabEvents && tabbedPane.selectedIndex >= 0) {
                 activeIndex = tabbedPane.selectedIndex
             }
         }
+        syncSwingAppearance()
+    }
+
+    override fun syncSwingAppearance() {
+        super.syncSwingAppearance()
+        rootPanel.isOpaque = false
+        stackedPanel.isOpaque = false
     }
 
     override fun setGroupMode(mode: DockGroupMode) {
@@ -81,38 +92,45 @@ class SwingDockGroupImpl : SwingBaseContainerNativeImpl(
     }
 
     private fun rebuildModeView() {
-        suppressTabEvents = true
-        try {
-            rootPanel.removeAll()
-            tabbedPane.removeAll()
-            stackedPanel.removeAll()
+        rootPanel.removeAll()
+        tabbedPane.removeAll()
+        stackedPanel.removeAll()
 
-            if (modeVal == DockGroupMode.TABBED) {
-                for ((childImpl, comp) in managedChildren) {
+        when (modeVal) {
+            DockGroupMode.TABBED -> {
+                for ((idx, pair) in managedChildren.withIndex()) {
+                    val (childImpl, childComp) = pair
                     val title = (childImpl as? SwingDockPanelImpl)?.getTitle()?.takeIf { it.isNotEmpty() }
-                        ?: (comp.getClientProperty("title") as? String)?.takeIf { it.isNotEmpty() }
-                        ?: "Panel"
-                    tabbedPane.addTab(title, comp)
+                        ?: "Panel ${idx + 1}"
+                    childComp.minimumSize = Dimension(0, 0)
+                    tabbedPane.addTab(title, childComp)
                 }
                 if (activeIndex in 0 until tabbedPane.tabCount) {
-                    tabbedPane.selectedIndex = activeIndex
+                    suppressTabEvents = true
+                    try {
+                        tabbedPane.selectedIndex = activeIndex
+                    } finally {
+                        suppressTabEvents = false
+                    }
                 }
                 rootPanel.add(tabbedPane, BorderLayout.CENTER)
-            } else {
-                val axis = if (modeVal == DockGroupMode.HORIZONTAL_SPLIT) {
-                    BoxLayout.X_AXIS
-                } else {
-                    BoxLayout.Y_AXIS
-                }
-                stackedPanel.layout = BoxLayout(stackedPanel, axis)
-                for ((_, comp) in managedChildren) {
-                    stackedPanel.add(comp)
+            }
+            DockGroupMode.HORIZONTAL_SPLIT, DockGroupMode.VERTICAL_SPLIT -> {
+                val isHorizontal = modeVal == DockGroupMode.HORIZONTAL_SPLIT
+                stackedPanel.layout = SwingFlexLayoutManager(
+                    defaultDisplay = CssDisplay.FLEX,
+                    defaultFlexDirection = if (isHorizontal) FlexDirection.ROW else FlexDirection.COLUMN,
+                    defaultGapPx = 4
+                )
+                for ((_, childComp) in managedChildren) {
+                    val impl = childComp.getClientProperty(CLIENT_PROPERTY_KEY) as? SwingBaseNativeImpl
+                    impl?.setAttribute("data-stack-weight", "1")
+                    stackedPanel.add(childComp)
                 }
                 rootPanel.add(stackedPanel, BorderLayout.CENTER)
             }
-        } finally {
-            suppressTabEvents = false
         }
+        SwingFlexLayoutManager.layoutTreeNow(rootPanel)
         rootPanel.revalidate()
         rootPanel.repaint()
     }

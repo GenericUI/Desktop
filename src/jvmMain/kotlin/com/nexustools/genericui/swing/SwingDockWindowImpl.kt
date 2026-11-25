@@ -84,16 +84,23 @@ class SwingDockWindowImpl : SwingBaseContainerNativeImpl(
                     bounds.width.coerceAtLeast(160),
                     bounds.height.coerceAtLeast(120)
                 )
-            } else {
+            } else if (SwingApplicationImpl.isInteractiveSwingDisplayEnabled) {
                 dialog.pack()
                 if (dialog.width < 200 || dialog.height < 140) {
                     dialog.setSize(dialog.width.coerceAtLeast(240), dialog.height.coerceAtLeast(180))
                 }
                 swingOwner?.jFrame?.let { dialog.setLocationRelativeTo(it) }
+            } else {
+                dialog.setSize(240, 180)
+                nativeWidget.setBounds(0, 0, 240, 180)
             }
-            dialog.isVisible = true
+            if (SwingApplicationImpl.isInteractiveSwingDisplayEnabled) {
+                dialog.isVisible = true
+            }
         }
-        bringToFront()
+        if (SwingApplicationImpl.isInteractiveSwingDisplayEnabled) {
+            bringToFront()
+        }
     }
 
     override fun hideDockWindow() {

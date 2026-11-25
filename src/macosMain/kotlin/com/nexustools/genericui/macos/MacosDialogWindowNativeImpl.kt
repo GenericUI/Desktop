@@ -1,6 +1,8 @@
 package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
+import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.geometry.Size
 
 /**
  * macOS AppKit `NSPanel` / `NSWindow` sheet or modal dialog implementation of
@@ -22,4 +24,38 @@ open class MacosDialogWindowNativeImpl(
 
     val attachedToMainWindow: Boolean
         get() = nativeWidget.attributes["attachedToMainWindow"] as? Boolean ?: (ownerWindow != null)
+
+    override fun setBounds(x: Int, y: Int, width: Int, height: Int) {
+        super.setBounds(x, y, width, height)
+        onBoundsChangedHook?.invoke(this)
+    }
+
+    override fun setPreferredSize(size: Size?) {
+        super.setPreferredSize(size)
+        onBoundsChangedHook?.invoke(this)
+    }
+
+    override fun closeDialog() {
+        super.closeDialog()
+        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
+            MacosNativeWindowHost.closeDialogWindow(this)
+        }
+    }
+
+    internal fun syncHostDialogBounds(widthPx: Int, heightPx: Int) {
+        val w = widthPx.coerceAtLeast(1)
+        val h = heightPx.coerceAtLeast(1)
+        val changed = boundsWidth != w || boundsHeight != h ||
+            nativeWidget.bounds.width != w || nativeWidget.bounds.height != h
+        boundsWidth = w
+        boundsHeight = h
+        nativeWidget.bounds = Rect(0, 0, w, h)
+        if (changed) {
+            onBoundsChangedHook?.invoke(this)
+        }
+    }
+
+    companion object {
+        var onBoundsChangedHook: ((DesktopDialogWindowNativeImpl<*>) -> Unit)? = null
+    }
 }

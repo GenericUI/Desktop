@@ -3,6 +3,7 @@ package com.nexustools.genericui.macos
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
 import com.nexustools.genericui.enums.window.DisplayCutoutMode
+import com.nexustools.genericui.enums.window.TitleBarControlsPlacement
 import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
@@ -49,11 +50,18 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
 
     override fun applyTitleBarInstructions(titleBar: TitleBar?) {
         super.applyTitleBarInstructions(titleBar)
-        val custom = titleBar?.customTitleBar == true
-        if (custom) {
+        val undecoratedHost = super.isUndecorated() && !isToolModalWindow
+        val custom = undecoratedHost || titleBar?.customTitleBar == true
+        if (!super.isUndecorated() && titleBar?.customTitleBar == true) {
             nativeWidget.styleMask = nativeWidget.styleMask or MacosViewHandle.NSWindowStyleMaskFullSizeContentView
         }
-        val allowMinimize = if (isToolModalWindow) minimizable else (titleBar?.showMinimizeButton ?: true)
+        val allowMinimize = if (undecoratedHost) {
+            true
+        } else if (isToolModalWindow) {
+            minimizable
+        } else {
+            titleBar?.showMinimizeButton ?: true
+        }
         if (!allowMinimize) {
             nativeWidget.styleMask = nativeWidget.styleMask and MacosViewHandle.NSWindowStyleMaskMiniaturizable.inv()
         } else {
@@ -95,7 +103,10 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         isTitleBarRequired = true,
         titleBarRendersAsNavbar = false,
         menuBarRendersAsNavbar = false,
-        menuBarMergesIntoTitleNavbar = false
+        menuBarMergesIntoTitleNavbar = false,
+        defaultControlsPlacement = TitleBarControlsPlacement.LEADING,
+        prefersBlurredTranslucentOverlayTitleBar = true,
+        usesNativeOverlayTitleBarControls = true
     )
 
     override fun setTitle(title: String) {
@@ -115,15 +126,17 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
     }
 
     override fun setAspectRatio(aspectRatio: Double?) {
+        val changed = getAspectRatio() != aspectRatio
         super.setAspectRatio(aspectRatio)
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
+        if (changed && MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
             MacosNativeWindowHost.syncWindowAspectRatio(this)
         }
     }
 
     override fun setMinWindowSize(minSize: Size?) {
+        val changed = getMinWindowSize() != minSize
         super.setMinWindowSize(minSize)
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
+        if (changed && MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
             MacosNativeWindowHost.syncWindowSize(this)
         }
     }
@@ -155,7 +168,19 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         val changed = super.isUndecorated() != undecorated
         super.setUndecorated(undecorated)
         if (undecorated) {
-            nativeWidget.styleMask = MacosViewHandle.NSWindowStyleMaskResizable
+            if (isToolModalWindow) {
+                nativeWidget.styleMask = MacosViewHandle.NSWindowStyleMaskBorderless or
+                    MacosViewHandle.NSWindowStyleMaskClosable or
+                    (if (minimizable) MacosViewHandle.NSWindowStyleMaskMiniaturizable else 0L) or
+                    MacosViewHandle.NSWindowStyleMaskResizable
+            } else {
+                nativeWidget.styleMask = MacosViewHandle.NSWindowStyleMaskBorderless or
+                    MacosViewHandle.NSWindowStyleMaskClosable or
+                    MacosViewHandle.NSWindowStyleMaskMiniaturizable or
+                    MacosViewHandle.NSWindowStyleMaskResizable
+                nativeWidget.attributes["titlebarAppearsTransparent"] = true
+                nativeWidget.attributes["titleVisibility"] = "NSWindowTitleHidden"
+            }
         } else {
             val tb = getTitleBarInstructions()
             var mask = MacosViewHandle.NSWindowStyleMaskTitled or
@@ -240,6 +265,24 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         }
     }
 
+    override fun setNavBarNative(navBarImpl: com.nexustools.genericui.core.NativeImpl<*>?) {
+        val changed = attachedNavBar !== navBarImpl
+        super.setNavBarNative(navBarImpl)
+        if (changed && MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
+            MacosNativeWindowHost.syncWindowProperties(this)
+            MacosNativeWindowHost.requestRedraw()
+        }
+    }
+
+    override fun setBottomNavigationBarNative(bottomNavImpl: com.nexustools.genericui.core.NativeImpl<*>?) {
+        val changed = attachedBottomNav !== bottomNavImpl
+        super.setBottomNavigationBarNative(bottomNavImpl)
+        if (changed && MacosApplicationNativeImpl.interactiveMacosGuiEnabled && !suppressHostSync) {
+            MacosNativeWindowHost.syncWindowProperties(this)
+            MacosNativeWindowHost.requestRedraw()
+        }
+    }
+
     override fun dispose() {
         val alreadyDisposed = isDisposed
         super.dispose()
@@ -294,6 +337,8 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
             currentWindowState == WindowState.FULLSCREEN || currentWindowState == WindowState.MAXIMIZED -> WindowState.NORMAL
             else -> currentWindowState
         }
+        val prevFullscreen = fullscreenFlag
+        val hadFullscreenElement = fullscreenElementImpl != null
         val changed = currentWindowSize != newSize ||
             fullscreenFlag != fullscreenNow ||
             currentWindowState != nextState ||
@@ -305,9 +350,17 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
             currentWindowSize = newSize
             fullscreenFlag = fullscreenNow
             currentWindowState = nextState
+            if (!fullscreenNow && fullscreenElementImpl != null) {
+                fullscreenElementImpl = null
+                nativeWidget.attributes.remove("fullscreenElement")
+            }
             nativeWidget.attributes["fullscreen"] = fullscreenNow
             nativeWidget.attributes["windowState"] = currentWindowState
             nativeWidget.bounds = Rect(0, 0, w, h)
+            if (prevFullscreen != fullscreenNow || hadFullscreenElement) {
+                nativeWidget.bumpAttrMutationVersion()
+                nativeWidget.bumpSubtreeMutationVersion()
+            }
         } finally {
             suppressHostSync = false
         }
@@ -327,7 +380,7 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
                 )
             )
         }
-        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
+        if (prevState != currentWindowState && MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
             MacosNativeWindowHost.syncWindowAspectRatio(this)
         }
     }

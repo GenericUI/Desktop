@@ -35,6 +35,91 @@ object Win32WinMain {
 
     var registeredEntryPoint: ((Array<String>) -> Int)? = null
 
+    private var comCtlInitialized: Boolean = false
+    private var comCtlActCtxHandle: HANDLE? = null
+    private var comCtlActCtxCookie: ULong = 0uL
+    private var msftEditModule: HMODULE? = null
+    private var preferredAppModeFn: CPointer<CFunction<(Int) -> Int>>? = null
+    private var allowDarkModeForWindowFn: CPointer<CFunction<(HWND?, Int) -> Int>>? = null
+
+    /**
+     * Ensures Per-Monitor DPI v2, ComCtl32 v6 activation context (before `InitCommonControlsEx`),
+     * common control class registration, RichEdit (`RICHEDIT50W`), UxTheme dark mode ordinals, and OLE
+     * are initialized cleanly once per process. Idempotent and safe before any `Window.show()`.
+     */
+    fun ensureWindowsControlsInitialized() {
+        if (comCtlInitialized) return
+        comCtlInitialized = true
+        memScoped {
+            val user32 = GetModuleHandleW("user32.dll") ?: LoadLibraryW("user32.dll")
+            val setDpiContextFn = user32?.let {
+                GetProcAddress(it, "SetProcessDpiAwarenessContext")
+                    ?.reinterpret<CFunction<(COpaquePointer?) -> Int>>()
+            }
+            val dpiV2Applied = setDpiContextFn != null && setDpiContextFn((-4L).toCPointer()) != 0
+            if (!dpiV2Applied) {
+                SetProcessDPIAware()
+            }
+
+            // Activate the ComCtl32 v6 manifest bundled in shell32.dll resource #124
+            // strictly BEFORE calling InitCommonControlsEx so every standard HWND gets v6 theming.
+            val shell32 = GetModuleHandleW("shell32.dll") ?: LoadLibraryW("shell32.dll")
+            if (shell32 != null) {
+                val actCtx = alloc<ACTCTXW>()
+                actCtx.cbSize = sizeOf<ACTCTXW>().toUInt()
+                actCtx.dwFlags = ACTCTX_FLAG_RESOURCE_NAME_VALID.toUInt() or ACTCTX_FLAG_HMODULE_VALID.toUInt()
+                actCtx.lpResourceName = 124L.toCPointer()
+                actCtx.hModule = shell32
+                val hActCtx = CreateActCtxW(actCtx.ptr)
+                if (hActCtx != null && hActCtx != INVALID_HANDLE_VALUE) {
+                    val cookieVar = alloc<ULongVar>()
+                    if (ActivateActCtx(hActCtx, cookieVar.ptr) != 0) {
+                        comCtlActCtxHandle = hActCtx
+                        comCtlActCtxCookie = cookieVar.value
+                    }
+                }
+            }
+
+            val icc = alloc<tagINITCOMMONCONTROLSEX>()
+            icc.dwSize = sizeOf<tagINITCOMMONCONTROLSEX>().toUInt()
+            icc.dwICC = ICC_STANDARD_CLASSES.toUInt() or
+                ICC_WIN95_CLASSES.toUInt() or
+                ICC_BAR_CLASSES.toUInt() or
+                ICC_PROGRESS_CLASS.toUInt() or
+                ICC_TAB_CLASSES.toUInt() or
+                ICC_LISTVIEW_CLASSES.toUInt() or
+                ICC_TREEVIEW_CLASSES.toUInt() or
+                ICC_DATE_CLASSES.toUInt() or
+                ICC_UPDOWN_CLASS.toUInt() or
+                ICC_LINK_CLASS.toUInt()
+            InitCommonControlsEx(icc.ptr)
+
+            msftEditModule = GetModuleHandleW("Msftedit.dll") ?: LoadLibraryW("Msftedit.dll")
+
+            val uxtheme = GetModuleHandleW("uxtheme.dll") ?: LoadLibraryW("uxtheme.dll")
+            if (uxtheme != null) {
+                preferredAppModeFn = GetProcAddress(uxtheme, 135L.toCPointer<ByteVar>())
+                    ?.reinterpret<CFunction<(Int) -> Int>>()
+                allowDarkModeForWindowFn = GetProcAddress(uxtheme, 133L.toCPointer<ByteVar>())
+                    ?.reinterpret<CFunction<(HWND?, Int) -> Int>>()
+                preferredAppModeFn?.invoke(1) // AllowDark
+            }
+
+            OleInitialize(null)
+        }
+    }
+
+    /**
+     * Allows or disables UxTheme dark mode chrome for an individual top-level or child [hwnd] via
+     * `uxtheme.dll` ordinal #133 (`AllowDarkModeForWindow`).
+     */
+    fun allowDarkModeForWindow(hwnd: HWND?, allow: Boolean): Boolean {
+        if (hwnd == null) return false
+        ensureWindowsControlsInitialized()
+        val fn = allowDarkModeForWindowFn ?: return false
+        return fn(hwnd, if (allow) 1 else 0) != 0
+    }
+
     fun initializeFromProcessStartup(
         explicitHInstance: HINSTANCE? = null,
         explicitPrevInstance: HINSTANCE? = null,
@@ -47,8 +132,7 @@ object Win32WinMain {
             if (defaultDesktop != null) {
                 SetThreadDesktop(defaultDesktop)
             }
-            SetProcessDPIAware()
-            OleInitialize(null)
+            ensureWindowsControlsInitialized()
             isInitialized = true
         }
 

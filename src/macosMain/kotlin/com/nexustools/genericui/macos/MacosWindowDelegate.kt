@@ -3,6 +3,7 @@
 package com.nexustools.genericui.macos
 
 import kotlinx.cinterop.CValue
+import platform.AppKit.NSScreen
 import platform.AppKit.NSWindow
 import platform.AppKit.NSWindowDelegateProtocol
 import platform.Foundation.NSNotification
@@ -21,8 +22,20 @@ internal class MacosWindowDelegate(
     override fun windowShouldClose(sender: NSWindow): Boolean =
         MacosNativeWindowHost.onNativeWindowShouldClose(windowKey, isDialog)
 
+    override fun windowWillClose(notification: NSNotification) {
+        MacosNativeWindowHost.onNativeWindowWillClose(windowKey, isDialog)
+    }
+
     override fun windowDidResize(notification: NSNotification) {
         MacosNativeWindowHost.onNativeWindowDidResize(windowKey, isDialog)
+    }
+
+    override fun windowWillStartLiveResize(notification: NSNotification) {
+        MacosNativeWindowHost.onNativeWindowLiveResizeChanged(windowKey, active = true)
+    }
+
+    override fun windowDidEndLiveResize(notification: NSNotification) {
+        MacosNativeWindowHost.onNativeWindowLiveResizeChanged(windowKey, active = false)
     }
 
     override fun windowDidMove(notification: NSNotification) {
@@ -30,12 +43,20 @@ internal class MacosWindowDelegate(
     }
 
     override fun windowWillUseStandardFrame(window: NSWindow, defaultFrame: CValue<NSRect>): CValue<NSRect> {
-        MacosNativeWindowHost.onNativeWindowWillUseStandardFrame(windowKey, isDialog, window)
+        if ((window as? MacosHostWindow)?.isNativeOverlayTitleBarHostWindow == true) {
+            return window.screen?.visibleFrame ?: NSScreen.mainScreen?.visibleFrame ?: defaultFrame
+        }
         return defaultFrame
     }
 
     override fun windowShouldZoom(window: NSWindow, toFrame: CValue<NSRect>): Boolean {
         MacosNativeWindowHost.onNativeWindowShouldZoom(windowKey, isDialog, window)
+        if ((window as? MacosHostWindow)?.let {
+                it.isNativeOverlayTitleBarHostWindow && !it.isToolModal && !it.isPerformingNativeZoom && !window.isZoomed()
+            } == true
+        ) {
+            window.suspendAspectRatioForNativeZoom()
+        }
         return true
     }
 
@@ -52,6 +73,14 @@ internal class MacosWindowDelegate(
     }
 
     override fun windowDidResignKey(notification: NSNotification) {
+        MacosNativeWindowHost.onNativeWindowFocusChanged(windowKey, isDialog, focused = false)
+    }
+
+    override fun windowDidBecomeMain(notification: NSNotification) {
+        MacosNativeWindowHost.onNativeWindowFocusChanged(windowKey, isDialog, focused = true)
+    }
+
+    override fun windowDidResignMain(notification: NSNotification) {
         MacosNativeWindowHost.onNativeWindowFocusChanged(windowKey, isDialog, focused = false)
     }
 

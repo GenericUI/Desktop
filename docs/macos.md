@@ -29,21 +29,22 @@ When `styles { globalStyleSheet = "..." }` is set, startup attaches the precompi
 
 ---
 
-## 60+Hz Hardware `backdrop-filter` & Stage HUD `ExpandingVolumeSlider` Wave-Alpha Sync
+## Pure Retained AppKit `NSView` Hierarchy, Shared `:apple` Helpers, & 60+Hz `backdrop-filter`
 
-1. **`MacosMetalBackdropBlurEngine` (`StyledButton` & `StyledContainer`, Excluding `TextBubble`)**:
-   - Implemented in [`MacosMetalBackdropBlurEngine.kt`](../src/macosMain/kotlin/com/nexustools/genericui/macos/render/MacosMetalBackdropBlurEngine.kt) and invoked through `MacosGraphicsDrawUtil.applyBackdropFilterRoundedRect` from `MacosControlRenderUtil` (`StyledContainer`, `StyledButton`) and `MacosStageOverlayRenderUtil` (`TextBubble` strips `backdropFilter` via `withoutBackdropFilter()`).
-   - Uses **Metal (`MTLCreateSystemDefaultDevice`) + GPU `CIContext.contextWithMTLDevice`** with clamped `CIGaussianBlur` and `CIColorControls` for 60+Hz smooth behind-the-surface compositing, falling back cleanly to `FastBackdropBlurKernel` when Metal initialization is unavailable.
-2. **Stage HUD `ExpandingVolumeSlider` Wave-Alpha Synchronization**:
-   - `MacosStageOverlayRenderUtil` (`renderExpandingVolumeIconStack` + `resolveVolumeLayerAlpha`) synchronizes `data-volume-layer` layers (`"speaker"`, `"wave-1"` -> `"data-wave-1-opacity"`, `"wave-2"` -> `"data-wave-2-opacity"`, `"wave-3"` -> `"data-wave-3-opacity"`, `"mute-cross"` -> `"data-mute-cross-opacity"`) inside `ROLE_EXPANDING_SLIDER_PILL` (`ExpandingVolumeSlider`) by multiplying `savedOpacity * layerAlpha` against live HUD fade opacity.
+Every mounted component creates a real flipped AppKit `NSView` / `NSControl` (`NSPanel`, `NSPopover`, `NSMenu` for popups/menus/dialogs) inside `MacosWindowRootView` and the 4-mode `MacosHostWindow` hierarchy — completely replacing legacy single-canvas painting and offscreen control sprite rendering with retained native AppKit subviews:
+
+1. **`MacosSurfaceLayerSupport` + Native `NSVisualEffectView` & `:apple` Helpers (`StyledComponent`, `StyledButton`, `StyledContainer`, & `Composite`)**:
+   - Powered by `StyledWidgetVisualController`, `DesktopStyledWidgetDelegate`, `:apple`'s `AppleStyledSurfaceHelper`, and `MacosSurfaceLayerSupport`, using native `NSVisualEffectView` (`blendingMode = WithinWindow`) for `backdrop-filter: blur(...)` without `CALayer.backgroundFilters`, reserving `AppleBackdropFilterController` solely for non-blur W3C filter operations (`requiresFullFilterPipeline`) and offscreen `JestElectricRunner` capture (`MacosNativeWindowHost`).
+2. **Uniform CSS Cascade, `:system` `Animator` `@keyframes`, & `DesktopContainerLayoutController`**:
+   - Opacity inheritance (`.hidden` fading overlays and wave transitions driven via `style.scss` + `SystemCssAnimationController` / `Animator`), CSS `transform` (`translate(...)`), `z-index` subview ordering, `pointer-events: none` hit-test exclusion, and `DesktopContainerLayoutController` + `BrowserLayoutEngine` proximal `position: relative` ancestor (else `Window`) containing-block bounds resolve uniformly with **zero** component/class/id/app-specific fast-paths or custom `SeekBarNativeImpl`.
 
 ---
 
-## Native AppKit Control Rendering & Style Restraints
+## Native AppKit Controls, Native `NSButton` Tinting, & Style Restraints
 
-1. **`BootstrapType.NONE` Default**: Renders 100% unmodified AppKit controls (`NSButton`/`NSButtonCell`, `NSTextField`, `NSSlider`, `NSSwitch`, `NSPopUpButton`) matching `NSApp.effectiveAppearance`.
-2. **`BootstrapType != NONE`**: `MacosControlRenderUtil` renders the AppKit control with empty text into an offscreen `CGBitmapContext` ARGB buffer, tints via `DesktopControlTintRenderUtil.tintNativeControlArgbBuffer` and `ThemeConfig`, blits the tinted `CGImage`, and paints contrasting CoreText labels and icons on top.
-3. **Typography vs. Aesthetic Style Restraints**: Text elements honor typography/color; standard controls/containers ignore aesthetic CSS properties (tint via `BootstrapType` only); `StyledContainer` / `StyledButton` / `:extensions:ui:alien` honor full `ComponentStyle` including `backdropFilter`.
+1. **`BootstrapType.NONE` Default & Non-`Button` Controls**: Mounts 100% unmodified AppKit controls (`NSButton`, `NSTextField`, `NSSlider`, `NSSwitch`, `NSPopUpButton`, `NSDatePicker`, `NSColorWell`, `NSSearchField`, etc.) matching `NSApp.effectiveAppearance`. Form subclasses (`ComboBox`, `DatePicker`, `TimePicker`, `ColorPicker`, `SearchField`, `NumberField`, `SplitDropdownButton`) stamp `data-control-variant` for specialized AppKit widget selection; **`DropdownButton`, `SplitDropdownButton`, `ProgressBar`, `Spinner`, `StyledSlider`, `Composite`, and all other non-`Button` controls MUST NOT support `BootstrapType`**.
+2. **`Button` Genuine `NSButton` Native Tinting (`MacosButtonNativeImpl`)**: Among controls, **ONLY `Button` and its subclasses (`Button`, `IconButton`, `ToggleButton`, `FloatingActionButton`, `StyledButton`)** support `BootstrapType`. `MacosButtonNativeImpl` always mounts a genuine native `NSButton`, leaving it unmodified when `(type == null || type == BootstrapType.NONE) && !outline` and updating native AppKit styling in place via `bezelColor`, `hasDestructiveAction`, `bordered`, `showsBorderOnlyWhileMouseInside`, and `contentTintColor` when `BootstrapType != NONE` or `outline == true` (with template `NSImage` tinting).
+3. **Bootstrap Semantic Surfaces & Typography vs. Aesthetic Style Restraints**: Bootstrap non-control surfaces (`Badge`, `Alert`, `Banner`, `Toast`, `Card`, `ListGroup`, `ListGroupItem`, `Jumbotron`, `Well`) mount dedicated custom AppKit views styled via `:system`'s `SemanticSurfaceStyleResolver` (`SemanticSurfacePaintSpec`). Text elements honor typography/color; non-`Button` controls and standard containers ignore both `BootstrapType` and aesthetic CSS properties; `StyledComponent` / `StyledContainer` / `StyledButton` / `Composite` (`StyledSlider`, `SeekBar`, `ExpandingVolumeSlider`) / `:extensions:ui:alien` honor full CSS/SCSS styling (`Composite` and `StyledSlider` do NOT support `BootstrapType`, and direct Kotlin component styles are forbidden beyond runtime-dynamic `%` values).
 4. **Strict User CSS Class Isolation**: `styleSnapshot.customClasses` stays separate from `ComponentBootstrap` enums.
 
 ---
@@ -57,7 +58,7 @@ When `styles { globalStyleSheet = "..." }` is set, startup attaches the precompi
 
 ## `ServiceWorker`, `Accessory` Activation Policy, Unwrapped Tray Icon, & Squircle Handling
 
-- **Secondary `Contents/MacOS/serviceworker` Binary**: Built and code-signed inside `.app/Contents/MacOS/serviceworker`; guarded by POSIX `flock(LOCK_EX | LOCK_NB)`, `~/Library/LaunchAgents/<appId>.serviceworker.plist` autostart (`DesktopOsHelpers`), and authenticated loopback `127.0.0.1:0` IPC.
+- **Secondary `serviceworker` Helper Binary & Native XPC / `AF_UNIX` IPC**: Built and code-signed inside `.app/Contents/Helpers/<AppName> Service Worker.app/Contents/MacOS/serviceworker`; guarded by POSIX `flock(LOCK_EX | LOCK_NB)`, `~/Library/LaunchAgents/<appId>.serviceworker.plist` autostart with `MachServices` (`<appId>.serviceworker`), and authenticated native IPC via `libxpc` Mach service (`<appId>.serviceworker`) when running under a `launchd` LaunchAgent or POSIX `AF_UNIX` `SOCK_STREAM` (plus `getpeereid` UID verification) for direct non-`launchd` launches, advertised via `serviceworker-endpoint.json` (`transport`, `address`, 32-byte hex `token`).
 - **`NSApplicationActivationPolicyAccessory` Headless Tray Loop**: `MacosNativeWindowHost.syncActivationPolicyForCurrentState()` dynamically switches AppKit between `NSApplicationActivationPolicyRegular` and `NSApplicationActivationPolicyAccessory` whenever `!hasVisibleMainWindow && MacosSystemTrayNativeImpl.hasActiveTray()`, keeping menu-bar tray operation alive without a Dock icon when `openWindowOnLaunch = false` or the last window closes.
 - **Unwrapped Menu-Bar Tray Icon vs. Dock Squircle Wrapping**:
   - `MacosSystemTrayNativeImpl` loads raw unwrapped template/tray icon bytes (`tray_icon_svg` / `tray_icon_png`) directly from signed Mach-O symbols via `MacosResourceResolverImpl.lookupEmbeddedAppBytes(...)` (no loose `gui/`/`app/` files required).

@@ -10,7 +10,7 @@ import kotlin.concurrent.atomics.AtomicInt
 /**
  * Shared desktop codec registration wiring [DesktopLibJpegImageCodecImpl] into
  * [ImageLoader.activeNativeCodec] and registering OS file, resource, and HTTP URL
- * fetchers on [ImageCacheManager] for `:windows`, `:macos`, `:gtk`, and `:qt`.
+ * fetchers on [ImageCacheManager] for `:windows`, `:macos`, `:gtk`, and `:kde`.
  */
 object DesktopImageCodecHooks {
 

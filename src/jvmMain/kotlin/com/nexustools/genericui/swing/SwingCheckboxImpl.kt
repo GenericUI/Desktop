@@ -21,8 +21,22 @@ class SwingCheckboxImpl(
     private var onCheckedChangedListener: ((Boolean) -> Unit)? = null
 
     init {
+        nativeWidget.isOpaque = false
+        nativeWidget.isContentAreaFilled = false
         nativeWidget.addActionListener {
             onCheckedChangedListener?.invoke(nativeWidget.isSelected)
+        }
+        syncSwingAppearance()
+    }
+
+    override fun syncSwingAppearance() {
+        super.syncSwingAppearance()
+        val hasExplicitBg = customBackgroundColor != null ||
+            lastComponentStyle?.backgroundColor != null ||
+            lastComputedStyle?.backgroundColor != null
+        if (!hasExplicitBg) {
+            nativeWidget.isOpaque = false
+            nativeWidget.isContentAreaFilled = false
         }
     }
 

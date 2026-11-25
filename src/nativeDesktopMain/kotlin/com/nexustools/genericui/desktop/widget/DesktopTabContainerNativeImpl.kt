@@ -4,13 +4,15 @@ import com.nexustools.genericui.component.tabs.TabBarStyle
 import com.nexustools.genericui.component.tabs.TabPosition
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
+import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
+import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.nativeimpl.tabs.TabContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
 
 /**
  * Shared desktop base implementation of [TabContainerNativeImpl] for `WC_TABCONTROL` (`:windows`),
- * `NSTabView` (`:macos`), `AdwTabView`/`GtkNotebook` (`:gtk`), and `QTabWidget` (`:qt`).
+ * `NSTabView` (`:macos`), `AdwTabView`/`GtkNotebook` (`:gtk`), and `QTabWidget` (`:kde`).
  *
  * Translates each [TabNativeImpl] ([DesktopTabNativeImpl]) into the platform's native tab item
  * (including native close buttons for `CloseableTab`, badges for `BadgeTab`, and embedded custom
@@ -18,7 +20,7 @@ import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
  */
 open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W,
-    override val supportsNativeFadeTransition: Boolean = true
+    override val supportsNativeFadeTransition: Boolean = false
 ) : DesktopBaseContainerNativeImpl<W>(nativeWidget, "nav-tabs"), TabContainerNativeImpl<W> {
 
     protected val tabImpls: MutableList<TabNativeImpl<*>?> = mutableListOf()
@@ -31,6 +33,12 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
     protected var fullWidthTabsVal: Boolean = false
     protected var onTabSelectedListener: ((Int) -> Unit)? = null
     protected var onTabCloseRequestedListener: ((Int) -> Boolean)? = null
+
+    init {
+        if ("tagName" !in nativeWidget.attributes) {
+            nativeWidget.attributes["tagName"] = "genericui:tabcontainer"
+        }
+    }
 
     fun isButtonTab(index: Int): Boolean = buttonTabFlags.getOrElse(index) { false }
 
@@ -268,6 +276,63 @@ open class DesktopTabContainerNativeImpl<out W : DesktopNativeWidget>(
     fun requestCloseTab(index: Int) {
         if (index in tabTitles.indices) {
             onTabCloseRequestedListener?.invoke(index)
+        }
+    }
+
+    protected fun hasNonEmptyTabContent(): Boolean {
+        val active = contentImpls.getOrNull(selectedIndexVal) as? DesktopBaseNativeImpl<*>
+            ?: contentImpls.firstOrNull { it != null } as? DesktopBaseNativeImpl<*>
+            ?: return false
+        if (active is DesktopBaseContainerNativeImpl<*>) {
+            if (active.getLogicalChildren().isEmpty() && active.nativeWidget.bounds.height <= 0) {
+                val style = active.resolveEffectiveStyle()
+                if (style?.height == null && style?.minHeight == null) {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    protected fun measureTabContainerIntrinsicSize(
+        stripThicknessPx: Int,
+        verticalStripWidthPx: Int,
+        maxWidth: Float?,
+        maxHeight: Float?
+    ): Size {
+        val vertical = tabPositionVal == TabPosition.LEFT || tabPositionVal == TabPosition.RIGHT
+        if (!hasNonEmptyTabContent()) {
+            return if (vertical) {
+                Size(verticalStripWidthPx, (maxHeight?.toInt() ?: 240).coerceAtLeast(120))
+            } else {
+                Size((maxWidth?.toInt() ?: 360).coerceAtLeast(160), stripThicknessPx)
+            }
+        }
+        val active = contentImpls.getOrNull(selectedIndexVal) as? DesktopBaseNativeImpl<*>
+            ?: contentImpls.firstOrNull { it != null } as? DesktopBaseNativeImpl<*>
+        if (vertical) {
+            val contentMaxW = maxWidth?.let { (it - verticalStripWidthPx).coerceAtLeast(0f) }
+            val contentSize = active?.measureIntrinsicSize(contentMaxW, maxHeight) ?: Size(240, 160)
+            val totalW = (contentSize.width + verticalStripWidthPx).let { w ->
+                if (maxWidth != null && maxWidth > 0f) minOf(w, maxWidth.toInt()) else w
+            }.coerceAtLeast(verticalStripWidthPx)
+            val totalH = maxOf(160, contentSize.height).let { h ->
+                if (maxHeight != null && maxHeight > 0f) minOf(h, maxHeight.toInt()) else h
+            }
+            return Size(totalW, totalH)
+        } else {
+            val contentMaxH = maxHeight?.let { (it - stripThicknessPx).coerceAtLeast(0f) }
+            val contentSize = active?.measureIntrinsicSize(maxWidth, contentMaxH) ?: Size(240, 160)
+            val totalW = maxOf(240, contentSize.width, maxWidth?.toInt() ?: 0)
+            val rawH = if (active is DesktopScrollViewNativeImpl<*> && maxHeight != null && maxHeight > 0f) {
+                maxHeight.toInt()
+            } else {
+                contentSize.height + stripThicknessPx
+            }
+            val totalH = rawH.let { h ->
+                if (maxHeight != null && maxHeight > 0f) minOf(h, maxHeight.toInt()) else h
+            }.coerceAtLeast(stripThicknessPx)
+            return Size(totalW, totalH)
         }
     }
 }

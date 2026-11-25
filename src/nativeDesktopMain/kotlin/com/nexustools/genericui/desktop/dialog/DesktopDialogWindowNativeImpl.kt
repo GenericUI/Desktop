@@ -76,6 +76,7 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
             activeDialogs.remove(this)
         }
         if (changed) {
+            onNativeVisibilityChanged(visible)
             notifyTreeInvalidated()
         }
     }
@@ -122,7 +123,7 @@ open class DesktopDialogWindowNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["hasExplicitBounds"] = true
         boundsWidth = width
         boundsHeight = height
-        nativeWidget.bounds = Rect(x.toFloat(), y.toFloat(), width.toFloat(), height.toFloat())
+        setBounds(Rect(x, y, width, height))
         nativeWidget.subtreeMutationVersion = ++DesktopNativeWidget.globalTreeMutationVersion
         notifyTreeInvalidated()
     }

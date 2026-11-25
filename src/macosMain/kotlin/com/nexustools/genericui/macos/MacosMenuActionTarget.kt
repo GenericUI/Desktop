@@ -12,44 +12,51 @@ import platform.darwin.NSObject
  */
 internal class MacosMenuActionTarget : NSObject() {
 
-    private val actionsByItem = LinkedHashMap<NSMenuItem, () -> Unit>(64)
+    private val actionsByTag = HashMap<Long, () -> Unit>(64)
+    private var nextTag: Long = 1L
 
     fun bindAction(item: NSMenuItem, action: () -> Unit) {
-        actionsByItem[item] = action
+        val tag = nextTag++
+        item.setTag(tag)
+        actionsByTag[tag] = action
     }
 
     fun clearActions() {
-        actionsByItem.clear()
+        actionsByTag.clear()
+    }
+
+    fun boundActionCount(): Int = actionsByTag.size
+
+    @ObjCAction
+    fun onMenuItemTriggered(sender: NSObject?) {
+        val menuItem = sender as? NSMenuItem ?: return
+        val tag = menuItem.tag.toLong()
+        if (tag <= 0L) return
+        actionsByTag[tag]?.invoke()
     }
 
     @ObjCAction
-    fun onMenuItemTriggered(sender: NSMenuItem?) {
-        if (sender == null) return
-        actionsByItem[sender]?.invoke()
-    }
-
-    @ObjCAction
-    fun onEditCut(sender: NSMenuItem?) {
+    fun onEditCut(sender: NSObject?) {
         MacosNativeWindowHost.performTextCut()
     }
 
     @ObjCAction
-    fun onEditCopy(sender: NSMenuItem?) {
+    fun onEditCopy(sender: NSObject?) {
         MacosNativeWindowHost.performTextCopy()
     }
 
     @ObjCAction
-    fun onEditPaste(sender: NSMenuItem?) {
+    fun onEditPaste(sender: NSObject?) {
         MacosNativeWindowHost.performTextPaste()
     }
 
     @ObjCAction
-    fun onEditSelectAll(sender: NSMenuItem?) {
+    fun onEditSelectAll(sender: NSObject?) {
         MacosNativeWindowHost.performTextSelectAll()
     }
 
     @ObjCAction
-    fun onAppQuit(sender: NSMenuItem?) {
+    fun onAppQuit(sender: NSObject?) {
         MacosNativeWindowHost.requestApplicationQuit()
     }
 }

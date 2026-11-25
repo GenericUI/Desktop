@@ -6,7 +6,7 @@ import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 
 /**
  * Shared desktop base implementation of [MenuBarNativeImpl] for Win32 `HMENU`, macOS `NSMenu`,
- * GTK4 `GMenu`/`GtkPopoverMenuBar`, and Qt6 `QMenuBar`.
+ * GTK4 `GMenu`/`GtkPopoverMenuBar`, and KDE `QMenuBar`.
  */
 open class DesktopMenuBarNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W

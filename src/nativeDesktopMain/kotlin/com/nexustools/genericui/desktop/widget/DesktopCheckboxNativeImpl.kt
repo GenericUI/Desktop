@@ -18,8 +18,11 @@ open class DesktopCheckboxNativeImpl<out W : DesktopNativeWidget>(
     protected var onCheckedChangedListener: ((Boolean) -> Unit)? = null
 
     override fun setLabel(label: String) {
-        labelText = label
-        nativeWidget.attributes["label"] = label
+        if (labelText != label) {
+            labelText = label
+            nativeWidget.attributes["label"] = label
+            nativeWidget.notifyTreeInvalidated()
+        }
     }
 
     override fun getLabel(): String = labelText

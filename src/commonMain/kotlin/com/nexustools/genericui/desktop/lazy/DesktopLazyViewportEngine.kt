@@ -6,7 +6,7 @@ import kotlin.math.min
 
 /**
  * Shared Desktop lazy viewport window engine for `LazyListNativeImpl`, `LazyGridNativeImpl`, and `TreeViewNativeImpl`
- * across `:windows`, `:macos`, `:gtk`, and `:qt`.
+ * across `:windows`, `:macos`, `:gtk`, and `:kde`.
  *
  * Tracks scroll offset, viewport extent, item count, and column count, and genuinely instantiates/binds
  * visible items when they enter the viewport + overscan window while unloading/disposing items that scroll out.

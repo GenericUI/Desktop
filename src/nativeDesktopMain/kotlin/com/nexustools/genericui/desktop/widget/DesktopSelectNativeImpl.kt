@@ -11,9 +11,59 @@ open class DesktopSelectNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W
 ) : DesktopBaseNativeImpl<W>(nativeWidget, "form-select"), SelectNativeImpl<W> {
 
+    private var lastControlVariant: String? = null
     protected var optionsList: List<Pair<String, String>> = emptyList()
     protected var selectedVal: String? = null
     protected var onSelectionChangedListener: ((String) -> Unit)? = null
+
+    val controlVariant: String?
+        get() = resolveControlVariant()
+
+    fun resolveControlVariant(): String? {
+        val explicit = (nativeWidget.attributes["data-control-variant"] as? String)
+            ?.trim()
+            ?.lowercase()
+            ?.takeIf { it.isNotEmpty() }
+        if (explicit != null) return explicit
+        val dataAllowCustom = (nativeWidget.attributes["data-allow-custom-input"] as? String)
+            ?.equals("true", ignoreCase = true) == true
+        if (nativeWidget.attributes["allowCustomInput"] == true ||
+            dataAllowCustom ||
+            "combobox" in nativeWidget.cachedAllClassTokens
+        ) {
+            return "combobox"
+        }
+        return null
+    }
+
+    fun isComboBoxVariant(): Boolean = resolveControlVariant() == "combobox"
+
+    protected open fun onVariantChanged(variant: String?) {}
+
+    override fun setAttribute(name: String, value: String?) {
+        super<DesktopBaseNativeImpl>.setAttribute(name, value)
+        if (name == "data-control-variant" ||
+            name == "allowCustomInput" ||
+            name == "data-allow-custom-input" ||
+            name == "class" ||
+            name == "bootstrapClass"
+        ) {
+            val nextVariant = resolveControlVariant()
+            if (lastControlVariant != nextVariant) {
+                lastControlVariant = nextVariant
+                onVariantChanged(nextVariant)
+            }
+        }
+    }
+
+    override fun syncStyleToNativeWidget() {
+        super.syncStyleToNativeWidget()
+        val nextVariant = resolveControlVariant()
+        if (lastControlVariant != nextVariant) {
+            lastControlVariant = nextVariant
+            onVariantChanged(nextVariant)
+        }
+    }
 
     override fun setOptions(options: List<Pair<String, String>>) {
         optionsList = options

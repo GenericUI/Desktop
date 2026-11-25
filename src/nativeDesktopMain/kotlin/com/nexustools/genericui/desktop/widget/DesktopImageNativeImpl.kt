@@ -165,7 +165,8 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
         }
     }
 
-    override fun getCssFilter(): CssFilter? = cssFilterState
+    override fun getCssFilter(): CssFilter? =
+        cssFilterState ?: (nativeWidget.attributes["cssFilter"] as? CssFilter) ?: lastComputedStyle?.filter
 
     override fun setOnLoad(listener: (() -> Unit)?) {
         onLoadListener = listener

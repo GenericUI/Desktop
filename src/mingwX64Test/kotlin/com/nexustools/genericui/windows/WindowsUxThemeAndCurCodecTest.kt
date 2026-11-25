@@ -3,11 +3,26 @@
 package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.component.action.Button
+import com.nexustools.genericui.component.action.DropdownButton
+import com.nexustools.genericui.component.action.SplitDropdownButton
 import com.nexustools.genericui.component.action.StyledButton
+import com.nexustools.genericui.component.action.ToggleButton
+import com.nexustools.genericui.component.feedback.ProgressBar
+import com.nexustools.genericui.component.form.CheckBox
+import com.nexustools.genericui.component.form.RangeSlider
+import com.nexustools.genericui.component.form.Select
+import com.nexustools.genericui.component.form.SelectOption
+import com.nexustools.genericui.component.form.TextField
+import com.nexustools.genericui.component.layout.Container
+import com.nexustools.genericui.component.layout.ScrollView
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.component.shell.Window
+import com.nexustools.genericui.component.tabs.Tab
+import com.nexustools.genericui.component.tabs.TabContainer
+import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopButtonNativeImpl
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.enums.bootstrap.BootstrapWidth
 import com.nexustools.genericui.enums.bootstrap.DisplayMode
@@ -20,6 +35,17 @@ import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssCustomCursor
 import com.nexustools.genericui.style.css.CssLength
 import com.nexustools.genericui.style.theme.SystemThemeDetector
+import kotlinx.cinterop.UShortVar
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.toKString
+import platform.windows.BS_AUTOCHECKBOX
+import platform.windows.BS_PUSHBUTTON
+import platform.windows.BS_SPLITBUTTON
+import platform.windows.GWL_STYLE
+import platform.windows.GetClassNameW
+import platform.windows.GetWindowLongW
+import platform.windows.HWND
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,6 +53,12 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class WindowsUxThemeAndCurCodecTest {
+
+    private fun readWin32ClassName(hwnd: HWND): String = memScoped {
+        val buf = allocArray<UShortVar>(128)
+        GetClassNameW(hwnd, buf, 128)
+        buf.toKString()
+    }
 
     @Test
     fun testWindowsCurCodecEncodesImageBufferAndSvgWithExactHotspotAndIdType2() {
@@ -44,7 +76,6 @@ class WindowsUxThemeAndCurCodecTest {
         assertNotNull(curBytes)
         assertTrue(WindowsCurCodec.isValidCurBinary(curBytes))
 
-        // Verify 6-byte ICONDIR header: idReserved = 0, idType = 2 (.cur), idCount = 1
         assertEquals(0, (curBytes[0].toInt() and 0xFF) or ((curBytes[1].toInt() and 0xFF) shl 8))
         assertEquals(2, (curBytes[2].toInt() and 0xFF) or ((curBytes[3].toInt() and 0xFF) shl 8))
         assertEquals(1, (curBytes[4].toInt() and 0xFF) or ((curBytes[5].toInt() and 0xFF) shl 8))
@@ -52,7 +83,6 @@ class WindowsUxThemeAndCurCodecTest {
         assertEquals(7 to 9, WindowsCurCodec.parseCurHotspot(curBytes))
         assertEquals(24 to 24, WindowsCurCodec.parseCurDimensions(curBytes))
 
-        // Verify SVG custom cursor rasterization + .cur encoding
         val svgCursor = CssCustomCursor.fromSvg(
             svgMarkup = """<svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="10" fill="#0d6efd"/></svg>""",
             widthPx = 32,
@@ -85,8 +115,6 @@ class WindowsUxThemeAndCurCodecTest {
         window.show()
 
         val impl = button.ensureNativeImpl() as DesktopBaseNativeImpl<*>
-
-        // ComponentBootstrap enum classes MUST be 100% invisible to getClasses(), getClass(), and hasClass()
         assertTrue(impl.getClasses().isEmpty())
         assertEquals("", impl.getClass())
         assertFalse(impl.hasClass("btn-danger"))
@@ -95,7 +123,6 @@ class WindowsUxThemeAndCurCodecTest {
         assertFalse(impl.hasClass("px-4"))
         assertFalse(impl.hasClass("mx-auto"))
 
-        // Internal enum class set still tracks the Bootstrap utilities for layout/rendering
         val internalEnumClasses = impl.getEnumClasses()
         assertTrue(internalEnumClasses.contains("btn-danger"))
         assertTrue(internalEnumClasses.contains("w-100"))
@@ -107,7 +134,6 @@ class WindowsUxThemeAndCurCodecTest {
         assertEquals(SpacingScale.S4.toPixels(), impl.getEffectivePaddingInsets().left)
         assertEquals(SpacingScale.S4.toPixels(), impl.getEffectivePaddingInsets().right)
 
-        // Adding a user CSS class exposes ONLY the user CSS class
         button.addClass("my-custom-action")
         assertEquals(setOf("my-custom-action"), impl.getClasses())
         assertEquals("my-custom-action", impl.getClass())
@@ -128,32 +154,28 @@ class WindowsUxThemeAndCurCodecTest {
             val unstyledBtn = Button("System Default")
             window.addChild(unstyledBtn)
             window.show()
-            val unstyledImpl = unstyledBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>
-            assertTrue(Win32NativeWindowHost.usesNativeSystemControlRendering(unstyledImpl.nativeWidget))
-            assertEquals("Explorer::BUTTON", Win32NativeWindowHost.resolveButtonThemeClassList(darkTheme = false))
-            assertEquals("DarkMode_Explorer::BUTTON", Win32NativeWindowHost.resolveButtonThemeClassList(darkTheme = true))
+            val unstyledImpl = unstyledBtn.ensureNativeImpl() as DesktopButtonNativeImpl<*>
+            assertTrue(unstyledImpl.isNativeDefaultButtonMode())
+            val unstyledHwnd = assertNotNull((unstyledImpl.nativeWidget as Win32HwndHandle).hwnd)
+            assertEquals("Button", readWin32ClassName(unstyledHwnd))
+            assertEquals(BS_PUSHBUTTON, GetWindowLongW(unstyledHwnd, GWL_STYLE) and 0x0F)
 
             val dangerBtn = Button("Danger Action").apply {
                 setType(BootstrapType.DANGER)
             }
             window.addChild(dangerBtn)
-            val dangerImpl = dangerBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>
-            assertFalse(Win32NativeWindowHost.usesNativeSystemControlRendering(dangerImpl.nativeWidget))
-            assertEquals(
-                BootstrapColorPalette.resolveColor(BootstrapType.DANGER, darkMode = false),
-                Win32NativeWindowHost.resolveControlBackgroundColor(dangerImpl.nativeWidget, darkTheme = false)
-            )
-            assertEquals(
-                BootstrapColorPalette.resolveColor(BootstrapType.DANGER, darkMode = true),
-                Win32NativeWindowHost.resolveControlBackgroundColor(dangerImpl.nativeWidget, darkTheme = true)
-            )
-            assertEquals(
-                BootstrapColorPalette.resolveForegroundOn(BootstrapType.DANGER),
-                Win32NativeWindowHost.resolveControlForegroundColor(dangerImpl.nativeWidget, darkTheme = false)
-            )
+            val dangerImpl = dangerBtn.ensureNativeImpl() as DesktopButtonNativeImpl<*>
+            assertFalse(dangerImpl.isNativeDefaultButtonMode())
+            val dangerHwnd = assertNotNull((dangerImpl.nativeWidget as Win32HwndHandle).hwnd)
+            assertEquals("Button", readWin32ClassName(dangerHwnd))
 
-            // Standard Button filters inline aesthetic backgroundColor while keeping layout paddingLeft,
-            // whereas StyledButton allows inline aesthetic backgroundColor to override BootstrapType.
+            val lightSpec = Win32StyledWidgetHelper.resolveBootstrapButtonVisualSpec(dangerImpl, isDark = false)
+            val darkSpec = Win32StyledWidgetHelper.resolveBootstrapButtonVisualSpec(dangerImpl, isDark = true)
+            assertEquals(BootstrapColorPalette.resolveColor(BootstrapType.DANGER, darkMode = false), lightSpec.backgroundColor)
+            assertEquals(BootstrapColorPalette.resolveColor(BootstrapType.DANGER, darkMode = true), darkSpec.backgroundColor)
+            assertEquals(BootstrapColorPalette.resolveForegroundOn(BootstrapType.DANGER), lightSpec.textColor)
+
+            // Standard Button ignores inline aesthetic backgroundColor override while StyledButton obeys it
             val customBg = RgbaColor(18, 140, 95)
             dangerBtn.getStyle().apply {
                 backgroundColor = customBg
@@ -161,7 +183,7 @@ class WindowsUxThemeAndCurCodecTest {
             }
             assertEquals(
                 BootstrapColorPalette.resolveColor(BootstrapType.DANGER, darkMode = false),
-                Win32NativeWindowHost.resolveControlBackgroundColor(dangerImpl.nativeWidget, darkTheme = false)
+                Win32StyledWidgetHelper.resolveBootstrapButtonVisualSpec(dangerImpl, isDark = false).backgroundColor
             )
             assertEquals(18, dangerImpl.getEffectivePaddingInsets().left)
 
@@ -170,22 +192,78 @@ class WindowsUxThemeAndCurCodecTest {
             }
             window.addChild(styledDangerBtn)
             val styledDangerImpl = styledDangerBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>
-            assertEquals(
-                BootstrapColorPalette.resolveColor(BootstrapType.DANGER, darkMode = false),
-                Win32NativeWindowHost.resolveControlBackgroundColor(styledDangerImpl.nativeWidget, darkTheme = false)
-            )
+            val styledHandle = styledDangerImpl.nativeWidget as Win32HwndHandle
+            assertEquals("GenericUIStyledButtonW", readWin32ClassName(assertNotNull(styledHandle.hwnd)))
             styledDangerBtn.getStyle().apply {
                 backgroundColor = customBg
                 paddingLeft = CssLength.px(18)
             }
             assertEquals(
                 customBg,
-                Win32NativeWindowHost.resolveControlBackgroundColor(styledDangerImpl.nativeWidget, darkTheme = false)
+                Win32StyledWidgetHelper.resolveEffectiveVisualSpec(
+                    styledHandle,
+                    styledDangerImpl,
+                    "GenericUIStyledButtonW",
+                    isDark = false
+                ).backgroundColor
             )
             assertEquals(18, styledDangerImpl.getEffectivePaddingInsets().left)
 
+            // Button-only BootstrapType rule: ToggleButton uses genuine "Button" (WC_BUTTON) with NM_CUSTOMDRAW
+            // tinting when DANGER is set, while non-Button native controls retain genuine unmodified Win32 / ComCtl32 HWND classes.
+            val toggleBtn = ToggleButton("Toggle", selected = true, type = BootstrapType.DANGER)
+            val dropdownBtn = DropdownButton("Menu").apply { setType(BootstrapType.PRIMARY) }
+            val splitDropdownBtn = SplitDropdownButton("Split").apply { setType(BootstrapType.SUCCESS) }
+            val progressDanger = ProgressBar(progress = 0.5f).apply { setType(BootstrapType.DANGER) }
+            val checkboxDanger = CheckBox("Check", checked = true).apply { setType(BootstrapType.DANGER) }
+            val sliderDanger = RangeSlider(minValue = 50.0, maxValue = 50.0).apply { setType(BootstrapType.DANGER) }
+            val selectDanger = Select(listOf(SelectOption("a", "A")), "a").apply { setType(BootstrapType.DANGER) }
+            val tabsDanger = TabContainer().apply {
+                setType(BootstrapType.DANGER)
+                addTab(Tab(title = "T1"), Text("Body"))
+            }
+            val scrollDanger = ScrollView().apply { setType(BootstrapType.DANGER) }
+            val textFieldDanger = TextField("Hello").apply { setType(BootstrapType.DANGER) }
+            val containerDanger = Container().apply { setType(BootstrapType.DANGER) }
+
+            listOf(
+                toggleBtn,
+                dropdownBtn,
+                splitDropdownBtn,
+                progressDanger,
+                checkboxDanger,
+                sliderDanger,
+                selectDanger,
+                tabsDanger,
+                scrollDanger,
+                textFieldDanger,
+                containerDanger
+            ).forEach { window.addChild(it) }
+
+            val toggleImpl = toggleBtn.ensureNativeImpl() as DesktopButtonNativeImpl<*>
+            assertFalse(toggleImpl.isNativeDefaultButtonMode())
+            assertEquals("Button", readWin32ClassName(assertNotNull((toggleImpl.nativeWidget as Win32HwndHandle).hwnd)))
+
+            val ddHwnd = assertNotNull((dropdownBtn.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)
+            assertEquals("Button", readWin32ClassName(ddHwnd))
+            assertEquals(BS_SPLITBUTTON, GetWindowLongW(ddHwnd, GWL_STYLE) and 0x0F)
+
+            val splitHwnd = assertNotNull((splitDropdownBtn.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)
+            assertEquals("Button", readWin32ClassName(splitHwnd))
+            assertEquals(BS_SPLITBUTTON, GetWindowLongW(splitHwnd, GWL_STYLE) and 0x0F)
+
+            assertEquals("msctls_progress32", readWin32ClassName(assertNotNull((progressDanger.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)))
+            val chkHwnd = assertNotNull((checkboxDanger.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)
+            assertEquals("Button", readWin32ClassName(chkHwnd))
+            assertEquals(BS_AUTOCHECKBOX, GetWindowLongW(chkHwnd, GWL_STYLE) and 0x0F)
+            assertEquals("msctls_trackbar32", readWin32ClassName(assertNotNull((sliderDanger.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)))
+            assertEquals("ComboBox", readWin32ClassName(assertNotNull((selectDanger.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)))
+            assertEquals("SysTabControl32", readWin32ClassName(assertNotNull((tabsDanger.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)))
+            assertEquals("GenericUIScrollViewW", readWin32ClassName(assertNotNull((scrollDanger.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)))
+            assertEquals("Edit", readWin32ClassName(assertNotNull((textFieldDanger.ensureNativeImpl()!!.nativeWidget as Win32HwndHandle).hwnd)))
+
             // ThemeMode.AUTO detection
-            val app = Application(com.nexustools.genericui.component.layout.Container("div"))
+            val app = Application(Container("div"))
             app.run(factory)
             val appImpl = app.appNativeImpl as WindowsApplicationNativeImpl
             SystemThemeDetector.overrideDetectedTheme = ThemeMode.DARK

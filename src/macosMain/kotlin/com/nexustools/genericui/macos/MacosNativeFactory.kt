@@ -6,7 +6,6 @@ import com.nexustools.genericui.apple.AppleImageIoCodecNativeImpl
 import com.nexustools.genericui.apple.AppleNetworkMonitorNativeImpl
 import com.nexustools.genericui.apple.AppleNotificationManagerNativeImpl
 import com.nexustools.genericui.apple.ApplePreferenceStoreNativeImpl
-import com.nexustools.genericui.apple.AppleResourceResolverNativeImpl
 import com.nexustools.genericui.apple.AppleTcpSocketNativeImpl
 import com.nexustools.genericui.apple.AppleUdpSocketNativeImpl
 import com.nexustools.genericui.apple.AppleUiThreadDispatcherNativeImpl
@@ -16,43 +15,41 @@ import com.nexustools.genericui.apple.AppleWebSocketNativeImpl
 import com.nexustools.genericui.component.layout.LayoutFactory
 import com.nexustools.genericui.core.NativeFactory
 import com.nexustools.genericui.geometry.Rect
-import com.nexustools.genericui.desktop.dock.DesktopDockAreaNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopDockGroupNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopDockPanelNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopDockWorkspaceNativeImpl
-import com.nexustools.genericui.desktop.dock.DesktopToolPaletteNativeImpl
+import com.nexustools.genericui.desktop.core.DesktopCanvasWidgetHooks
 import com.nexustools.genericui.desktop.image.DesktopImageCodecHooks
 import com.nexustools.genericui.desktop.layout.DesktopLayoutFactory
-import com.nexustools.genericui.desktop.lazy.DesktopLazyListNativeImpl
-import com.nexustools.genericui.desktop.lazy.DesktopTreeViewNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopContextMenuNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuBarNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuItemNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopMenuNativeImpl
 import com.nexustools.genericui.desktop.system.DesktopPermissionManagerNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopBookContainerNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopBottomNavigationBarNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopDividerNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopImageNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopNavbarNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopPopoverNativeImpl
-import com.nexustools.genericui.desktop.widget.DesktopScrollViewNativeImpl
 import com.nexustools.genericui.image.ImageLoader
-import com.nexustools.genericui.macos.impl.MacosButtonNativeImpl
+import com.nexustools.genericui.macos.impl.MacosBookContainerNativeImpl
+import com.nexustools.genericui.macos.impl.MacosBottomNavigationBarNativeImpl
 import com.nexustools.genericui.macos.impl.MacosCheckboxNativeImpl
-import com.nexustools.genericui.macos.impl.MacosContainerNativeImpl
+import com.nexustools.genericui.macos.impl.MacosDividerNativeImpl
+import com.nexustools.genericui.macos.impl.MacosDockAreaNativeImpl
+import com.nexustools.genericui.macos.impl.MacosDockGroupNativeImpl
+import com.nexustools.genericui.macos.impl.MacosDockPanelNativeImpl
+import com.nexustools.genericui.macos.impl.MacosDockWorkspaceNativeImpl
 import com.nexustools.genericui.macos.impl.MacosDropdownNativeImpl
+import com.nexustools.genericui.macos.impl.MacosImageNativeImpl
 import com.nexustools.genericui.macos.impl.MacosLazyGridNativeImpl
+import com.nexustools.genericui.macos.impl.MacosLazyListNativeImpl
 import com.nexustools.genericui.macos.impl.MacosMarkdownViewNativeImpl
+import com.nexustools.genericui.macos.impl.MacosNavbarNativeImpl
+import com.nexustools.genericui.macos.impl.MacosPopoverNativeImpl
 import com.nexustools.genericui.macos.impl.MacosProgressBarNativeImpl
 import com.nexustools.genericui.macos.impl.MacosRangeSliderNativeImpl
+import com.nexustools.genericui.macos.impl.MacosScrollViewNativeImpl
 import com.nexustools.genericui.macos.impl.MacosSelectNativeImpl
 import com.nexustools.genericui.macos.impl.MacosSpinnerNativeImpl
-import com.nexustools.genericui.macos.impl.MacosTabContainerNativeImpl
 import com.nexustools.genericui.macos.impl.MacosTabNativeImpl
 import com.nexustools.genericui.macos.impl.MacosTableNativeImpl
 import com.nexustools.genericui.macos.impl.MacosTextInputNativeImpl
 import com.nexustools.genericui.macos.impl.MacosTextNativeImpl
+import com.nexustools.genericui.macos.impl.MacosToolPaletteNativeImpl
+import com.nexustools.genericui.macos.impl.MacosTreeViewNativeImpl
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.nativeimpl.action.DropdownNativeImpl
 import com.nexustools.genericui.nativeimpl.action.StyledButtonNativeImpl
@@ -79,6 +76,7 @@ import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.DividerNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ScrollViewNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.StyledContainerNativeImpl
+import com.nexustools.genericui.nativeimpl.surface.StyledComponentNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.LazyGridNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.LazyListNativeImpl
 import com.nexustools.genericui.nativeimpl.lazy.TreeViewNativeImpl
@@ -110,9 +108,10 @@ import com.nexustools.genericui.nativeimpl.typography.TextNativeImpl
 import com.nexustools.genericui.threading.UiThreadDispatcherNativeImpl
 
 /**
- * macOS (`:macos`) implementation of [NativeFactory] backed by AppKit (`NSWindow`, `NSPanel`, `NSView`,
- * `NSMenu` on `NSApplication.mainMenu`), [com.nexustools.genericui.macos.render.MacosControlRenderUtil],
- * and `:apple` Foundation / CoreGraphics / Security / Network implementations ([AppleImageIoCodecNativeImpl]).
+ * macOS (`:macos`) implementation of [NativeFactory] backed by genuine retained AppKit views and
+ * controls (`NSWindow`, `NSPanel`, `NSView`, `NSControl`, `NSMenu` on `NSApplication.mainMenu`)
+ * and `:apple` Foundation / CoreGraphics / CoreImage / Security / Network implementations
+ * ([AppleImageIoCodecNativeImpl]).
  */
 class MacosNativeFactory : NativeFactory {
 
@@ -140,9 +139,17 @@ class MacosNativeFactory : NativeFactory {
     init {
         DesktopImageCodecHooks.install(backendName)
         ImageLoader.activeNativeCodec = imageCodec
+        DesktopCanvasWidgetHooks.createInteractiveSurfaceWidget = { role ->
+            createMacosInteractiveSurfaceHandle(role)
+        }
     }
 
-    override fun createApplication(): ApplicationNativeImpl<*> = MacosApplicationNativeImpl()
+    override fun createApplication(): ApplicationNativeImpl<*> {
+        DesktopCanvasWidgetHooks.createInteractiveSurfaceWidget = { role ->
+            createMacosInteractiveSurfaceHandle(role)
+        }
+        return MacosApplicationNativeImpl()
+    }
 
     override fun createWindow(): WindowNativeImpl<*> = MacosWindowNativeImpl()
 
@@ -159,36 +166,45 @@ class MacosNativeFactory : NativeFactory {
         DesktopContextMenuNativeImpl(MacosViewHandle("NSMenu_Contextual"))
 
     override fun createDockWorkspace(): DockWorkspaceNativeImpl<*> =
-        DesktopDockWorkspaceNativeImpl(MacosViewHandle("NSView_DockWorkspace"))
+        MacosDockWorkspaceNativeImpl(MacosViewHandle("NSView_DockWorkspace"))
 
     override fun createDockArea(): DockAreaNativeImpl<*> =
-        DesktopDockAreaNativeImpl(MacosViewHandle("NSView_DockArea"))
+        MacosDockAreaNativeImpl(MacosViewHandle("NSView_DockArea"))
 
     override fun createDockGroup(): DockGroupNativeImpl<*> =
-        DesktopDockGroupNativeImpl(MacosViewHandle("NSView_DockGroup"))
+        MacosDockGroupNativeImpl(MacosViewHandle("NSView_DockGroup"))
 
     override fun createDockPanel(): DockPanelNativeImpl<*> =
-        DesktopDockPanelNativeImpl(MacosViewHandle("NSView_DockPanel"))
+        MacosDockPanelNativeImpl(MacosViewHandle("NSView_DockPanel"))
 
     override fun createDockWindow(): DockWindowNativeImpl<*> = MacosDockWindowNativeImpl()
 
     override fun createToolPalette(): ToolPaletteNativeImpl<*> =
-        DesktopToolPaletteNativeImpl(MacosViewHandle("NSView_ToolPalette"))
+        MacosToolPaletteNativeImpl(MacosViewHandle("NSView_ToolPalette"))
 
     override fun createContainer(classPrefix: String): ContainerNativeImpl<*> =
-        MacosContainerNativeImpl(MacosViewHandle("NSStackView"), classPrefix)
+        MacosContainerNativeImpl(MacosViewHandle("NSView_Container"), classPrefix, "div")
+
+    override fun createContainer(classPrefix: String, tagName: String): ContainerNativeImpl<*> =
+        MacosContainerNativeImpl(MacosViewHandle("NSView_Container"), classPrefix, tagName)
 
     override fun createStyledContainer(classPrefix: String, tagName: String): StyledContainerNativeImpl<*> =
         MacosStyledContainerNativeImpl(MacosViewHandle("NSView_StyledContainer"), classPrefix, tagName)
 
+    override fun createStyledComponent(classPrefix: String, tagName: String): StyledComponentNativeImpl<*> =
+        MacosStyledComponentNativeImpl(MacosViewHandle("NSView_StyledComponent"), classPrefix, tagName)
+
     override fun createBookContainer(): BookContainerNativeImpl<*> =
-        DesktopBookContainerNativeImpl(MacosViewHandle("NSView_BookPrintPreview"))
+        MacosBookContainerNativeImpl(MacosViewHandle("NSView_BookPrintPreview"))
 
     override fun createScrollView(): ScrollViewNativeImpl<*> =
-        DesktopScrollViewNativeImpl(MacosViewHandle("NSScrollView"))
+        MacosScrollViewNativeImpl(MacosViewHandle("NSScrollView"))
+
+    override fun createScrollView(tagName: String): ScrollViewNativeImpl<*> =
+        MacosScrollViewNativeImpl(MacosViewHandle("NSScrollView"))
 
     override fun createDivider(): DividerNativeImpl<*> =
-        DesktopDividerNativeImpl(MacosViewHandle("NSBox_Separator"))
+        MacosDividerNativeImpl(MacosViewHandle("NSBox_Separator"))
 
     override fun createText(tagName: String, classPrefix: String): TextNativeImpl<*> =
         MacosTextNativeImpl(MacosViewHandle("NSTextField_Label"), tagName, classPrefix)
@@ -197,7 +213,7 @@ class MacosNativeFactory : NativeFactory {
         MacosMarkdownViewNativeImpl(MacosViewHandle("NSTextView_Attributed"))
 
     override fun createImage(): ImageNativeImpl<*> =
-        DesktopImageNativeImpl(MacosViewHandle("NSImageView"))
+        MacosImageNativeImpl(MacosViewHandle("NSView_Image"))
 
     override fun createTable(): TableNativeImpl<*> =
         MacosTableNativeImpl(MacosViewHandle("NSTableView"))
@@ -234,10 +250,10 @@ class MacosNativeFactory : NativeFactory {
         MacosTabContainerNativeImpl(MacosViewHandle("NSTabView"))
 
     override fun createNavbar(): NavbarNativeImpl<*> =
-        DesktopNavbarNativeImpl(MacosViewHandle("NSToolbar"))
+        MacosNavbarNativeImpl(MacosViewHandle("NSView_Navbar"))
 
     override fun createBottomNavigationBar(): BottomNavigationBarNativeImpl<*> =
-        DesktopBottomNavigationBarNativeImpl(MacosViewHandle("NSSegmentedControl"))
+        MacosBottomNavigationBarNativeImpl(MacosViewHandle("NSView_BottomNav"))
 
     override fun createProgressBar(): ProgressBarNativeImpl<*> =
         MacosProgressBarNativeImpl(MacosViewHandle("NSProgressIndicator_Bar"))
@@ -246,10 +262,14 @@ class MacosNativeFactory : NativeFactory {
         MacosSpinnerNativeImpl(MacosViewHandle("NSProgressIndicator_Spinning"))
 
     override fun createPopover(): PopoverNativeImpl<*> =
-        DesktopPopoverNativeImpl(MacosViewHandle("NSPopover"))
+        MacosPopoverNativeImpl(MacosViewHandle("NSPopover"))
 
-    override fun createDialogWindow(): DialogWindowNativeImpl<*> =
-        MacosDialogWindowNativeImpl()
+    override fun createDialogWindow(): DialogWindowNativeImpl<*> {
+        if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
+            MacosNativeWindowHost.prepareEventLoop()
+        }
+        return MacosDialogWindowNativeImpl()
+    }
 
     override fun createFileBrowserDialog(): FileBrowserDialogNativeImpl =
         MacosFileBrowserDialogNativeImpl()
@@ -258,22 +278,25 @@ class MacosNativeFactory : NativeFactory {
         MacosStandardDialogsNativeImpl()
 
     override fun createLazyList(): LazyListNativeImpl<*> =
-        DesktopLazyListNativeImpl(MacosViewHandle("NSTableView_Virtualized"))
+        MacosLazyListNativeImpl(MacosViewHandle("NSScrollView_VirtualizedList"))
 
     override fun createLazyGrid(): LazyGridNativeImpl<*> =
-        MacosLazyGridNativeImpl(MacosViewHandle("NSCollectionView"))
+        MacosLazyGridNativeImpl(MacosViewHandle("NSScrollView_VirtualizedGrid"))
 
     override fun createTreeView(): TreeViewNativeImpl<*> =
-        DesktopTreeViewNativeImpl(MacosViewHandle("NSOutlineView"))
+        MacosTreeViewNativeImpl(MacosViewHandle("NSOutlineView"))
 
     override fun createUiThreadDispatcher(): UiThreadDispatcherNativeImpl =
         AppleUiThreadDispatcherNativeImpl(
             isSplitDispatchActive = { MacosApplicationNativeImpl.interactiveMacosGuiEnabled },
-            onUiDrainComplete = { MacosNativeWindowHost.requestRedraw() }
+            onUiDrainComplete = { MacosNativeWindowHost.onUiQueueDrained() }
         )
 
     override fun createUiTimerScheduler(): UiTimerNativeImpl =
         AppleUiTimerNativeImpl()
+
+    override fun createAnimationScheduler(): com.nexustools.genericui.nativeimpl.system.AnimationNativeImpl =
+        MacosAnimationNativeImpl()
 
     override fun createPermissionManager(): PermissionManagerNativeImpl =
         DesktopPermissionManagerNativeImpl("macOS TCC /AVCaptureDevice")

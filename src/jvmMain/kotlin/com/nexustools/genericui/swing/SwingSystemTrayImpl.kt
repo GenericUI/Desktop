@@ -1,10 +1,15 @@
 package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.core.NativeImpl
+import com.nexustools.genericui.desktop.system.DesktopSystemTraySilhouetteTransformer
+import com.nexustools.genericui.image.ImageBuffer
+import com.nexustools.genericui.image.ImageColorSpace
+import com.nexustools.genericui.image.PixelFormat
 import com.nexustools.genericui.jvm.JvmImageSourceResolver
 import com.nexustools.genericui.nativeimpl.layout.DividerNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.ContextMenuNativeImpl
 import com.nexustools.genericui.nativeimpl.system.SystemTrayNativeImpl
+import com.nexustools.genericui.style.color.RgbaColor
 import java.awt.CheckboxMenuItem
 import java.awt.Color
 import java.awt.Font
@@ -39,8 +44,9 @@ class SwingSystemTrayImpl : SystemTrayNativeImpl {
         private set
 
     private var trayIcon: TrayIcon? = null
-    private var baseImage: Image = createDefaultTrayImage()
     private var iconPath: String? = null
+    private var explicitMacosIconPath: String? = null
+    private var baseImage: Image = resolveTrayBaseImage(iconPath = null, explicitMacosIconPath = null)
     private var tooltipText: String? = null
     private var badgeTextVal: String? = null
     private var contextMenuImpl: ContextMenuNativeImpl<*>? = null
@@ -79,7 +85,15 @@ class SwingSystemTrayImpl : SystemTrayNativeImpl {
     override fun setIcon(iconPathOrUrl: String?) {
         iconPath = iconPathOrUrl
         val icon = requireTray()
-        baseImage = loadTrayImage(iconPathOrUrl) ?: createDefaultTrayImage()
+        baseImage = resolveTrayBaseImage(iconPath = iconPath, explicitMacosIconPath = explicitMacosIconPath)
+        icon.image = renderImageWithBadge(baseImage, badgeTextVal)
+    }
+
+    override fun setMacosIcon(iconPathOrUrl: String?) {
+        explicitMacosIconPath = iconPathOrUrl?.trim()?.takeIf { it.isNotEmpty() }
+        if (!isMacosHost()) return
+        val icon = requireTray()
+        baseImage = resolveTrayBaseImage(iconPath = iconPath, explicitMacosIconPath = explicitMacosIconPath)
         icon.image = renderImageWithBadge(baseImage, badgeTextVal)
     }
 
@@ -233,6 +247,49 @@ class SwingSystemTrayImpl : SystemTrayNativeImpl {
                 g.dispose()
             }
             return img
+        }
+
+        internal fun isMacosHost(): Boolean =
+            System.getProperty("os.name").orEmpty().contains("mac", ignoreCase = true)
+
+        internal fun resolveTrayBaseImage(iconPath: String?, explicitMacosIconPath: String?): Image {
+            val useMacosFlow = isMacosHost()
+            val effectivePath = if (useMacosFlow) (explicitMacosIconPath ?: iconPath) else iconPath
+            val loaded = loadTrayImage(effectivePath) ?: createDefaultTrayImage()
+            if (useMacosFlow && explicitMacosIconPath == null) {
+                return convertImageToMacosSilhouette(loaded)
+            }
+            return loaded
+        }
+
+        internal fun convertImageToMacosSilhouette(image: Image): Image {
+            val w = image.getWidth(null).takeIf { it > 0 } ?: 16
+            val h = image.getHeight(null).takeIf { it > 0 } ?: 16
+            val argbImg = BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB)
+            val g = argbImg.createGraphics()
+            try {
+                g.drawImage(image, 0, 0, w, h, null)
+            } finally {
+                g.dispose()
+            }
+            val buffer = ImageBuffer(w, h, PixelFormat.RGBA_8888, ImageColorSpace.SRGB)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val argb = argbImg.getRGB(x, y)
+                    buffer.setPixel(
+                        x,
+                        y,
+                        RgbaColor(
+                            r = (argb ushr 16) and 0xFF,
+                            g = (argb ushr 8) and 0xFF,
+                            b = argb and 0xFF,
+                            a = (argb ushr 24) and 0xFF
+                        )
+                    )
+                }
+            }
+            val silhouette = DesktopSystemTraySilhouetteTransformer.toMacosTemplateSilhouette(buffer)
+            return SwingControlTintRenderUtil.imageBufferToBufferedImage(silhouette, BufferedImage.TYPE_INT_ARGB)
         }
 
         internal fun renderImageWithBadge(base: Image, badge: String?): Image {

@@ -105,27 +105,34 @@ class SwingAsyncIoDatabaseAndNetworkingTest {
         try {
             GenericUI.initialize(factory)
             val mainWindow = Window(title = "Swing Main Window")
-            mainWindow.setContent(com.nexustools.genericui.component.layout.Container())
-            mainWindow.show(factory)
-            val mainImpl = mainWindow.ensureNativeImpl() as SwingWindowImpl
-
             val dialog = DialogWindow(title = "Swing Settings", modal = true)
-            dialog.setWindowSize(com.nexustools.genericui.geometry.Size(420, 280))
-            dialog.open(mainWindow)
+            try {
+                mainWindow.setContent(com.nexustools.genericui.component.layout.Container())
+                mainWindow.show(factory)
+                val mainImpl = mainWindow.ensureNativeImpl() as SwingWindowImpl
 
-            assertTrue(dialog.isWindowShown)
-            assertTrue(mainWindow.attachedDialogWindows.contains(dialog))
-            val dialogImpl = dialog.ensureNativeImpl() as SwingDialogWindowImpl
-            assertEquals(true, dialogImpl.nativeWidget.rootPane.getClientProperty("isSeparateNativeWindow"))
-            assertEquals(false, dialogImpl.nativeWidget.rootPane.getClientProperty("inWindowOverlay"))
-            assertEquals(true, dialogImpl.nativeWidget.rootPane.getClientProperty("attachedToMainWindow"))
+                dialog.setWindowSize(com.nexustools.genericui.geometry.Size(420, 280))
+                dialog.open(mainWindow)
 
-            mainWindow.bringToFront()
-            assertTrue(dialogImpl.zOrderLayer > mainImpl.zOrderLayer)
+                assertTrue(dialog.isWindowShown)
+                assertTrue(mainWindow.attachedDialogWindows.contains(dialog))
+                val dialogImpl = dialog.ensureNativeImpl() as SwingDialogWindowImpl
+                assertEquals(true, dialogImpl.nativeWidget.rootPane.getClientProperty("isSeparateNativeWindow"))
+                assertEquals(false, dialogImpl.nativeWidget.rootPane.getClientProperty("inWindowOverlay"))
+                assertEquals(true, dialogImpl.nativeWidget.rootPane.getClientProperty("attachedToMainWindow"))
 
-            dialog.close()
-            assertFalse(dialog.isWindowShown)
-            assertFalse(mainWindow.attachedDialogWindows.contains(dialog))
+                mainWindow.bringToFront()
+                assertTrue(dialogImpl.zOrderLayer > mainImpl.zOrderLayer)
+
+                dialog.close()
+                assertFalse(dialog.isWindowShown)
+                assertFalse(mainWindow.attachedDialogWindows.contains(dialog))
+            } finally {
+                if (dialog.isWindowShown) dialog.close()
+                dialog.dispose()
+                if (mainWindow.isWindowShown) mainWindow.close()
+                mainWindow.dispose()
+            }
         } finally {
             GenericUI.activeFactory = prevFactory
         }
