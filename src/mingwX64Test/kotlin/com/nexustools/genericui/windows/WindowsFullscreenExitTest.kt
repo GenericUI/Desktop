@@ -98,7 +98,9 @@ class WindowsFullscreenExitTest {
         root.addChild(stack)
 
         val window = if (useApplicationMainWindow) {
-            Application(root, title = "Fullscreen Exit Test").mainWindow
+            Application(root, title = "Fullscreen Exit Test").apply {
+                persistMainWindowState = false
+            }.mainWindow
         } else {
             Window(title = "Fullscreen Exit Test (secondary)").also { it.setContent(root) }
         }
@@ -289,7 +291,9 @@ class WindowsFullscreenExitTest {
     @Test
     fun testEscapeKeyExitClearsCommonFullscreenStateWhenWindowIsNotApplicationMainWindow() = withVisualHost { factory ->
         // Application.current.mainWindow is a different (never shown) window; the shown window hosts the fullscreen stack.
-        Application(Container("div"), title = "Unrelated main window")
+        Application(Container("div"), title = "Unrelated main window").apply {
+            persistMainWindowState = false
+        }
         val scene = buildScene(factory, useApplicationMainWindow = false)
         val hwnd = activeHwnd()
         forceFullClientPaint(hwnd)

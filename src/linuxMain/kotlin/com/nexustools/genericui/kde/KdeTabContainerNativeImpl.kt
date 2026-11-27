@@ -9,6 +9,7 @@ import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTabContainerNativeImpl
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.linux.LinuxTabIconHelper
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.style.css.CssTransform
@@ -82,8 +83,17 @@ open class KdeTabContainerNativeImpl(
             KdeDynamicBindings.tabBarSetShape(barPtr, qtShape)
             KdeDynamicBindings.tabBarSetExpanding(barPtr, fullWidthTabsVal || tabBarStyleVal == TabBarStyle.PILLS)
 
-            val anyClosable = tabImpls.any { (it as? KdeTabNativeImpl)?.let { kt -> kt.nativeWidget.attributes["closable"] == true } == true }
+            val anyClosable = tabImpls.indices.any { idx ->
+                val kdeTab = tabImpls.getOrNull(idx) as? KdeTabNativeImpl
+                kdeTab != null && !isButtonTab(idx) && kdeTab.closableVal && !kdeTab.pinnedVal
+            }
             KdeDynamicBindings.tabBarSetClosable(barPtr, anyClosable)
+
+            val iconSizePx = tabImpls.filterIsInstance<KdeTabNativeImpl>()
+                .filter { !it.iconVal.isNullOrBlank() && LinuxTabIconHelper.looksLikeImageOrVectorSpec(it.iconVal.orEmpty()) }
+                .maxOfOrNull { it.iconSizePxVal.coerceIn(12, 32) }
+                ?: 16
+            KdeDynamicBindings.tabBarSetIconSize(barPtr, iconSizePx, iconSizePx)
 
             // Sync page stack widgets & tab count
             val activeContentPtrs = contentImpls.mapIndexedNotNull { idx, cImpl ->
@@ -119,6 +129,12 @@ open class KdeTabContainerNativeImpl(
                 val label = formatTabTitle(tabTitles[i], tab)
                 KdeDynamicBindings.tabBarAddTab(barPtr, label)
                 barTabCount++
+                if (anyClosable && (isButtonTab(i) || tab == null || !tab.closableVal || tab.pinnedVal)) {
+                    KdeDynamicBindings.tabBarHideTabCloseButton(barPtr, i)
+                }
+                if (tab != null) {
+                    applyTabIconAtIndex(i, tab, barPtr)
+                }
             }
             val safeSel = selectedIndexVal.coerceIn(0, (tabTitles.size - 1).coerceAtLeast(0))
             if (tabTitles.isNotEmpty()) {
@@ -137,10 +153,40 @@ open class KdeTabContainerNativeImpl(
         }
     }
 
+    internal fun applySingleTabIcon(tab: KdeTabNativeImpl) {
+        val barPtr = tabBarHandle.qWidgetPtr ?: return
+        if (!KdeVTableBridge.isPeerAlive(barPtr)) return
+        val idx = tabImpls.indexOfFirst { it === tab }
+        if (idx !in 0 until barTabCount) return
+        applyTabIconAtIndex(idx, tab, barPtr)
+    }
+
+    private fun applyTabIconAtIndex(index: Int, tab: KdeTabNativeImpl, barPtr: COpaquePointer) {
+        val iconSpec = tab.iconVal?.trim().orEmpty()
+        if (iconSpec.isEmpty() || !LinuxTabIconHelper.looksLikeImageOrVectorSpec(iconSpec)) {
+            KdeDynamicBindings.tabBarClearTabIcon(barPtr, index)
+            return
+        }
+        val rawBuf = tab.decodedIconBuffer
+        if (rawBuf != null) {
+            val prepared = LinuxTabIconHelper.prepareTabIconBuffer(
+                raw = rawBuf,
+                sizePx = tab.iconSizePxVal.coerceIn(12, 32),
+                tintToTheme = tab.tintImageToThemeVal,
+                isDark = LinuxTabIconHelper.isDarkTheme()
+            )
+            KdeDynamicBindings.tabBarSetTabIconFromBuffer(barPtr, index, prepared)
+        } else {
+            tab.ensureIconLoadStarted { applySingleTabIcon(tab) }
+        }
+    }
+
     private fun formatTabTitle(raw: String, tab: KdeTabNativeImpl?): String {
         val dirty = tab?.nativeWidget?.attributes?.get("dirty") == true
         val badge = tab?.nativeWidget?.attributes?.get("badgeText") as? String
+        val rawIcon = tab?.iconVal?.trim()?.takeIf { it.isNotEmpty() && !LinuxTabIconHelper.looksLikeImageOrVectorSpec(it) }
         return buildString {
+            if (rawIcon != null) append(rawIcon).append(' ')
             append(raw)
             if (dirty) append(" •")
             if (!badge.isNullOrBlank()) append(" [$badge]")

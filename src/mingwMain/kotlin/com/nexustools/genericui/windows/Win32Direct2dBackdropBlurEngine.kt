@@ -39,12 +39,15 @@ import platform.windows.LoadLibraryW
 import platform.windows.SwitchToThread
 import kotlin.concurrent.atomics.AtomicInt
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Hardware-accelerated Direct2D 1.1 + Direct3D 11 (`d3d11.dll` + `d2d1.dll`) backdrop blur and
@@ -612,7 +615,7 @@ object Win32Direct2dBackdropBlurEngine {
         for (py in capY0 until capY1) {
             val rowOff = py * bufW
             for (px in capX0 until capX1) {
-                subArgb[dstIdx++] = wordsPtr[rowOff + px].toInt() or 0xFF000000.toInt()
+                subArgb[dstIdx++] = wordsPtr[rowOff + px].toInt()
             }
         }
         val effectiveRadius = if (x0 == regionX && y0 == regionY && x1 == regionX + regionWidth && y1 == regionY + regionHeight) {
@@ -620,6 +623,31 @@ object Win32Direct2dBackdropBlurEngine {
         } else {
             0f
         }
+
+        if (filter.hasDropShadow && filter.dropShadow != null) {
+            return applyCpuDropShadowFallback(
+                filter = filter,
+                shadow = filter.dropShadow!!,
+                subArgb = subArgb,
+                wordsPtr = wordsPtr,
+                bufW = bufW,
+                capX0 = capX0,
+                capY0 = capY0,
+                capX1 = capX1,
+                capY1 = capY1,
+                x0 = x0,
+                y0 = y0,
+                x1 = x1,
+                y1 = y1,
+                regionX = regionX,
+                regionY = regionY,
+                regionWidth = regionWidth,
+                regionHeight = regionHeight,
+                effectiveRadius = effectiveRadius,
+                effOp255 = effOp255
+            )
+        }
+
         val applied = FastBackdropBlurKernel.applyBackdropToArgbRegion(
             filter = filter,
             argbPixels = subArgb,
@@ -644,22 +672,282 @@ object Win32Direct2dBackdropBlurEngine {
                     wordsPtr[dstRow + px] = filteredWord.toUInt()
                 } else if (fa > 0) {
                     val orig = wordsPtr[dstRow + px].toInt()
-                    val or = (orig ushr 16) and 0xFF
-                    val og = (orig ushr 8) and 0xFF
-                    val ob = orig and 0xFF
-                    val fr = (filteredWord ushr 16) and 0xFF
-                    val fg = (filteredWord ushr 8) and 0xFF
-                    val fb = filteredWord and 0xFF
-                    val invA = 255 - fa
-                    val outR = (fr * fa + or * invA + 127) / 255
-                    val outG = (fg * fa + og * invA + 127) / 255
-                    val outB = (fb * fa + ob * invA + 127) / 255
-                    wordsPtr[dstRow + px] =
-                        0xFF000000u or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+                    val da = (orig ushr 24) and 0xFF
+                    if (da <= 0) {
+                        wordsPtr[dstRow + px] = ((fa shl 24) or (filteredWord and 0x00FFFFFF)).toUInt()
+                    } else {
+                        val or = (orig ushr 16) and 0xFF
+                        val og = (orig ushr 8) and 0xFF
+                        val ob = orig and 0xFF
+                        val fr = (filteredWord ushr 16) and 0xFF
+                        val fg = (filteredWord ushr 8) and 0xFF
+                        val fb = filteredWord and 0xFF
+                        val invA = 255 - fa
+                        val outA = (fa + (da * invA + 127) / 255).coerceIn(1, 255)
+                        val outR = (fr * fa + (or * da * invA + 127) / 255 + outA / 2) / outA
+                        val outG = (fg * fa + (og * da * invA + 127) / 255 + outA / 2) / outA
+                        val outB = (fb * fa + (ob * da * invA + 127) / 255 + outA / 2) / outA
+                        wordsPtr[dstRow + px] =
+                            (outA.coerceIn(0, 255).toUInt() shl 24) or
+                                (outR.coerceIn(0, 255).toUInt() shl 16) or
+                                (outG.coerceIn(0, 255).toUInt() shl 8) or
+                                outB.coerceIn(0, 255).toUInt()
+                    }
+                } else if (effOp255 >= 255) {
+                    wordsPtr[dstRow + px] = 0u
                 }
             }
         }
         return true
+    }
+
+    private var reusableShadowMask = FloatArray(0)
+    private var reusableShadowTmp = FloatArray(0)
+
+    private fun applyCpuDropShadowFallback(
+        filter: CssFilter,
+        shadow: com.nexustools.genericui.style.css.CssShadow,
+        subArgb: IntArray,
+        wordsPtr: CPointer<UIntVar>,
+        bufW: Int,
+        capX0: Int,
+        capY0: Int,
+        capX1: Int,
+        capY1: Int,
+        x0: Int,
+        y0: Int,
+        x1: Int,
+        y1: Int,
+        regionX: Int,
+        regionY: Int,
+        regionWidth: Int,
+        regionHeight: Int,
+        effectiveRadius: Float,
+        effOp255: Int
+    ): Boolean {
+        val capW = capX1 - capX0
+        val capH = capY1 - capY0
+        val count = capW * capH
+        if (reusableShadowMask.size < count) reusableShadowMask = FloatArray(count)
+        if (reusableShadowTmp.size < count) reusableShadowTmp = FloatArray(count)
+        val mask = reusableShadowMask
+        val tmp = reusableShadowTmp
+        mask.fill(0f, 0, count)
+
+        val hw = regionWidth * 0.5f
+        val hh = regionHeight * 0.5f
+        val rx = effectiveRadius.coerceIn(0f, min(hw, hh))
+        val checkR = rx > 0.5f
+        val filterOp = (filter.opacity ?: 1f).coerceIn(0f, 1f)
+        val centerX = regionX + hw
+        val centerY = regionY + hh
+
+        for (py in y0 until y1) {
+            val maskRow = (py - capY0) * capW
+            val bufRow = py * bufW
+            val dy = if (checkR) abs(py + 0.5f - centerY) - (hh - rx) else 0f
+            for (px in x0 until x1) {
+                val cov = if (!checkR) {
+                    1f
+                } else {
+                    val dx = abs(px + 0.5f - centerX) - (hw - rx)
+                    val qx = max(dx, 0f)
+                    val qy = max(dy, 0f)
+                    val sd = sqrt(qx * qx + qy * qy) + min(max(dx, dy), 0f) - rx
+                    (0.5f - sd).coerceIn(0f, 1f)
+                }
+                if (cov <= 0f) continue
+                val srcA = ((wordsPtr[bufRow + px].toInt() ushr 24) and 0xFF) / 255f
+                if (srcA > 0f) {
+                    mask[maskRow + (px - capX0)] = cov * srcA * filterOp
+                }
+            }
+        }
+
+        if (filter.hasBlur || filter.hasPixelOps) {
+            val noShadowFilter = filter.copy(dropShadow = null)
+            FastBackdropBlurKernel.applyBackdropToArgbRegion(
+                filter = noShadowFilter,
+                argbPixels = subArgb,
+                bufferWidth = capW,
+                bufferHeight = capH,
+                regionX = x0 - capX0,
+                regionY = y0 - capY0,
+                regionWidth = x1 - x0,
+                regionHeight = y1 - y0,
+                cornerRadiusPx = effectiveRadius
+            )
+        }
+
+        val blurPx = (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, 48f)
+        val blurSigma = blurPx * 0.5f
+        val radii = if (blurSigma > 0f) CssFilter.boxBlurRadiiForGaussianSigma(blurSigma) else IntArray(0)
+        for (radius in radii) {
+            if (radius <= 0) continue
+            boxBlurFloatHorizontalZeroPadded(mask, tmp, capW, capH, radius)
+            boxBlurFloatVerticalZeroPadded(tmp, mask, capW, capH, radius)
+        }
+
+        val offX = shadow.offsetX.resolvePx() ?: 0f
+        val offY = shadow.offsetY.resolvePx() ?: 0f
+        val scR = shadow.color.r / 255f
+        val scG = shadow.color.g / 255f
+        val scB = shadow.color.b / 255f
+        val scA = shadow.color.alphaFloat
+        val effOp = effOp255 / 255f
+        val hasBaseEffects = filter.hasBlur || filter.hasPixelOps
+
+        for (py in capY0 until capY1) {
+            val dstRow = py * bufW
+            val dy = if (checkR) abs(py + 0.5f - centerY) - (hh - rx) else 0f
+            val insideY = py in y0 until y1
+            for (px in capX0 until capX1) {
+                val regionCov = if (!insideY || px !in x0 until x1) {
+                    0f
+                } else if (!checkR) {
+                    1f
+                } else {
+                    val dx = abs(px + 0.5f - centerX) - (hw - rx)
+                    val qx = max(dx, 0f)
+                    val qy = max(dy, 0f)
+                    val sd = sqrt(qx * qx + qy * qy) + min(max(dx, dy), 0f) - rx
+                    (0.5f - sd).coerceIn(0f, 1f)
+                }
+
+                val maskA = sampleFloatMaskBilinearZeroOutside(
+                    mask,
+                    capW,
+                    capH,
+                    (px - capX0).toFloat() - offX,
+                    (py - capY0).toFloat() - offY
+                )
+                val shadowA = (maskA * scA * effOp).coerceIn(0f, 1f)
+
+                if (regionCov <= 0f) {
+                    if (shadowA <= 0.002f) continue
+                    val orig = wordsPtr[dstRow + px].toInt()
+                    val da = ((orig ushr 24) and 0xFF) / 255f
+                    val dr = ((orig ushr 16) and 0xFF) / 255f
+                    val dg = ((orig ushr 8) and 0xFF) / 255f
+                    val db = (orig and 0xFF) / 255f
+                    val dstBehindA = da * (1f - shadowA)
+                    val outA = (shadowA + dstBehindA).coerceIn(0f, 1f)
+                    if (outA <= 0.0005f) continue
+                    val invOut = 1f / outA
+                    val outR = ((scR * shadowA + dr * dstBehindA) * invOut * 255f).roundToInt().coerceIn(0, 255)
+                    val outG = ((scG * shadowA + dg * dstBehindA) * invOut * 255f).roundToInt().coerceIn(0, 255)
+                    val outB = ((scB * shadowA + db * dstBehindA) * invOut * 255f).roundToInt().coerceIn(0, 255)
+                    val outA255 = (outA * 255f).roundToInt().coerceIn(0, 255)
+                    wordsPtr[dstRow + px] =
+                        (outA255.toUInt() shl 24) or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+                    continue
+                }
+
+                if (!hasBaseEffects && shadowA <= 0.002f) continue
+
+                val fgWord = subArgb[(py - capY0) * capW + (px - capX0)]
+                val rawFgA = ((fgWord ushr 24) and 0xFF) / 255f
+                val fgA = (rawFgA * regionCov * effOp).coerceIn(0f, 1f)
+                val fgR = ((fgWord ushr 16) and 0xFF) / 255f
+                val fgG = ((fgWord ushr 8) and 0xFF) / 255f
+                val fgB = (fgWord and 0xFF) / 255f
+
+                val orig = wordsPtr[dstRow + px].toInt()
+                val origA = ((orig ushr 24) and 0xFF) / 255f
+                val dstBaseA = origA * (1f - regionCov)
+                val invFg = 1f - fgA
+                val shadowVisA = shadowA * invFg
+                val dstVisA = dstBaseA * (1f - shadowA) * invFg
+                val outA = (fgA + shadowVisA + dstVisA).coerceIn(0f, 1f)
+                if (outA <= 0.0005f) {
+                    wordsPtr[dstRow + px] = 0u
+                    continue
+                }
+                val dr = ((orig ushr 16) and 0xFF) / 255f
+                val dg = ((orig ushr 8) and 0xFF) / 255f
+                val db = (orig and 0xFF) / 255f
+                val invOut = 1f / outA
+                val outR = ((fgR * fgA + scR * shadowVisA + dr * dstVisA) * invOut * 255f).roundToInt().coerceIn(0, 255)
+                val outG = ((fgG * fgA + scG * shadowVisA + dg * dstVisA) * invOut * 255f).roundToInt().coerceIn(0, 255)
+                val outB = ((fgB * fgA + scB * shadowVisA + db * dstVisA) * invOut * 255f).roundToInt().coerceIn(0, 255)
+                val outA255 = (outA * 255f).roundToInt().coerceIn(0, 255)
+                wordsPtr[dstRow + px] =
+                    (outA255.toUInt() shl 24) or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+            }
+        }
+        return true
+    }
+
+    private fun boxBlurFloatHorizontalZeroPadded(
+        src: FloatArray,
+        dst: FloatArray,
+        width: Int,
+        height: Int,
+        radius: Int
+    ) {
+        val invWin = 1f / (radius * 2 + 1).toFloat()
+        for (y in 0 until height) {
+            val rowOff = y * width
+            var sum = 0f
+            val initEnd = min(radius, width - 1)
+            for (k in 0..initEnd) {
+                sum += src[rowOff + k]
+            }
+            for (x in 0 until width) {
+                dst[rowOff + x] = (sum * invWin).coerceIn(0f, 1f)
+                val outX = x - radius
+                if (outX >= 0) sum -= src[rowOff + outX]
+                val inX = x + radius + 1
+                if (inX < width) sum += src[rowOff + inX]
+            }
+        }
+    }
+
+    private fun boxBlurFloatVerticalZeroPadded(
+        src: FloatArray,
+        dst: FloatArray,
+        width: Int,
+        height: Int,
+        radius: Int
+    ) {
+        val invWin = 1f / (radius * 2 + 1).toFloat()
+        for (x in 0 until width) {
+            var sum = 0f
+            val initEnd = min(radius, height - 1)
+            for (k in 0..initEnd) {
+                sum += src[k * width + x]
+            }
+            for (y in 0 until height) {
+                dst[y * width + x] = (sum * invWin).coerceIn(0f, 1f)
+                val outY = y - radius
+                if (outY >= 0) sum -= src[outY * width + x]
+                val inY = y + radius + 1
+                if (inY < height) sum += src[inY * width + x]
+            }
+        }
+    }
+
+    private fun sampleFloatMaskBilinearZeroOutside(
+        mask: FloatArray,
+        width: Int,
+        height: Int,
+        fx: Float,
+        fy: Float
+    ): Float {
+        if (fx <= -1f || fy <= -1f || fx >= width.toFloat() || fy >= height.toFloat()) return 0f
+        val x0 = floor(fx).toInt()
+        val y0 = floor(fy).toInt()
+        val tx = fx - x0
+        val ty = fy - y0
+        val x1 = x0 + 1
+        val y1 = y0 + 1
+        val m00 = if (x0 in 0 until width && y0 in 0 until height) mask[y0 * width + x0] else 0f
+        val m10 = if (x1 in 0 until width && y0 in 0 until height) mask[y0 * width + x1] else 0f
+        val m01 = if (x0 in 0 until width && y1 in 0 until height) mask[y1 * width + x0] else 0f
+        val m11 = if (x1 in 0 until width && y1 in 0 until height) mask[y1 * width + x1] else 0f
+        val top = m00 + (m10 - m00) * tx
+        val bottom = m01 + (m11 - m01) * tx
+        return (top + (bottom - top) * ty).coerceIn(0f, 1f)
     }
 
     private fun ensureGpuInitialized(): Boolean {

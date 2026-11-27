@@ -789,6 +789,62 @@ class LinuxTitleBarDetectorAndRendererTest {
         assertNull(container.findWindow("w1"))
     }
 
+    @Test
+    fun showWindowIconFalseExcludesMenuButtonAndExpandsLeadingSlot() {
+        val breezeWithMenu = LinuxWmDetector.detectFromSnapshot(
+            LinuxWmEnvironmentSnapshot(
+                xdgCurrentDesktop = "KDE",
+                ewmhWmName = "KWin",
+                kwinRcContent = "[org.kde.kdecoration2]\nButtonsOnLeft=M_\nButtonsOnRight=FIAX\n"
+            )
+        )
+        val bar = Rect(0, 0, 800, 32)
+        val withIcon = LinuxTitleBarLayoutEngine.computeLayout(
+            profile = breezeWithMenu,
+            barBounds = bar,
+            leadingWidthPx = 120,
+            expandLeadingToFill = true,
+            showWindowIcon = true
+        )
+        val withoutIcon = LinuxTitleBarLayoutEngine.computeLayout(
+            profile = breezeWithMenu,
+            barBounds = bar,
+            leadingWidthPx = 120,
+            expandLeadingToFill = true,
+            showWindowIcon = false
+        )
+
+        assertTrue(withIcon.leftButtons.any { it.kind == LinuxTitleButtonKind.MENU })
+        assertTrue(withoutIcon.leftButtons.none { it.kind == LinuxTitleButtonKind.MENU })
+        assertEquals(4, withoutIcon.rightButtons.size)
+        assertTrue(withoutIcon.leadingSlotBounds.x < withIcon.leadingSlotBounds.x)
+        assertTrue(withoutIcon.leadingSlotBounds.width > withIcon.leadingSlotBounds.width)
+
+        val topLeftX = breezeWithMenu.metrics.horizontalPaddingPx + 4
+        val topLeftY = bar.height / 2
+        assertEquals(LinuxTitleButtonKind.MENU, LinuxTitleBarLayoutEngine.hitTestButton(withIcon, topLeftX, topLeftY)?.kind)
+        assertNull(LinuxTitleBarLayoutEngine.hitTestButton(withoutIcon, topLeftX, topLeftY))
+
+        val canvas = RecordingTitleBarCanvas()
+        LinuxTitleBarRenderer.render(canvas, breezeWithMenu, withoutIcon, title = "No Icon", isActiveWindow = true, isMaximized = false)
+        // Verify Breeze MENU draws 3 lines on withIcon vs none on withoutIcon
+        val canvasWithIcon = RecordingTitleBarCanvas()
+        LinuxTitleBarRenderer.render(canvasWithIcon, breezeWithMenu, withIcon, title = "With Icon", isActiveWindow = true, isMaximized = false)
+        assertTrue(canvasWithIcon.lines.size >= canvas.lines.size + 3)
+
+        // Marco style (`menu:minimize,maximize,close`) also omits MENU button cleanly
+        val marco = LinuxWmDetector.detectFromSnapshot(
+            LinuxWmEnvironmentSnapshot(
+                xdgCurrentDesktop = "MATE",
+                ewmhWmName = "Marco",
+                marcoButtonLayout = "menu:minimize,maximize,close"
+            )
+        )
+        val marcoNoIcon = LinuxTitleBarLayoutEngine.computeLayout(marco, bar, showWindowIcon = false)
+        assertTrue(marcoNoIcon.leftButtons.none { it.kind == LinuxTitleButtonKind.MENU })
+        assertEquals(3, marcoNoIcon.rightButtons.size)
+    }
+
     private class FakeWindowActions : LinuxTitleBarWindowActions {
         var closeCount = 0
         var minimizeCount = 0

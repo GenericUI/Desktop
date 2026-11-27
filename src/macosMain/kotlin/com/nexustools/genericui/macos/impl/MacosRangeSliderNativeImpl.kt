@@ -6,6 +6,7 @@ import com.nexustools.genericui.desktop.widget.DesktopRangeSliderNativeImpl
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.macos.MacosAppKitDispatch
+import com.nexustools.genericui.macos.MacosFocusSupport
 import com.nexustools.genericui.macos.MacosControlActionTarget
 import com.nexustools.genericui.macos.MacosViewHandle
 import com.nexustools.genericui.style.css.CssCursorValue
@@ -148,6 +149,16 @@ class MacosRangeSliderNativeImpl(
 
     override fun onNativeStyleSynced() {
         syncSliderState()
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        MacosFocusSupport.syncViewFirstResponder(
+            targetView = sliderView,
+            focused = isFocusedState(),
+            effectivelyFocusable = nativeWidget.isEffectivelyFocusable(),
+            enabled = nativeWidget.enabled
+        )
     }
 
     override fun dispose() {

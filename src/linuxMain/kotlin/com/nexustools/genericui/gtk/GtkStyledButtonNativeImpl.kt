@@ -140,4 +140,9 @@ open class GtkStyledButtonNativeImpl(
     override fun onNativeZIndexChanged(zIndex: Int) = GtkWidgetLifecycleBridge.onZIndexChanged(this, zIndex)
     override fun onNativeTransformChanged(transform: CssTransform?) = GtkWidgetLifecycleBridge.onTransformChanged(this, transform)
     override fun onNativeStyleSynced() = GtkWidgetLifecycleBridge.onStyleSynced(this)
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        GtkWidgetLifecycleBridge.syncNativeFocus(this, isFocusedState())
+    }
 }

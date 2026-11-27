@@ -5,7 +5,7 @@ package com.nexustools.genericui.macos
 import com.nexustools.genericui.component.action.Button
 import com.nexustools.genericui.component.action.DropdownButton
 import com.nexustools.genericui.component.action.SplitDropdownButton
-import com.nexustools.genericui.component.action.StyledButton
+import com.nexustools.genericui.component.action.styled.StyledButton
 import com.nexustools.genericui.component.content.Table
 import com.nexustools.genericui.component.content.TableCell
 import com.nexustools.genericui.component.content.TableColumn
@@ -18,7 +18,7 @@ import com.nexustools.genericui.component.form.NumberField
 import com.nexustools.genericui.component.form.SearchField
 import com.nexustools.genericui.component.form.Select
 import com.nexustools.genericui.component.form.SelectOption
-import com.nexustools.genericui.component.form.StyledSlider
+import com.nexustools.genericui.component.form.styled.StyledSlider
 import com.nexustools.genericui.component.form.TextField
 import com.nexustools.genericui.event.PointerDragManager
 import com.nexustools.genericui.component.form.TimePicker
@@ -26,7 +26,7 @@ import com.nexustools.genericui.component.layout.Container
 import com.nexustools.genericui.component.layout.HStack
 import com.nexustools.genericui.component.layout.LayerConstraint
 import com.nexustools.genericui.component.layout.LayeredContainer
-import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.lazy.LazyList
 import com.nexustools.genericui.component.lazy.TreeNode
 import com.nexustools.genericui.component.lazy.TreeView

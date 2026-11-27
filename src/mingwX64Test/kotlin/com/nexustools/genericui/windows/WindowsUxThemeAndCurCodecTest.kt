@@ -5,7 +5,7 @@ package com.nexustools.genericui.windows
 import com.nexustools.genericui.component.action.Button
 import com.nexustools.genericui.component.action.DropdownButton
 import com.nexustools.genericui.component.action.SplitDropdownButton
-import com.nexustools.genericui.component.action.StyledButton
+import com.nexustools.genericui.component.action.styled.StyledButton
 import com.nexustools.genericui.component.action.ToggleButton
 import com.nexustools.genericui.component.feedback.ProgressBar
 import com.nexustools.genericui.component.form.CheckBox

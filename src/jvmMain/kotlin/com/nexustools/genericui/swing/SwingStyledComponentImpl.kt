@@ -218,11 +218,17 @@ class SwingStyledComponentImpl(
     override fun isHoveredState(): Boolean = hovered
 
     override fun setFocusedState(focused: Boolean) {
-        this.focused = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        this.focused = effective
+        if (effective) {
+            requestAwtFocusOnEdt(nativeWidget)
+        } else {
+            clearAwtFocusOnEdtIfOwner(nativeWidget)
+        }
         syncCurrentVisuals()
     }
 
-    override fun isFocusedState(): Boolean = focused
+    override fun isFocusedState(): Boolean = focused || nativeWidget.isFocusOwner
 
     override fun setActivePressedState(active: Boolean) {
         this.activePressed = active && isEnabled()

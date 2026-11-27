@@ -28,6 +28,7 @@ import platform.AppKit.NSWindowCloseButton
 import platform.AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
 import platform.AppKit.NSWindowCollectionBehaviorFullScreenNone
 import platform.AppKit.NSWindowCollectionBehaviorFullScreenPrimary
+import platform.AppKit.NSWindowDocumentIconButton
 import platform.AppKit.NSWindowMiniaturizeButton
 import platform.AppKit.NSWindowOrderingMode
 import platform.AppKit.NSWindowOut
@@ -124,6 +125,7 @@ internal class MacosHostWindow(
     private var lastChromeShowMinimize: Boolean = true
     private var lastChromeShowMaximize: Boolean = true
     private var lastChromeShowTitle: Boolean = true
+    private var lastChromeShowWindowIcon: Boolean = true
     private var lastChromeTitleText: String = ""
 
     internal fun invalidateNativeOverlayTitleBarChromeCache() {
@@ -563,7 +565,8 @@ internal class MacosHostWindow(
         showMinimize: Boolean,
         showMaximize: Boolean,
         showTitle: Boolean,
-        titleText: String
+        titleText: String,
+        showWindowIcon: Boolean = true
     ): Boolean {
         val inFullscreen = (styleMask and NSWindowStyleMaskFullScreen) != 0UL
         val clampedAlpha = alpha.coerceIn(0.0, 1.0)
@@ -581,6 +584,7 @@ internal class MacosHostWindow(
             lastChromeShowMinimize == showMinimize &&
             lastChromeShowMaximize == showMaximize &&
             lastChromeShowTitle == showTitle &&
+            lastChromeShowWindowIcon == showWindowIcon &&
             lastChromeTitleText == titleText &&
             (container == null ||
                 (container.isHidden() == !effectiveVisible &&
@@ -594,7 +598,7 @@ internal class MacosHostWindow(
                 if (it.isHidden()) it.hidden = false
                 if (kotlin.math.abs(it.alphaValue - 1.0) >= 0.002) it.alphaValue = 1.0
             }
-            applyFullscreenMenuBarHoverChrome(titleText)
+            applyFullscreenMenuBarHoverChrome(titleText, showWindowIcon)
             hasSyncedOverlayTitleBarChrome = true
             lastChromeFullscreen = true
             lastChromeVisible = true
@@ -603,6 +607,7 @@ internal class MacosHostWindow(
             lastChromeShowMinimize = showMinimize
             lastChromeShowMaximize = showMaximize
             lastChromeShowTitle = showTitle
+            lastChromeShowWindowIcon = showWindowIcon
             lastChromeTitleText = titleText
             return false
         }
@@ -638,6 +643,7 @@ internal class MacosHostWindow(
             if (it.alphaValue != 1.0) it.alphaValue = 1.0
             if (it.isEnabled() != showMaximize) it.enabled = showMaximize
         }
+        syncWindowDocumentIconVisibility(showWindowIcon)
 
         container?.let {
             if (!effectiveVisible) {
@@ -659,11 +665,12 @@ internal class MacosHostWindow(
         lastChromeShowMinimize = showMinimize
         lastChromeShowMaximize = showMaximize
         lastChromeShowTitle = showTitle
+        lastChromeShowWindowIcon = showWindowIcon
         lastChromeTitleText = titleText
         return containerWasVisible && !effectiveVisible
     }
 
-    fun applyFullscreenMenuBarHoverChrome(title: String) {
+    fun applyFullscreenMenuBarHoverChrome(title: String, showWindowIcon: Boolean = true) {
         invalidateNativeOverlayTitleBarChromeCache()
         if (this.title != title) {
             this.title = title
@@ -676,7 +683,7 @@ internal class MacosHostWindow(
             container.hidden = false
             container.alphaValue = 1.0
         }
-        showStandardWindowButtons(showMinimize = true, enableMinimize = false)
+        showStandardWindowButtons(showMinimize = true, enableMinimize = false, showWindowIcon = showWindowIcon)
     }
 
     fun hideStandardWindowButtons() {
@@ -696,9 +703,14 @@ internal class MacosHostWindow(
             it.alphaValue = 1.0
             it.enabled = true
         }
+        syncWindowDocumentIconVisibility(showWindowIcon = false)
     }
 
-    fun showStandardWindowButtons(showMinimize: Boolean = true, enableMinimize: Boolean = true) {
+    fun showStandardWindowButtons(
+        showMinimize: Boolean = true,
+        enableMinimize: Boolean = true,
+        showWindowIcon: Boolean = true
+    ) {
         invalidateNativeOverlayTitleBarChromeCache()
         titlebarContainerView()?.let { container ->
             container.hidden = false
@@ -718,6 +730,23 @@ internal class MacosHostWindow(
             it.hidden = false
             it.alphaValue = 1.0
             it.enabled = true
+        }
+        syncWindowDocumentIconVisibility(showWindowIcon = showWindowIcon)
+    }
+
+    /**
+     * Shows or hides the NSWindow titlebar document icon (`NSWindowDocumentIconButton`) without
+     * affecting the application's Dock icon (`NSApplication.sharedApplication.applicationIconImage`).
+     */
+    fun syncWindowDocumentIconVisibility(showWindowIcon: Boolean) {
+        standardWindowButton(NSWindowDocumentIconButton)?.let { docBtn ->
+            val targetHidden = !showWindowIcon
+            if (docBtn.isHidden() != targetHidden) docBtn.hidden = targetHidden
+            val targetAlpha = if (showWindowIcon) 1.0 else 0.0
+            if (kotlin.math.abs(docBtn.alphaValue - targetAlpha) >= 0.002) {
+                docBtn.alphaValue = targetAlpha
+            }
+            if (docBtn.isEnabled() != showWindowIcon) docBtn.enabled = showWindowIcon
         }
     }
 

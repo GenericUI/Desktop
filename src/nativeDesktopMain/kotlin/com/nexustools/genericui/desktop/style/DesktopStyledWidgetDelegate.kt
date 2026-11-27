@@ -100,11 +100,7 @@ class DesktopStyledWidgetDelegate(
     fun resolveBaseVisuals(): StyledVisualSpec {
         syncControllerInputs()
         val isDark = resolveIsDarkTheme()
-        val snapshot = if (controller.allowsEffectiveBootstrapTypeTint(backendTarget)) {
-            owner.getStyleSnapshot()
-        } else {
-            null
-        }
+        val snapshot = controller.sanitizeBootstrapSnapshot(owner.getStyleSnapshot(), backendTarget)
         val computedBase = StyledVisualSpec.fromComponentAndComputed(
             componentStyle = owner.getComponentStyle(),
             computedStyle = owner.getComputedStyle(),

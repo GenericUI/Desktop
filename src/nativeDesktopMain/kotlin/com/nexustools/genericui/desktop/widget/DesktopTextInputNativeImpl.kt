@@ -9,8 +9,9 @@ import com.nexustools.genericui.nativeimpl.form.TextInputNativeImpl
  */
 open class DesktopTextInputNativeImpl<out W : DesktopNativeWidget>(
     nativeWidget: W,
-    multiline: Boolean = false
-) : DesktopBaseNativeImpl<W>(nativeWidget, "form-control"), TextInputNativeImpl<W> {
+    multiline: Boolean = false,
+    classPrefix: String = "form-control"
+) : DesktopBaseNativeImpl<W>(nativeWidget, classPrefix), TextInputNativeImpl<W> {
 
     private var lastControlVariant: String? = null
     protected var textValue: String = ""

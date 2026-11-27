@@ -126,6 +126,11 @@ class WindowsDropdownNativeImpl(
         Win32RetainedControlSupport.setWindowTextIfChanged(nativeWidget.hwnd, label)
     }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        Win32RetainedControlSupport.syncOsFocusIfNeeded(this, nativeWidget.hwnd, focused)
+    }
+
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size =
         Win32RetainedControlSupport.measureTextSize(
             text = labelText,

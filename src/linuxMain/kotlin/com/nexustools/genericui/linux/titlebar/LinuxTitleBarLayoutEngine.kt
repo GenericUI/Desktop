@@ -18,7 +18,9 @@ object LinuxTitleBarLayoutEngine {
         showClose: Boolean = true,
         leadingWidthPx: Int = 0,
         centerWidthPx: Int = 0,
-        trailingWidthPx: Int = 0
+        trailingWidthPx: Int = 0,
+        expandLeadingToFill: Boolean = false,
+        showWindowIcon: Boolean = true
     ): LinuxTitleBarLayoutResult {
         val metrics = profile.metrics
         val effectiveHeight = if (barBounds.height > 0) {
@@ -33,8 +35,8 @@ object LinuxTitleBarLayoutEngine {
             height = effectiveHeight
         )
 
-        val visibleLeft = filterVisibleButtons(profile.leftButtons, showMinimize, showMaximize, showClose)
-        val visibleRight = filterVisibleButtons(profile.rightButtons, showMinimize, showMaximize, showClose)
+        val visibleLeft = filterVisibleButtons(profile.leftButtons, showMinimize, showMaximize, showClose, showWindowIcon)
+        val visibleRight = filterVisibleButtons(profile.rightButtons, showMinimize, showMaximize, showClose, showWindowIcon)
 
         val btnW = metrics.buttonWidthPx.coerceAtLeast(12)
         val btnH = metrics.buttonHeightPx.coerceAtLeast(12).coerceAtMost(effectiveHeight)
@@ -97,10 +99,12 @@ object LinuxTitleBarLayoutEngine {
         val contentW = (rightStart - leftEnd).coerceAtLeast(0)
         val contentSlotBounds = Rect(contentX, effectiveBar.y, contentW, effectiveHeight)
 
-        val clampedLeadingW = leadingWidthPx.coerceIn(0, contentW)
-        val leadingSlotBounds = Rect(contentX, effectiveBar.y, clampedLeadingW, effectiveHeight)
-
-        val clampedTrailingW = trailingWidthPx.coerceIn(0, (contentW - clampedLeadingW).coerceAtLeast(0))
+        val fixedLeadingW = leadingWidthPx.coerceIn(0, contentW)
+        val clampedTrailingW = if (expandLeadingToFill) {
+            trailingWidthPx.coerceIn(0, contentW)
+        } else {
+            trailingWidthPx.coerceIn(0, (contentW - fixedLeadingW).coerceAtLeast(0))
+        }
         val trailingSlotBounds = Rect(
             x = contentX + contentW - clampedTrailingW,
             y = effectiveBar.y,
@@ -108,17 +112,38 @@ object LinuxTitleBarLayoutEngine {
             height = effectiveHeight
         )
 
+        val clampedLeadingW: Int
+        val centerSlotBounds: Rect
+        if (expandLeadingToFill && centerWidthPx <= 0) {
+            clampedLeadingW = (contentW - clampedTrailingW).coerceAtLeast(fixedLeadingW.coerceAtMost((contentW - clampedTrailingW).coerceAtLeast(0)))
+            centerSlotBounds = Rect(contentX + clampedLeadingW, effectiveBar.y, 0, effectiveHeight)
+        } else if (expandLeadingToFill && centerWidthPx > 0) {
+            val maxBeforeTrail = (contentW - clampedTrailingW).coerceAtLeast(0)
+            val clampedCenterW = centerWidthPx.coerceIn(0, (maxBeforeTrail - fixedLeadingW).coerceAtLeast(0))
+            val idealCenterX = effectiveBar.x + (effectiveBar.width - clampedCenterW) / 2
+            val minCenterX = contentX + fixedLeadingW
+            val maxCenterX = (contentX + maxBeforeTrail - clampedCenterW).coerceAtLeast(minCenterX)
+            val cx = idealCenterX.coerceIn(minCenterX, maxCenterX)
+            centerSlotBounds = Rect(cx, effectiveBar.y, clampedCenterW, effectiveHeight)
+            clampedLeadingW = (cx - contentX - if (clampedCenterW > 0) 6 else 0).coerceAtLeast(fixedLeadingW).coerceAtMost(maxBeforeTrail)
+        } else {
+            clampedLeadingW = fixedLeadingW
+            val remX = contentX + clampedLeadingW
+            val remW = (trailingSlotBounds.x - remX).coerceAtLeast(0)
+            val clampedCenterW = centerWidthPx.coerceIn(0, remW)
+            centerSlotBounds = if (clampedCenterW > 0) {
+                val idealCenterX = effectiveBar.x + (effectiveBar.width - clampedCenterW) / 2
+                val minCenterX = remX
+                val maxCenterX = (remX + remW - clampedCenterW).coerceAtLeast(minCenterX)
+                Rect(idealCenterX.coerceIn(minCenterX, maxCenterX), effectiveBar.y, clampedCenterW, effectiveHeight)
+            } else {
+                Rect(remX + remW / 2, effectiveBar.y, 0, effectiveHeight)
+            }
+        }
+        val leadingSlotBounds = Rect(contentX, effectiveBar.y, clampedLeadingW, effectiveHeight)
+        val clampedCenterW = centerSlotBounds.width
         val remX = leadingSlotBounds.right
         val remW = (trailingSlotBounds.x - remX).coerceAtLeast(0)
-        val clampedCenterW = centerWidthPx.coerceIn(0, remW)
-        val centerSlotBounds = if (clampedCenterW > 0) {
-            val idealCenterX = effectiveBar.x + (effectiveBar.width - clampedCenterW) / 2
-            val minCenterX = remX
-            val maxCenterX = (remX + remW - clampedCenterW).coerceAtLeast(minCenterX)
-            Rect(idealCenterX.coerceIn(minCenterX, maxCenterX), effectiveBar.y, clampedCenterW, effectiveHeight)
-        } else {
-            Rect(remX + remW / 2, effectiveBar.y, 0, effectiveHeight)
-        }
 
         val titleTextBounds = if (clampedCenterW <= 0) {
             Rect(remX, effectiveBar.y, remW, effectiveHeight)
@@ -226,11 +251,13 @@ object LinuxTitleBarLayoutEngine {
         buttons: List<LinuxTitleButtonKind>,
         showMinimize: Boolean,
         showMaximize: Boolean,
-        showClose: Boolean
+        showClose: Boolean,
+        showWindowIcon: Boolean
     ): List<LinuxTitleButtonKind> {
         val out = ArrayList<LinuxTitleButtonKind>(buttons.size)
         for (kind in buttons) {
             val include = when (kind) {
+                LinuxTitleButtonKind.MENU -> showWindowIcon
                 LinuxTitleButtonKind.MINIMIZE -> showMinimize
                 LinuxTitleButtonKind.MAXIMIZE_OR_RESTORE -> showMaximize
                 LinuxTitleButtonKind.CLOSE -> showClose

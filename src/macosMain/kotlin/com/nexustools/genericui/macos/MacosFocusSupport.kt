@@ -162,6 +162,37 @@ internal object MacosFocusSupport {
         }
     }
 
+    fun isResponderMatchingView(responder: NSResponder?, targetView: NSView): Boolean {
+        if (responder == null) return false
+        if (responder === targetView) return true
+        if (responder is NSTextView) {
+            val del = responder.delegate() as? NSView
+            if (del === targetView) return true
+        }
+        return false
+    }
+
+    fun syncViewFirstResponder(
+        targetView: NSView?,
+        focused: Boolean,
+        effectivelyFocusable: Boolean,
+        enabled: Boolean
+    ) {
+        val effective = focused && enabled && effectivelyFocusable
+        MacosAppKitDispatch.onMainOrDefer {
+            val view = targetView ?: return@onMainOrDefer
+            val win = view.window ?: return@onMainOrDefer
+            val currentFr = win.firstResponder
+            if (effective) {
+                if (!isResponderMatchingView(currentFr, view) && view.acceptsFirstResponder()) {
+                    win.makeFirstResponder(view)
+                }
+            } else if (isResponderMatchingView(currentFr, view)) {
+                win.makeFirstResponder(null)
+            }
+        }
+    }
+
     private fun isViewInSubtree(candidate: NSView, root: NSView): Boolean {
         var cur: NSView? = candidate
         while (cur != null) {

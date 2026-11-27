@@ -151,6 +151,12 @@ object GtkWidgetLifecycleBridge {
         )
         if (buttonNum == Gtk4DynamicBindings.GDK_BUTTON_PRIMARY) {
             binding.impl.setActivePressedState(true)
+            if (binding.isTextInput && binding.impl.nativeWidget.isEffectivelyFocusable()) {
+                val focusPtr = binding.impl.nativeWidget.focusTargetPtr ?: binding.rootPtr
+                if (Gtk4DynamicBindings.gtkWidgetGetRoot(focusPtr) != null && !Gtk4DynamicBindings.gtkWidgetHasFocus(focusPtr)) {
+                    Gtk4DynamicBindings.gtkWidgetGrabFocus(focusPtr)
+                }
+            }
         }
         val titleBarImpl = binding.impl as? GtkContainerNativeImpl
         if (titleBarImpl != null) {
@@ -388,6 +394,18 @@ object GtkWidgetLifecycleBridge {
     fun onTransformChanged(impl: DesktopBaseNativeImpl<GtkWidgetHandle>, transform: CssTransform?) {
         impl.nativeWidget.cssTransform = transform
         requestParentRelayout(impl)
+    }
+
+    fun syncNativeFocus(impl: DesktopBaseNativeImpl<GtkWidgetHandle>, focused: Boolean) {
+        val handle = impl.nativeWidget
+        val focusPtr = handle.focusTargetPtr ?: handle.primaryLeafPtr ?: handle.realGtkWidgetPtr ?: return
+        if (focused && handle.enabled && impl.isFocusable() && handle.isEffectivelyFocusable()) {
+            if (Gtk4DynamicBindings.gtkWidgetGetRoot(focusPtr) != null && !Gtk4DynamicBindings.gtkWidgetHasFocus(focusPtr)) {
+                Gtk4DynamicBindings.gtkWidgetGrabFocus(focusPtr)
+            }
+        } else if (!focused && Gtk4DynamicBindings.gtkWidgetHasFocus(focusPtr)) {
+            Gtk4DynamicBindings.gtkWidgetClearWindowFocus(focusPtr)
+        }
     }
 
     fun onStyleSynced(impl: DesktopBaseNativeImpl<GtkWidgetHandle>) {

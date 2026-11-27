@@ -17,6 +17,7 @@ import com.nexustools.genericui.component.shell.MenuItem
 import com.nexustools.genericui.component.shell.Window
 import com.nexustools.genericui.component.tabs.Tab
 import com.nexustools.genericui.component.tabs.TabContainer
+import com.nexustools.genericui.component.tabs.TabIconPlacement
 import com.nexustools.genericui.component.tabs.TabPosition
 import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.AbstractComponent
@@ -32,17 +33,21 @@ import com.nexustools.genericui.event.PointerEvent
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.gtk.impl.GtkScrollViewNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkTabNativeImpl
 import com.nexustools.genericui.gtk.titlebar.GtkWindowTitleBarController
 import com.nexustools.genericui.gtk.widget.GtkSemanticContainerWidget
 import com.nexustools.genericui.image.ImageBuffer
+import com.nexustools.genericui.image.ImageColorSpace
 import com.nexustools.genericui.image.PixelFormat
 import com.nexustools.genericui.linux.LinuxDynamicLibraryLoader
+import com.nexustools.genericui.linux.LinuxTabIconHelper
 import com.nexustools.genericui.linux.titlebar.LinuxTitleBarProfileManager
 import com.nexustools.genericui.linux.titlebar.LinuxTitleBarThemeFamily
 import com.nexustools.genericui.linux.titlebar.LinuxTitleButtonKind
 import com.nexustools.genericui.linux.titlebar.LinuxWmDetector
 import com.nexustools.genericui.linux.titlebar.LinuxWmEnvironmentSnapshot
 import com.nexustools.genericui.linux.titlebar.LinuxWmType
+import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.window.TitleBar
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CFunction
@@ -937,5 +942,41 @@ class GtkLinuxTitleBarAndMdiTest {
             GtkApplicationNativeImpl.interactiveGtkGuiEnabled = prevInteractive
             GenericUI.activeFactory = prevFactory
         }
+    }
+
+    @Test
+    fun gtkTabTracksFullColorIconTintSizeAndDynamicClosableAndKeepsWindowIconState() {
+        val tabImpl = GtkTabNativeImpl(closable = false)
+        assertFalse(tabImpl.closableVal)
+        val baseWidth = tabImpl.measureIntrinsicSize(null, null).width
+
+        tabImpl.setIconNative("https://example.com/favicon.ico")
+        tabImpl.setIconSizePxNative(18)
+        tabImpl.setIconPlacementNative(TabIconPlacement.TOP)
+        tabImpl.setTintImageToThemeNative(false)
+        tabImpl.setClosableNative(true)
+
+        assertTrue(tabImpl.closableVal)
+        assertFalse(tabImpl.tintImageToThemeVal)
+        assertEquals(18, tabImpl.iconSizePxVal)
+        assertEquals(TabIconPlacement.TOP, tabImpl.iconPlacementVal)
+        assertTrue(tabImpl.measureIntrinsicSize(null, null).width > baseWidth)
+
+        // Verify LinuxTabIconHelper preserves full colors when tintToTheme=false and tints when true
+        val raw = ImageBuffer(2, 2, PixelFormat.RGBA_8888, ImageColorSpace.SRGB)
+        raw.setPixel(0, 0, RgbaColor(240, 20, 20, 1f))
+        raw.setPixel(1, 0, RgbaColor(20, 220, 40, 1f))
+        raw.setPixel(0, 1, RgbaColor(20, 60, 240, 1f))
+        raw.setPixel(1, 1, RgbaColor(240, 220, 20, 1f))
+
+        val untinted = LinuxTabIconHelper.prepareTabIconBuffer(raw, sizePx = 2, tintToTheme = false, isDark = true)
+        assertEquals(RgbaColor(240, 20, 20, 1f), untinted.getPixel(0, 0))
+        assertEquals(RgbaColor(20, 220, 40, 1f), untinted.getPixel(1, 0))
+
+        val customTint = RgbaColor(200, 210, 220, 1f)
+        val tinted = LinuxTabIconHelper.prepareTabIconBuffer(raw, sizePx = 2, tintToTheme = true, isDark = true, customTint = customTint)
+        assertEquals(customTint, tinted.getPixel(0, 0))
+        assertEquals(customTint, tinted.getPixel(1, 0))
+        tabImpl.dispose()
     }
 }

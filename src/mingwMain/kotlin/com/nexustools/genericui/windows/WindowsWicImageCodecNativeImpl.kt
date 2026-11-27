@@ -14,6 +14,8 @@ import com.nexustools.genericui.image.ImageMetadata
 import com.nexustools.genericui.image.ImageSource
 import com.nexustools.genericui.image.PixelFormat
 import com.nexustools.genericui.image.cache.ImageCacheManager
+import com.nexustools.genericui.resources.ResourceResolver
+import com.nexustools.genericui.style.css.CssCustomCursor
 import kotlinx.cinterop.CFunction
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.COpaquePointerVar
@@ -62,8 +64,8 @@ class WindowsWicImageCodecNativeImpl : DesktopLibJpegImageCodecImpl(
         source.memoryBuffer?.let { return super.probeMetadata(source) }
         val bytes = resolveSourceBytes(source) ?: return null
         if (bytes.isEmpty()) return null
-        if (ImageFormat.detectFromHeader(bytes) == ImageFormat.SVG) {
-            return super.probeMetadata(source)
+        if (isSvgPayload(bytes, source.formatHint)) {
+            return probeSvgMetadata(bytes) ?: super.probeMetadata(source)
         }
         probeViaWic(bytes)?.let { return it }
         return super.probeMetadata(source)
@@ -73,8 +75,8 @@ class WindowsWicImageCodecNativeImpl : DesktopLibJpegImageCodecImpl(
         source.memoryBuffer?.let { return it.copy() }
         val bytes = resolveSourceBytes(source) ?: return null
         if (bytes.isEmpty()) return null
-        if (ImageFormat.detectFromHeader(bytes) == ImageFormat.SVG) {
-            return super.decode(source, options)
+        if (isSvgPayload(bytes, source.formatHint)) {
+            return decodeSvg(bytes, options)
         }
         decodeViaWic(bytes)?.let { return it }
         return super.decode(source, options)
@@ -82,10 +84,29 @@ class WindowsWicImageCodecNativeImpl : DesktopLibJpegImageCodecImpl(
 
     override fun decodeAnimated(source: ImageSource, options: ImageDecodeOptions): AnimatedImage? {
         val bytes = resolveSourceBytes(source) ?: return super.decodeAnimated(source, options)
-        if (bytes.isNotEmpty() && ImageFormat.detectFromHeader(bytes) != ImageFormat.SVG) {
+        if (bytes.isNotEmpty() && !isSvgPayload(bytes, source.formatHint)) {
             decodeAnimatedViaWic(bytes)?.let { return it }
         }
         return super.decodeAnimated(source, options)
+    }
+
+    protected override fun decodeSvg(svgBytes: ByteArray, options: ImageDecodeOptions): ImageBuffer? {
+        val markup = svgBytes.decodeToString(throwOnInvalidSequence = false)
+        if (markup.isBlank() || !markup.contains("<svg", ignoreCase = true)) {
+            return null
+        }
+        val widthPx = (options.targetWidth?.takeIf { it > 0 } ?: 48).coerceIn(1, 256)
+        val heightPx = (options.targetHeight?.takeIf { it > 0 } ?: 48).coerceIn(1, 256)
+        Win32SvgIconRasterizer.rasterize(
+            svgMarkup = markup,
+            widthPx = widthPx,
+            heightPx = heightPx
+        )?.let { return it }
+        return CssCustomCursor.fromSvg(
+            svgMarkup = markup,
+            widthPx = widthPx,
+            heightPx = heightPx
+        ).resolveToImageBuffer()
     }
 
     override fun encode(buffer: ImageBuffer, options: ImageEncodeOptions): ByteArray? {
@@ -97,7 +118,68 @@ class WindowsWicImageCodecNativeImpl : DesktopLibJpegImageCodecImpl(
     }
 
     private fun resolveSourceBytes(source: ImageSource): ByteArray? =
-        source.encodedBytes ?: source.uriOrPath?.let { ImageCacheManager.fetchAndCacheBytes(it) }
+        source.encodedBytes
+            ?: source.resId?.let { ResourceResolver.getBytes(it) }
+            ?: source.uriOrPath?.let { ImageCacheManager.fetchAndCacheBytes(it) }
+
+    private fun isSvgPayload(bytes: ByteArray, formatHint: ImageFormat): Boolean {
+        val detected = ImageFormat.detectFromHeader(bytes)
+        if (detected == ImageFormat.SVG) return true
+        if (detected != ImageFormat.UNKNOWN) return false
+        val head = bytes.decodeToString(0, minOf(bytes.size, 2048), throwOnInvalidSequence = false)
+            .trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+        return (formatHint == ImageFormat.SVG || head.startsWith("<")) &&
+            head.contains("<svg", ignoreCase = true)
+    }
+
+    private fun probeSvgMetadata(bytes: ByteArray): ImageMetadata? {
+        val markup = bytes.decodeToString(throwOnInvalidSequence = false)
+        if (markup.isBlank() || !markup.contains("<svg", ignoreCase = true)) return null
+        val svgTagAttrs = SVG_OPEN_TAG_REGEX.find(markup)?.groupValues?.get(1).orEmpty()
+        var widthPx = parseSvgLengthAttr(svgTagAttrs, "width")
+        var heightPx = parseSvgLengthAttr(svgTagAttrs, "height")
+        val viewBoxMatch = SVG_VIEWBOX_REGEX.find(svgTagAttrs) ?: SVG_VIEWBOX_REGEX.find(markup)
+        if (viewBoxMatch != null) {
+            val nums = viewBoxMatch.groupValues[1].trim()
+                .split(WHITESPACE_OR_COMMA_REGEX)
+                .mapNotNull { it.toFloatOrNull() }
+            if (nums.size >= 4 && nums[2] > 0f && nums[3] > 0f) {
+                val vbW = kotlin.math.round(nums[2]).toInt().coerceAtLeast(1)
+                val vbH = kotlin.math.round(nums[3]).toInt().coerceAtLeast(1)
+                if (widthPx == null && heightPx == null) {
+                    widthPx = vbW
+                    heightPx = vbH
+                } else if (widthPx == null) {
+                    widthPx = kotlin.math.round(heightPx!! * (nums[2] / nums[3])).toInt().coerceAtLeast(1)
+                } else if (heightPx == null) {
+                    heightPx = kotlin.math.round(widthPx * (nums[3] / nums[2])).toInt().coerceAtLeast(1)
+                }
+            }
+        }
+        return ImageMetadata(
+            width = widthPx ?: 48,
+            height = heightPx ?: 48,
+            format = ImageFormat.SVG,
+            pixelFormat = PixelFormat.RGBA_8888,
+            colorSpace = ImageColorSpace.SRGB,
+            hasAlpha = true
+        )
+    }
+
+    private fun parseSvgLengthAttr(attrs: String, attrName: String): Int? {
+        if (attrs.isBlank()) return null
+        val match = Regex("\\b$attrName\\s*=\\s*['\"]([^'\"]+)['\"]", RegexOption.IGNORE_CASE).find(attrs)
+            ?: return null
+        val raw = match.groupValues[1].trim()
+        if (raw.isEmpty() || raw.endsWith("%")) return null
+        val numeric = if (raw.endsWith("px", ignoreCase = true)) {
+            raw.dropLast(2).trim()
+        } else {
+            raw
+        }
+        val parsed = numeric.toFloatOrNull()?.takeIf { it > 0f } ?: return null
+        return kotlin.math.round(parsed).toInt().coerceAtLeast(1)
+    }
 
     private fun probeViaWic(bytes: ByteArray): ImageMetadata? {
         return withWicFactory { factory ->
@@ -547,5 +629,9 @@ class WindowsWicImageCodecNativeImpl : DesktopLibJpegImageCodecImpl(
         const val SLOT_FRAME_ENCODE_SET_PIXEL_FORMAT = 6
         const val SLOT_FRAME_ENCODE_WRITE_PIXELS = 10
         const val SLOT_FRAME_ENCODE_COMMIT = 12
+
+        val SVG_OPEN_TAG_REGEX = Regex("<svg\\b([^>]*)>", RegexOption.IGNORE_CASE)
+        val SVG_VIEWBOX_REGEX = Regex("viewBox\\s*=\\s*['\"]([^'\"]+)['\"]", RegexOption.IGNORE_CASE)
+        val WHITESPACE_OR_COMMA_REGEX = Regex("[\\s,]+")
     }
 }

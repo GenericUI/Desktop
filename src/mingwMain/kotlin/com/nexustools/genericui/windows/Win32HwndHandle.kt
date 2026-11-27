@@ -8,6 +8,7 @@ import com.nexustools.genericui.style.css.CssCursorValue
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toLong
+import platform.windows.DRAWITEMSTRUCT
 import platform.windows.DeleteObject
 import platform.windows.HBRUSH
 import platform.windows.HDC
@@ -126,6 +127,7 @@ class Win32HwndHandle(
     internal var customMessageCallback: ((hwnd: HWND, msg: UINT, wParam: WPARAM, lParam: LPARAM) -> LRESULT?)? = null
     internal var onCommandCallback: ((notifyCode: Int, wParam: WPARAM, lParam: LPARAM) -> Unit)? = null
     internal var onNotifyCallback: ((code: UInt, nmhdrPtr: kotlinx.cinterop.CPointer<NMHDR>) -> LRESULT?)? = null
+    internal var onDrawItemCallback: ((disPtr: kotlinx.cinterop.CPointer<DRAWITEMSTRUCT>) -> LRESULT?)? = null
     internal var onScrollCallback: ((msg: UINT, wParam: WPARAM, lParam: LPARAM) -> Unit)? = null
     internal var onDpiChangedCallback: ((newDpi: Int) -> Unit)? = null
 

@@ -5,16 +5,16 @@ package com.nexustools.genericui.macos
 import com.nexustools.genericui.animation.AnimationSpec
 import com.nexustools.genericui.apple.style.AppleBackdropFilterController
 import com.nexustools.genericui.component.action.SplitDropdownButton
-import com.nexustools.genericui.component.action.StyledButton
+import com.nexustools.genericui.component.action.styled.StyledButton
 import com.nexustools.genericui.component.form.RangeSlider
-import com.nexustools.genericui.component.form.StyledSlider
+import com.nexustools.genericui.component.form.styled.StyledSlider
 import com.nexustools.genericui.component.layout.Container
 import com.nexustools.genericui.component.layout.LayerConstraint
 import com.nexustools.genericui.component.layout.LayeredContainer
-import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.component.shell.Window
-import com.nexustools.genericui.component.surface.StyledComponent
+import com.nexustools.genericui.component.surface.styled.StyledComponent
 import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
@@ -32,6 +32,7 @@ import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.macos.impl.MacosSplitDropdownView
+import com.nexustools.genericui.macos.impl.MacosTabNativeImpl
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssCornerRadii
 import com.nexustools.genericui.style.css.CssFilter
@@ -39,6 +40,7 @@ import com.nexustools.genericui.style.css.CssLength
 import com.nexustools.genericui.style.css.CssTransform
 import com.nexustools.genericui.style.transition.CssTimingFunction
 import com.nexustools.genericui.threading.GenericUiThreading
+import com.nexustools.genericui.window.TitleBar
 import kotlinx.cinterop.useContents
 import platform.AppKit.NSApplication
 import platform.AppKit.NSBackingStoreBuffered
@@ -1183,5 +1185,35 @@ class MacosWindowHostBlurSelectTitlebarTest {
                 hudWin.dispose()
             }
         }
+    }
+
+    @Test
+    fun macosTitleBarShowWindowIconAndNonTintedTabIconPreserved() {
+        val factory = MacosNativeFactory()
+        GenericUI.initialize(factory)
+
+        runOnMainThreadSync {
+            val win = Window(title = "No Titlebar Icon", initialSize = Size(480, 300))
+            win.setTitleBar(TitleBar(customTitleBar = true, showWindowIcon = false))
+            win.show(factory)
+            try {
+                val winImpl = win.nativeImpl as MacosWindowNativeImpl
+                assertEquals(false, winImpl.nativeWidget.attributes["showWindowIcon"])
+                val nsWin = MacosNativeWindowHost.windowSessionNsWindowForTest(winImpl)
+                nsWin?.standardWindowButton(platform.AppKit.NSWindowDocumentIconButton)?.let { docBtn ->
+                    assertTrue(docBtn.isHidden())
+                }
+            } finally {
+                win.close()
+                win.dispose()
+            }
+        }
+
+        val tabImpl = MacosTabNativeImpl(MacosViewHandle("Tab"), initialClosable = false)
+        tabImpl.setTintImageToThemeNative(false)
+        tabImpl.setClosableNative(true)
+        assertFalse(tabImpl.tintImageToThemeVal)
+        assertTrue(tabImpl.closableVal)
+        tabImpl.dispose()
     }
 }

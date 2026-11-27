@@ -33,6 +33,7 @@ import platform.windows.DrawTextW
 import platform.windows.HDC
 import platform.windows.HWND
 import platform.windows.InvalidateRect
+import platform.windows.IsWindow
 import platform.windows.RECT
 import platform.windows.SelectObject
 import platform.windows.SendMessageW
@@ -205,6 +206,12 @@ class WindowsCheckboxNativeImpl(
     override fun setChecked(checked: Boolean) {
         super.setChecked(checked)
         syncCheckStateToHwnd()
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        Win32RetainedControlSupport.syncOsFocusIfNeeded(this, nativeWidget.hwnd, focused)
+        nativeWidget.hwnd?.let { if (IsWindow(it) != 0) InvalidateRect(it, null, 0) }
     }
 
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {

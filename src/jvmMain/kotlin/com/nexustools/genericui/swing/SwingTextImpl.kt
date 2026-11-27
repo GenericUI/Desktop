@@ -47,6 +47,8 @@ class SwingTextImpl(
         syncSwingAppearance()
     }
 
+    override fun dispatchesClickOnPrimaryRelease(): Boolean = true
+
     override fun syncSwingAppearance() {
         super.syncSwingAppearance()
         val compStyle = lastComponentStyle
@@ -131,7 +133,8 @@ class SwingTextImpl(
         val textMaxW = if (text.isEmpty()) 0 else text.split('\n').maxOf { line ->
             fm?.stringWidth(line) ?: (line.length * 8)
         }
-        val naturalW = textMaxW + iconW + padW
+        val paddedTextMaxW = if (textMaxW > 0) textMaxW + max(8, (textMaxW / 10) + 6) else 0
+        val naturalW = paddedTextMaxW + iconW + padW
         val boundedW = availableWidthPx.coerceAtLeast(24)
 
         if (shouldNoWrap() || (naturalW <= boundedW && !text.contains('\n'))) {
@@ -147,9 +150,10 @@ class SwingTextImpl(
         val textAvailW = (boundedW - padW - iconW).coerceAtLeast(20)
         val lines = wrapTextLines(text, fm, textAvailW, maxLinesVal)
         val widestLine = lines.maxOfOrNull { fm?.stringWidth(it) ?: (it.length * 8) } ?: 0
+        val paddedWidestLine = if (widestLine > 0) widestLine + max(8, (widestLine / 10) + 6) else 0
         val iconH = nativeWidget.icon?.iconHeight ?: 0
         return Size(
-            width = min(widestLine + iconW + padW, boundedW).coerceAtLeast(1),
+            width = min(paddedWidestLine + iconW + padW, boundedW).coerceAtLeast(1),
             height = max(lines.size * lineH, iconH) + padH
         )
     }

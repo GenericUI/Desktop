@@ -3,6 +3,7 @@
 package com.nexustools.genericui.gtk.titlebar
 
 import com.nexustools.genericui.core.AbstractComponent
+import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.shell.DesktopMenuBarNativeImpl
@@ -163,6 +164,7 @@ object GtkWindowTitleBarController {
         val leadingW = computeSlotGroupWidth(leadingWidgets, menuBarImpl)
         val centerW = computeSlotGroupWidth(centerWidgets, null)
         val trailingW = computeSlotGroupWidth(trailingWidgets, null)
+        val expandLeading = leadingWidgets.any { LinuxOverlayTitleBarResolver.isExpandingTitleBarComponent(it) }
 
         val allowMinimize = windowImpl.nativeWidget.attributes["minimizable"]?.toString() != "false"
         val allowMaximize = windowImpl.nativeWidget.attributes["maximizable"]?.toString() != "false"
@@ -177,7 +179,9 @@ object GtkWindowTitleBarController {
             showClose = titleBar.showCloseButton && allowClose,
             leadingWidthPx = leadingW,
             centerWidthPx = centerW,
-            trailingWidthPx = trailingW
+            trailingWidthPx = trailingW,
+            expandLeadingToFill = expandLeading,
+            showWindowIcon = titleBar.showWindowIcon
         )
 
         val positioned = mutableListOf<Pair<DesktopNativeWidget, Rect>>()
@@ -450,6 +454,10 @@ object GtkWindowTitleBarController {
                 val pref = impl.measureIntrinsicSize(null, null)
                 Size(pref.width.coerceAtLeast(16), pref.height.coerceIn(18, 30))
             }
+            is DesktopBaseContainerNativeImpl<*> -> {
+                val pref = impl.measureIntrinsicSize(null, null)
+                Size(pref.width.coerceAtLeast(28), pref.height.coerceIn(24, 48))
+            }
             is DesktopBaseNativeImpl<*> -> {
                 val pref = impl.measureIntrinsicSize(null, null)
                 Size(pref.width.coerceAtLeast(28), pref.height.coerceIn(22, 34))
@@ -484,29 +492,57 @@ object GtkWindowTitleBarController {
         out: MutableList<Pair<DesktopNativeWidget, Rect>>
     ) {
         if (slotBounds.width <= 0 || slotBounds.height <= 0) return
-        val items = ArrayList<Pair<DesktopNativeWidget, Int>>(widgets.size + 1)
+        val items = ArrayList<Triple<DesktopNativeWidget, Int, Boolean>>(widgets.size + 1)
         if (menuBarImpl != null) {
             val mbW = menuBarImpl.measureIntrinsicSize(null, null).width.coerceAtLeast(48)
-            items.add(menuBarImpl.nativeWidget to mbW)
+            items.add(Triple(menuBarImpl.nativeWidget, mbW, false))
         }
         for (w in widgets) {
             val sz = measureWidgetSlotSize(w)
-            items.add(w to sz.width)
+            val expanding = !alignRight && LinuxOverlayTitleBarResolver.isExpandingTitleBarComponent(w)
+            items.add(Triple(w, sz.width, expanding))
         }
         if (items.isEmpty()) return
 
-        var curX = if (alignRight) {
-            val totalW = items.sumOf { it.second } + (items.size - 1) * 6
+        val totalGap = (items.size - 1).coerceAtLeast(0) * 6
+        val expandingCount = items.count { it.third }
+        val fixedSum = items.filter { !it.third }.sumOf { it.second }
+        val expandBudget = (slotBounds.width - fixedSum - totalGap).coerceAtLeast(0)
+        var remainingExpand = expandBudget
+        var expandIndex = 0
+
+        var curX = if (alignRight && expandingCount == 0) {
+            val totalW = fixedSum + totalGap
             max(slotBounds.x, slotBounds.right - totalW)
         } else {
             slotBounds.x
         }
 
-        for ((w, itemW) in items) {
-            val h = minOf(slotBounds.height - 4, 30).coerceAtLeast(20)
+        for ((w, fixedW, isExpanding) in items) {
+            val rem = (slotBounds.right - curX).coerceAtLeast(1)
+            val itemW = if (isExpanding) {
+                expandIndex++
+                val share = if (expandIndex == expandingCount) {
+                    remainingExpand
+                } else {
+                    (expandBudget / expandingCount.coerceAtLeast(1)).also { remainingExpand -= it }
+                }
+                share.coerceIn(1, rem)
+            } else {
+                fixedW.coerceAtMost(rem)
+            }
+            val impl = w.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+            val h = if (impl is DesktopBaseContainerNativeImpl<*>) {
+                (slotBounds.height - 4).coerceAtLeast(24).coerceAtMost(slotBounds.height)
+            } else {
+                minOf(slotBounds.height - 4, 30).coerceAtLeast(20)
+            }
             val y = slotBounds.y + ((slotBounds.height - h) / 2).coerceAtLeast(0)
-            val rect = Rect(curX, y, itemW.coerceAtMost((slotBounds.right - curX).coerceAtLeast(1)), h)
-            (w.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>)?.setBounds(rect) ?: run { w.bounds = rect }
+            val rect = Rect(curX, y, itemW, h)
+            impl?.setBounds(rect) ?: run { w.bounds = rect }
+            if (impl is DesktopBaseContainerNativeImpl<*>) {
+                impl.layoutChildrenInBounds(rect.width.toFloat(), rect.height.toFloat())
+            }
             out.add(w to rect)
             curX += rect.width + 6
         }

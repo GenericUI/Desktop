@@ -2,13 +2,19 @@
 
 package com.nexustools.genericui.windows
 
+import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
+import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopButtonNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopCheckboxNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopDropdownNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopPopoverNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopSelectNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopStyledTextInputNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTabNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
+import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
 import com.nexustools.genericui.event.InputFocusManager
 import com.nexustools.genericui.event.KeyEvent
 import com.nexustools.genericui.event.PointerDragManager
@@ -16,17 +22,24 @@ import com.nexustools.genericui.event.PointerEvent
 import com.nexustools.genericui.event.WheelEvent
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.enums.css.CssCursor
+import com.nexustools.genericui.enums.css.CssFontStyle
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.style.css.CssCustomCursor
+import com.nexustools.genericui.style.css.StyledVisualSpec
 import com.nexustools.genericui.windows.impl.WindowsButtonNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsLazyListNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsScrollViewNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsStyledTextInputNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsTabContainerNativeImpl
+import com.nexustools.genericui.windows.impl.WindowsTextNativeImpl
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.CPointed
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.UShortVar
 import kotlinx.cinterop.alloc
-import kotlinx.cinterop.cValue
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.nativeHeap
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
@@ -38,14 +51,12 @@ import kotlinx.cinterop.toLong
 import kotlinx.cinterop.wcstr
 import platform.windows.BeginDeferWindowPos
 import platform.windows.BeginPaint
+import platform.windows.BN_CLICKED
 import platform.windows.CB_SETITEMHEIGHT
 import platform.windows.CDDS_PREPAINT
 import platform.windows.CDRF_DODEFAULT
 import platform.windows.CDRF_SKIPDEFAULT
-import platform.windows.ChildWindowFromPointEx
 import platform.windows.CS_DBLCLKS
-import platform.windows.CWP_SKIPINVISIBLE
-import platform.windows.CWP_SKIPTRANSPARENT
 import platform.windows.ClientToScreen
 import platform.windows.CreateFontW
 import platform.windows.CreateSolidBrush
@@ -57,6 +68,7 @@ import platform.windows.DefWindowProcW
 import platform.windows.DeferWindowPos
 import platform.windows.DeleteObject
 import platform.windows.DestroyWindow
+import platform.windows.DRAWITEMSTRUCT
 import platform.windows.EnableWindow
 import platform.windows.EndDeferWindowPos
 import platform.windows.EndPaint
@@ -67,14 +79,18 @@ import platform.windows.GA_ROOT
 import platform.windows.GetAncestor
 import platform.windows.GetCapture
 import platform.windows.GetClientRect
+import platform.windows.GetClipBox
 import platform.windows.GetFocus
 import platform.windows.GetModuleHandleW
 import platform.windows.GetParent
 import platform.windows.GetStockObject
+import platform.windows.GetWindow
 import platform.windows.GetWindowLongPtrW
 import platform.windows.GetWindowRect
 import platform.windows.GWL_EXSTYLE
 import platform.windows.GWL_STYLE
+import platform.windows.GW_CHILD
+import platform.windows.GW_HWNDNEXT
 import platform.windows.HBRUSH
 import platform.windows.HDC
 import platform.windows.HDC__
@@ -101,6 +117,7 @@ import platform.windows.IDC_WAIT
 import platform.windows.InvalidateRect
 import platform.windows.IsChild
 import platform.windows.IsWindow
+import platform.windows.IsWindowVisible
 import platform.windows.LoadCursorW
 import platform.windows.LPARAM
 import platform.windows.LRESULT
@@ -114,6 +131,7 @@ import platform.windows.MapWindowPoints
 import platform.windows.NMCUSTOMDRAW
 import platform.windows.NMHDR
 import platform.windows.NM_CUSTOMDRAW
+import platform.windows.NULLREGION
 import platform.windows.NULL_BRUSH
 import platform.windows.OPAQUE
 import platform.windows.PAINTSTRUCT
@@ -127,6 +145,7 @@ import platform.windows.SWP_NOACTIVATE
 import platform.windows.SWP_NOMOVE
 import platform.windows.SWP_NOSIZE
 import platform.windows.SWP_NOZORDER
+import platform.windows.SWP_SHOWWINDOW
 import platform.windows.SW_HIDE
 import platform.windows.SW_SHOWNOACTIVATE
 import platform.windows.ScreenToClient
@@ -154,6 +173,7 @@ import platform.windows.TTM_DELTOOLW
 import platform.windows.TTM_UPDATETIPTEXTW
 import platform.windows.TrackMouseEvent
 import platform.windows.UINT
+import platform.windows.ValidateRect
 import platform.windows.WNDCLASSEXW
 import platform.windows.WM_CHAR
 import platform.windows.WM_COMMAND
@@ -162,6 +182,7 @@ import platform.windows.WM_CTLCOLOREDIT
 import platform.windows.WM_CTLCOLORLISTBOX
 import platform.windows.WM_CTLCOLORSTATIC
 import platform.windows.WM_DPICHANGED
+import platform.windows.WM_DRAWITEM
 import platform.windows.WM_ERASEBKGND
 import platform.windows.WM_GETDLGCODE
 import platform.windows.WM_HSCROLL
@@ -210,11 +231,19 @@ object Win32ControlMessageRouter {
     private const val PARKING_WINDOW_CLASS = "GenericUIParkingWindowW"
     private const val SUBCLASS_ID: ULong = 1uL
     private const val CLICK_DRAG_THRESHOLD_PX = 5
+    private const val SWP_NOREDRAW_FLAG: Int = 0x0008
+    private const val SWP_HIDEWINDOW_FLAG: Int = 0x0080
+    private const val SWP_NOCOPYBITS_FLAG: Int = 0x0100
+    private const val SWP_NOSENDCHANGING_FLAG: Int = 0x0400
 
     private val entriesByHwnd = HashMap<Long, Win32HwndHandle>()
     private val auxHadTabStopByHwnd = HashMap<Long, Boolean>()
+    private val viewportCulledHandles = HashSet<Win32HwndHandle>()
+    private val viewportParkedHandles = HashSet<Win32HwndHandle>()
+    private val culledBoundsDirtyHandles = HashSet<Win32HwndHandle>()
     private val registeredCustomClasses = HashSet<String>()
     private val cachedUiFonts = HashMap<String, HFONT>()
+    private val cachedCtlColorBrushes = HashMap<UInt, HBRUSH>()
     private var sharedTooltipHwnd: HWND? = null
     private var parkingHwnd: HWND? = null
     private var nextControlId: Int = 0x1000
@@ -225,12 +254,51 @@ object Win32ControlMessageRouter {
     private var pressStartClientY: Int = 0
     private var suppressNextLeftClickForEntry: Win32HwndHandle? = null
     private var lastCursorIdKey: Long = 0L
+    private var lastBnClickedHwnd: HWND? = null
+    private var wheelConsumedByChild: Boolean = false
+    private val activeWmSizeHwnds = HashSet<Long>()
+    private val pendingReentryWmSizeByHwnd = HashMap<Long, Pair<Int, Int>>()
+    internal var batchingHostLayoutDepth: Int = 0
+    private var customPaintReentryDepth: Int = 0
+    private var scratchCustomPs: PAINTSTRUCT? = null
+    private var scratchCustomClipRc: RECT? = null
+    private var scratchCustomClientRc: RECT? = null
+    private var scratchOcclusionRc: RECT? = null
+
+    private inline fun withCustomPaintStructs(
+        block: (ps: PAINTSTRUCT, clipRc: RECT, clientRc: RECT) -> Unit
+    ) {
+        if (customPaintReentryDepth == 0) {
+            val ps = scratchCustomPs ?: nativeHeap.alloc<PAINTSTRUCT>().also { scratchCustomPs = it }
+            val clipRc = scratchCustomClipRc ?: nativeHeap.alloc<RECT>().also { scratchCustomClipRc = it }
+            val clientRc = scratchCustomClientRc ?: nativeHeap.alloc<RECT>().also { scratchCustomClientRc = it }
+            customPaintReentryDepth++
+            try {
+                block(ps, clipRc, clientRc)
+            } finally {
+                customPaintReentryDepth--
+            }
+            return
+        }
+        memScoped {
+            block(alloc(), alloc(), alloc())
+        }
+    }
+
+    private inline fun <T> withOcclusionRect(block: (RECT) -> T): T {
+        if (customPaintReentryDepth == 0) {
+            val rc = scratchOcclusionRc ?: nativeHeap.alloc<RECT>().also { scratchOcclusionRc = it }
+            return block(rc)
+        }
+        return memScoped { block(alloc()) }
+    }
 
     /**
      * Returns the shared hidden `WS_POPUP` parking `HWND` used to host newly created child controls
      * prior to container attachment (`Window.show()`).
      */
     fun getOrCreateParkingHwnd(): HWND {
+        WindowsUiThreadDispatcherNativeImpl.attachCurrentThreadAsUiThreadIfUnset()
         parkingHwnd?.let { existing ->
             if (IsWindow(existing) != 0) return existing
         }
@@ -331,7 +399,12 @@ object Win32ControlMessageRouter {
         }
 
         val dark = Win32NativeWindowHost.isEffectivelyDarkTheme()
-        Win32DwmUxThemeBridge.setControlWindowTheme(created, dark)
+        val needsWindowTheme = !win32ClassName.startsWith("GenericUI") ||
+            win32ClassName == "GenericUIScrollViewW" ||
+            (effectiveStyle and (Win32HwndHandle.WS_VSCROLL_STYLE or Win32HwndHandle.WS_HSCROLL_STYLE)) != 0
+        if (needsWindowTheme) {
+            Win32DwmUxThemeBridge.setControlWindowTheme(created, dark)
+        }
         val defFont = obtainUiFont(fontFamily = "Segoe UI", fontSizePx = 13, fontWeight = 400)
         if (defFont != null) {
             handle.fontHandle = defFont
@@ -419,8 +492,198 @@ object Win32ControlMessageRouter {
             applyTooltip(handle, tip)
         }
         applyOpacity(handle, handle.effectiveOpacity)
+        Win32ScrollViewCompositor.invalidateBackbufferContent()
         return newHwnd
     }
+
+    internal fun setViewportCulled(handle: Win32HwndHandle, culled: Boolean) {
+        if (culled) {
+            viewportCulledHandles.add(handle)
+        } else {
+            viewportCulledHandles.remove(handle)
+        }
+    }
+
+    /**
+     * Hides near-viewport [toHide] child `HWND`s in place, parks far-offscreen [toPark] child
+     * `HWND`s onto [getOrCreateParkingHwnd] without clearing logical [Win32HwndHandle.parentHwnd],
+     * and restores re-entering [toShow] child `HWND`s cleanly.
+     */
+    internal fun applyScrollViewportCullingBatch(
+        toHide: List<Win32HwndHandle>,
+        toShow: List<Win32HwndHandle>,
+        toPark: List<Win32HwndHandle> = emptyList(),
+        toUnparkHidden: List<Win32HwndHandle> = emptyList(),
+        suppressRedraw: Boolean = false
+    ) {
+        if (toHide.isEmpty() && toShow.isEmpty() && toPark.isEmpty() && toUnparkHidden.isEmpty()) return
+        val redrawFlag = if (suppressRedraw) {
+            SWP_NOREDRAW_FLAG or SWP_NOCOPYBITS_FLAG or SWP_NOSENDCHANGING_FLAG
+        } else {
+            0
+        }
+        val parking = if (toPark.isNotEmpty()) getOrCreateParkingHwnd() else null
+
+        for (h in toHide) {
+            viewportCulledHandles.add(h)
+            val hwnd = h.hwnd ?: continue
+            if (IsWindow(hwnd) == 0) continue
+            if (suppressRedraw) {
+                SetWindowPos(
+                    hwnd,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    (SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_HIDEWINDOW_FLAG or redrawFlag).toUInt()
+                )
+            } else {
+                ShowWindow(hwnd, SW_HIDE)
+            }
+            val buddy = h.buddyHwnd
+            if (buddy != null && IsWindow(buddy) != 0) {
+                if (suppressRedraw) {
+                    SetWindowPos(
+                        buddy,
+                        null,
+                        0,
+                        0,
+                        0,
+                        0,
+                        (SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_HIDEWINDOW_FLAG or redrawFlag).toUInt()
+                    )
+                } else {
+                    ShowWindow(buddy, SW_HIDE)
+                }
+            }
+        }
+
+        if (parking != null) {
+            for (h in toPark) {
+                viewportCulledHandles.add(h)
+                viewportParkedHandles.add(h)
+                val hwnd = h.hwnd ?: continue
+                if (IsWindow(hwnd) == 0) continue
+                if (suppressRedraw) {
+                    SetWindowPos(
+                        hwnd,
+                        null,
+                        0,
+                        0,
+                        0,
+                        0,
+                        (SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_HIDEWINDOW_FLAG or redrawFlag).toUInt()
+                    )
+                } else {
+                    ShowWindow(hwnd, SW_HIDE)
+                }
+                if (GetParent(hwnd) != parking) {
+                    SetParent(hwnd, parking)
+                }
+                val buddy = h.buddyHwnd
+                if (buddy != null && IsWindow(buddy) != 0) {
+                    if (suppressRedraw) {
+                        SetWindowPos(
+                            buddy,
+                            null,
+                            0,
+                            0,
+                            0,
+                            0,
+                            (SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_HIDEWINDOW_FLAG or redrawFlag).toUInt()
+                        )
+                    } else {
+                        ShowWindow(buddy, SW_HIDE)
+                    }
+                    if (GetParent(buddy) != parking) {
+                        SetParent(buddy, parking)
+                    }
+                }
+            }
+        }
+
+        for (h in toUnparkHidden) {
+            viewportCulledHandles.add(h)
+            val wasParked = viewportParkedHandles.remove(h)
+            val hwnd = h.hwnd ?: continue
+            if (IsWindow(hwnd) == 0) continue
+            val targetParent = h.parentHwnd
+            if (wasParked && targetParent != null && IsWindow(targetParent) != 0 && GetParent(hwnd) != targetParent) {
+                SetParent(hwnd, targetParent)
+                val buddy = h.buddyHwnd
+                if (buddy != null && IsWindow(buddy) != 0 && GetParent(buddy) != targetParent) {
+                    SetParent(buddy, targetParent)
+                }
+                culledBoundsDirtyHandles.add(h)
+            }
+        }
+
+        for (h in toShow) {
+            viewportCulledHandles.remove(h)
+            val wasParked = viewportParkedHandles.remove(h)
+            val boundsDirty = culledBoundsDirtyHandles.remove(h)
+            val hwnd = h.hwnd ?: continue
+            if (IsWindow(hwnd) == 0) continue
+            val targetParent = h.parentHwnd
+            var reparented = false
+            if (targetParent != null && IsWindow(targetParent) != 0 && (wasParked || GetParent(hwnd) != targetParent)) {
+                if (GetParent(hwnd) != targetParent) {
+                    SetParent(hwnd, targetParent)
+                    reparented = true
+                }
+                val buddy = h.buddyHwnd
+                if (buddy != null && IsWindow(buddy) != 0 && GetParent(buddy) != targetParent) {
+                    SetParent(buddy, targetParent)
+                }
+            }
+            val show = h.effectiveVisible && h.effectiveOpacity > 0.001f
+            if (!show) continue
+            if ((reparented || boundsDirty) && h.lastAppliedW > 0 && h.lastAppliedH > 0 && h.lastAppliedX != Int.MIN_VALUE) {
+                val flags = (SWP_NOZORDER or SWP_NOACTIVATE or redrawFlag or SWP_SHOWWINDOW).toUInt()
+                SetWindowPos(hwnd, null, h.lastAppliedX, h.lastAppliedY, h.lastAppliedW, h.lastAppliedH, flags)
+            } else if (suppressRedraw) {
+                SetWindowPos(
+                    hwnd,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
+                    (SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_SHOWWINDOW or redrawFlag).toUInt()
+                )
+            } else {
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+            }
+            val buddy = h.buddyHwnd
+            if (buddy != null && IsWindow(buddy) != 0) {
+                if (suppressRedraw) {
+                    SetWindowPos(
+                        buddy,
+                        null,
+                        0,
+                        0,
+                        0,
+                        0,
+                        (SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_SHOWWINDOW or redrawFlag).toUInt()
+                    )
+                } else {
+                    ShowWindow(buddy, SW_SHOWNOACTIVATE)
+                }
+            }
+        }
+    }
+
+    internal fun isViewportCulled(handle: Win32HwndHandle): Boolean =
+        handle in viewportCulledHandles
+
+    internal fun isViewportParked(handle: Win32HwndHandle): Boolean =
+        handle in viewportParkedHandles
+
+    private fun shouldShowChildHwnd(handle: Win32HwndHandle): Boolean =
+        handle.effectiveVisible &&
+            handle.effectiveOpacity > 0.001f &&
+            !isViewportCulled(handle)
 
     /**
      * Attaches [child] onto [parentHwnd] using `SetParent`, updating `WS_CHILD` / `WS_CLIPSIBLINGS`
@@ -430,13 +693,17 @@ object Win32ControlMessageRouter {
         val hwnd = child.hwnd ?: return
         if (IsWindow(hwnd) == 0 || IsWindow(parentHwnd) == 0) return
         val currentParent = GetParent(hwnd)
-        if (currentParent != parentHwnd || child.parentHwnd != parentHwnd) {
+        val wasReparented = currentParent != parentHwnd || child.parentHwnd != parentHwnd
+        val shouldShow = shouldShowChildHwnd(child)
+        if (wasReparented) {
             var style = GetWindowLongPtrW(hwnd, GWL_STYLE).toInt()
             style = (style and WS_POPUP.toInt().inv()) or WS_CHILD or WS_CLIPSIBLINGS
             SetWindowLongPtrW(hwnd, GWL_STYLE, style.toLong())
             SetParent(hwnd, parentHwnd)
             child.parentHwnd = parentHwnd
             child.dwStyle = style.toLong()
+            Win32RetainedControlPaintCache.invalidate(hwnd)
+            Win32StyledWidgetHelper.invalidateAncestorBackgroundCache()
             SetWindowPos(
                 hwnd,
                 null,
@@ -446,21 +713,31 @@ object Win32ControlMessageRouter {
                 0,
                 (SWP_NOMOVE or SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or SWP_FRAMECHANGED).toUInt()
             )
+            ShowWindow(hwnd, if (shouldShow) SW_SHOWNOACTIVATE else SW_HIDE)
+            EnableWindow(hwnd, if (child.effectiveEnabled) 1 else 0)
+            applyOpacity(child, child.effectiveOpacity)
+            Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, Win32NativeWindowHost.isEffectivelyDarkTheme())
+            val tip = child.tooltipText
+            if (!tip.isNullOrBlank()) {
+                applyTooltip(child, tip)
+            }
+            syncFocusable(child)
+            (child.ownerImpl as? WindowsStyledTextInputNativeImpl)?.onContainerReparented()
+        } else {
+            val hasVisibleStyle = (GetWindowLongPtrW(hwnd, GWL_STYLE).toInt() and WS_VISIBLE) != 0
+            if (hasVisibleStyle != shouldShow) {
+                ShowWindow(hwnd, if (shouldShow) SW_SHOWNOACTIVATE else SW_HIDE)
+            }
         }
         val buddy = child.buddyHwnd
-        if (buddy != null && IsWindow(buddy) != 0 && GetParent(buddy) != parentHwnd) {
-            SetParent(buddy, parentHwnd)
-            ShowWindow(buddy, if (child.effectiveVisible) SW_SHOWNOACTIVATE else SW_HIDE)
+        if (buddy != null && IsWindow(buddy) != 0) {
+            if (GetParent(buddy) != parentHwnd) {
+                SetParent(buddy, parentHwnd)
+                ShowWindow(buddy, if (shouldShow) SW_SHOWNOACTIVATE else SW_HIDE)
+            } else if (wasReparented) {
+                ShowWindow(buddy, if (shouldShow) SW_SHOWNOACTIVATE else SW_HIDE)
+            }
         }
-        ShowWindow(hwnd, if (child.effectiveVisible) SW_SHOWNOACTIVATE else SW_HIDE)
-        EnableWindow(hwnd, if (child.effectiveEnabled) 1 else 0)
-        applyOpacity(child, child.effectiveOpacity)
-        Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, Win32NativeWindowHost.isEffectivelyDarkTheme())
-        val tip = child.tooltipText
-        if (!tip.isNullOrBlank()) {
-            applyTooltip(child, tip)
-        }
-        syncFocusable(child)
     }
 
     private fun syncAuxHwndTabStop(hwnd: HWND?, focusable: Boolean) {
@@ -529,30 +806,37 @@ object Win32ControlMessageRouter {
     }
 
     /**
-     * Parks [child] back inside the hidden [getOrCreateParkingHwnd] when removed from a container.
+     * Parks [child] and any auxiliary `HWND`s back inside the hidden [getOrCreateParkingHwnd] when
+     * removed from a container.
      */
     fun detachChildHwnd(child: Win32HwndHandle) {
-        val hwnd = child.hwnd ?: return
-        if (IsWindow(hwnd) == 0) return
-        ShowWindow(hwnd, SW_HIDE)
         val parking = getOrCreateParkingHwnd()
-        if (GetParent(hwnd) != parking) {
-            SetParent(hwnd, parking)
-        }
-        child.parentHwnd = null
-        val buddy = child.buddyHwnd
-        if (buddy != null && IsWindow(buddy) != 0) {
-            ShowWindow(buddy, SW_HIDE)
-            if (GetParent(buddy) != parking) {
-                SetParent(buddy, parking)
+        fun hideAndPark(auxHwnd: HWND?) {
+            if (auxHwnd != null && IsWindow(auxHwnd) != 0) {
+                ShowWindow(auxHwnd, SW_HIDE)
+                if (GetParent(auxHwnd) != parking) {
+                    SetParent(auxHwnd, parking)
+                }
             }
         }
+        hideAndPark(child.hwnd)
+        viewportCulledHandles.remove(child)
+        viewportParkedHandles.remove(child)
+        culledBoundsDirtyHandles.remove(child)
+        Win32StyledWidgetHelper.invalidateAncestorBackgroundCache(child.hwnd)
+        child.parentHwnd = null
+        hideAndPark(child.buddyHwnd)
+        hideAndPark(child.secondaryHwnd)
+        hideAndPark(child.secondaryHwnd2)
     }
 
     /**
      * Destroys the child `HWND`(s) owned by [handle] and frees GDI font/brush handles.
      */
     fun destroyHandle(handle: Win32HwndHandle) {
+        viewportCulledHandles.remove(handle)
+        viewportParkedHandles.remove(handle)
+        culledBoundsDirtyHandles.remove(handle)
         handle.secondaryHwnd?.let { sec ->
             entriesByHwnd.remove(sec.toLong())
             if (IsWindow(sec) != 0) DestroyWindow(sec)
@@ -570,6 +854,8 @@ object Win32ControlMessageRouter {
         }
         handle.hwnd?.let { hwnd ->
             entriesByHwnd.remove(hwnd.toLong())
+            Win32RetainedControlPaintCache.invalidate(hwnd)
+            Win32StyledWidgetHelper.invalidateAncestorBackgroundCache(hwnd)
             removeTooltipTool(hwnd)
             if (hoveredEntry === handle) hoveredEntry = null
             if (activePressEntry === handle) activePressEntry = null
@@ -603,7 +889,9 @@ object Win32ControlMessageRouter {
         parentHwnd: HWND,
         children: List<DesktopBaseNativeImpl<*>>,
         offsetX: Int = 0,
-        offsetY: Int = 0
+        offsetY: Int = 0,
+        recursive: Boolean = true,
+        suppressRedraw: Boolean = false
     ) {
         if (IsWindow(parentHwnd) == 0 || children.isEmpty()) return
 
@@ -639,19 +927,84 @@ object Win32ControlMessageRouter {
 
         val entries = ArrayList<ChildPos>(children.size)
         for ((idx, impl) in children.withIndex()) {
+            if (impl is DesktopPopoverNativeImpl<*> || impl is DesktopDialogWindowNativeImpl<*>) continue
             val handle = impl.nativeWidget as? Win32HwndHandle ?: continue
+            if (Win32NativeWindowHost.isActiveFullscreenElement(handle)) continue
+            if (impl is DesktopBaseContainerNativeImpl<*> &&
+                handle.actualWin32ClassName != "GenericUILayeredStageHostW" &&
+                Win32LayeredStageHostHwnd.isLayeredStageContainer(impl)
+            ) {
+                replaceChildHwndInPlace(
+                    handle = handle,
+                    owner = impl,
+                    newWin32ClassName = "GenericUILayeredStageHostW",
+                    newDwStyle = WS_CHILD or WS_VISIBLE or WS_CLIPCHILDREN or WS_CLIPSIBLINGS,
+                    installSubclass = false
+                )
+                Win32LayeredStageHostHwnd.registerStageHost(handle, impl)
+            }
             Win32InteractiveSurfaceHwnd.ensureSurfaceChildHwnd(handle, impl)
             val hwnd = handle.hwnd ?: continue
             if (IsWindow(hwnd) == 0) continue
-            attachChildHwnd(handle, effectiveParentHwnd)
+            val culled = isViewportCulled(handle)
+            if (!culled || handle.parentHwnd != effectiveParentHwnd) {
+                viewportParkedHandles.remove(handle)
+                attachChildHwnd(handle, effectiveParentHwnd)
+            }
             val rect = impl.nativeWidget.bounds
             val x = rect.x + offsetX
             val y = rect.y + offsetY
             val w = rect.width.coerceAtLeast(0)
             val h = rect.height.coerceAtLeast(0)
+            if (culled) {
+                if (handle.lastAppliedX != x || handle.lastAppliedY != y ||
+                    handle.lastAppliedW != w || handle.lastAppliedH != h
+                ) {
+                    culledBoundsDirtyHandles.add(handle)
+                }
+                handle.lastAppliedX = x
+                handle.lastAppliedY = y
+                handle.lastAppliedW = w
+                handle.lastAppliedH = h
+                if (recursive && impl is DesktopBaseContainerNativeImpl<*>) {
+                    val subOffsetX = if (impl is WindowsScrollViewNativeImpl) -impl.currentScrollX() else 0
+                    val subOffsetY = if (impl is WindowsScrollViewNativeImpl) -impl.currentScrollY() else 0
+                    layoutChildrenBatch(
+                        hwnd,
+                        impl.getLogicalChildren().filterIsInstance<DesktopBaseNativeImpl<*>>(),
+                        offsetX = subOffsetX,
+                        offsetY = subOffsetY,
+                        recursive = true
+                    )
+                }
+                continue
+            }
             entries.add(ChildPos(impl, handle, hwnd, x, y, w, h, handle.desiredZIndex, idx))
         }
         if (entries.isEmpty()) return
+
+        val redrawFlag = if (suppressRedraw) SWP_NOREDRAW_FLAG else 0
+        if (!recursive && entries.size == 1) {
+            val item = entries[0]
+            val isCombo = item.handle.actualWin32ClassName.equals("ComboBox", ignoreCase = true)
+            val buddy = item.handle.buddyHwnd
+            if (!isCombo && buddy == null && item.handle.lastAppliedW == item.w && item.handle.lastAppliedH == item.h) {
+                if (item.handle.lastAppliedX != item.x || item.handle.lastAppliedY != item.y) {
+                    item.handle.lastAppliedX = item.x
+                    item.handle.lastAppliedY = item.y
+                    SetWindowPos(
+                        item.hwnd,
+                        null,
+                        item.x,
+                        item.y,
+                        0,
+                        0,
+                        (SWP_NOSIZE or SWP_NOZORDER or SWP_NOACTIVATE or redrawFlag).toUInt()
+                    )
+                }
+                return
+            }
+        }
 
         // Sort ascending by (zIndex, order); iterate descending when chaining HWND_TOP -> prevHwnd
         // so higher zIndex siblings sit in front (Win32 Z-order first = topmost).
@@ -661,6 +1014,7 @@ object Win32ControlMessageRouter {
         var prevHwnd: HWND? = HWND_TOP
         val comboListToAdjust = ArrayList<Pair<HWND, Int>>()
         val repaintsNeeded = ArrayList<HWND>()
+        val batchFlags = (SWP_NOACTIVATE or redrawFlag).toUInt()
 
         for (i in entries.indices.reversed()) {
             val item = entries[i]
@@ -685,7 +1039,7 @@ object Win32ControlMessageRouter {
                     item.y,
                     mainW,
                     deferH,
-                    SWP_NOACTIVATE.toUInt()
+                    batchFlags
                 )
             } else {
                 SetWindowPos(
@@ -695,7 +1049,7 @@ object Win32ControlMessageRouter {
                     item.y,
                     mainW,
                     deferH,
-                    SWP_NOACTIVATE.toUInt()
+                    batchFlags
                 )
             }
             prevHwnd = item.hwnd
@@ -710,7 +1064,7 @@ object Win32ControlMessageRouter {
                         item.y,
                         spinnerW,
                         item.h,
-                        SWP_NOACTIVATE.toUInt()
+                        batchFlags
                     )
                 } else {
                     SetWindowPos(
@@ -720,7 +1074,7 @@ object Win32ControlMessageRouter {
                         item.y,
                         spinnerW,
                         item.h,
-                        SWP_NOACTIVATE.toUInt()
+                        batchFlags
                     )
                 }
                 prevHwnd = buddy
@@ -745,8 +1099,44 @@ object Win32ControlMessageRouter {
                 (layoutH - 6).coerceAtLeast(16).toLong()
             )
         }
-        for (h in repaintsNeeded) {
-            InvalidateRect(h, null, 0)
+        if (!suppressRedraw) {
+            for (h in repaintsNeeded) {
+                InvalidateRect(h, null, 0)
+            }
+        }
+        if (!recursive) return
+        for (item in entries) {
+            if (item.impl is WindowsLazyListNativeImpl ||
+                item.impl is DesktopPopoverNativeImpl<*> ||
+                item.impl is DesktopDialogWindowNativeImpl<*>
+            ) {
+                continue
+            }
+            if (item.impl is WindowsTabContainerNativeImpl) {
+                for (tabChild in item.impl.getLogicalChildren()) {
+                    val tabContainer = tabChild as? DesktopBaseContainerNativeImpl<*> ?: continue
+                    val tabHandle = tabContainer.nativeWidget as? Win32HwndHandle ?: continue
+                    val tabHwnd = tabHandle.hwnd ?: continue
+                    val tabVisible = (GetWindowLongPtrW(tabHwnd, GWL_STYLE).toInt() and WS_VISIBLE) != 0
+                    if (IsWindow(tabHwnd) != 0 && tabHandle.effectiveVisible && tabVisible) {
+                        layoutChildrenBatch(
+                            tabHwnd,
+                            tabContainer.getLogicalChildren().filterIsInstance<DesktopBaseNativeImpl<*>>()
+                        )
+                    }
+                }
+                continue
+            }
+            if (item.impl is DesktopBaseContainerNativeImpl<*>) {
+                val subOffsetX = if (item.impl is WindowsScrollViewNativeImpl) -item.impl.currentScrollX() else 0
+                val subOffsetY = if (item.impl is WindowsScrollViewNativeImpl) -item.impl.currentScrollY() else 0
+                layoutChildrenBatch(
+                    item.hwnd,
+                    item.impl.getLogicalChildren().filterIsInstance<DesktopBaseNativeImpl<*>>(),
+                    subOffsetX,
+                    subOffsetY
+                )
+            }
         }
     }
 
@@ -757,8 +1147,11 @@ object Win32ControlMessageRouter {
     fun applyBounds(handle: Win32HwndHandle, rect: Rect) {
         val hwnd = handle.hwnd ?: return
         if (IsWindow(hwnd) == 0) return
-        val x = rect.x
-        val y = rect.y
+        val parentOwner = handle.parentHwnd?.let { entriesByHwnd[it.toLong()]?.ownerImpl }
+        val scrollOffsetX = if (parentOwner is WindowsScrollViewNativeImpl) parentOwner.currentScrollX() else 0
+        val scrollOffsetY = if (parentOwner is WindowsScrollViewNativeImpl) parentOwner.currentScrollY() else 0
+        val x = rect.x - scrollOffsetX
+        val y = rect.y - scrollOffsetY
         val w = rect.width.coerceAtLeast(0)
         val h = rect.height.coerceAtLeast(0)
         val isCombo = handle.actualWin32ClassName.equals("ComboBox", ignoreCase = true)
@@ -800,10 +1193,12 @@ object Win32ControlMessageRouter {
         handle.effectiveVisible = visible
         val hwnd = handle.hwnd ?: return
         if (IsWindow(hwnd) == 0) return
+        Win32ScrollViewCompositor.invalidateBackbufferContent()
         if (handle.parentHwnd != null) {
-            ShowWindow(hwnd, if (visible) SW_SHOWNOACTIVATE else SW_HIDE)
+            val show = shouldShowChildHwnd(handle)
+            ShowWindow(hwnd, if (show) SW_SHOWNOACTIVATE else SW_HIDE)
             handle.buddyHwnd?.let { buddy ->
-                if (IsWindow(buddy) != 0) ShowWindow(buddy, if (visible) SW_SHOWNOACTIVATE else SW_HIDE)
+                if (IsWindow(buddy) != 0) ShowWindow(buddy, if (show) SW_SHOWNOACTIVATE else SW_HIDE)
             }
         }
     }
@@ -816,6 +1211,7 @@ object Win32ControlMessageRouter {
         handle.buddyHwnd?.let { buddy ->
             if (IsWindow(buddy) != 0) EnableWindow(buddy, if (enabled) 1 else 0)
         }
+        Win32RetainedControlPaintCache.invalidate(hwnd)
         InvalidateRect(hwnd, null, 0)
     }
 
@@ -824,6 +1220,7 @@ object Win32ControlMessageRouter {
         handle.effectiveOpacity = clamped
         val hwnd = handle.hwnd ?: return
         if (IsWindow(hwnd) == 0) return
+        Win32ScrollViewCompositor.invalidateBackbufferContent()
         var ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE).toInt()
         if (clamped < 0.996f) {
             if ((ex and WS_EX_LAYERED) == 0) {
@@ -839,7 +1236,7 @@ object Win32ControlMessageRouter {
             handle.dwExStyle = ex.toLong()
         }
         if (handle.parentHwnd != null) {
-            val shouldShow = handle.effectiveVisible && clamped > 0.001f
+            val shouldShow = shouldShowChildHwnd(handle)
             ShowWindow(hwnd, if (shouldShow) SW_SHOWNOACTIVATE else SW_HIDE)
         }
     }
@@ -887,6 +1284,38 @@ object Win32ControlMessageRouter {
     }
 
     /**
+     * Resolves the effective Win32 [HFONT] for [impl], falling back to semantic defaults
+     * for headings (`h1`..`h6`), `<small>`, `<strong>`, and `<b>` when explicit CSS rules
+     * do not override size or weight.
+     */
+    internal fun resolveUiFontForImpl(impl: DesktopBaseNativeImpl<*>): HFONT? {
+        val compStyle = impl.getComponentStyle()
+        val effectiveStyle = impl.resolveEffectiveStyle()
+        val styledSpec = impl.nativeWidget.attributes["styledVisuals"] as? StyledVisualSpec
+        val textImpl = impl as? DesktopTextNativeImpl<*>
+        val snapshot = impl.getStyleSnapshot()
+        val fontSize = (
+            styledSpec?.fontSizePx
+                ?: compStyle?.fontSize?.resolvePx()
+                ?: effectiveStyle?.fontSizePx
+                ?: textImpl?.defaultSemanticFontSizePx()
+                ?: 13f
+            ).roundToInt().coerceIn(9, 96)
+        val fontFamily = styledSpec?.fontFamily?.takeIf { it.isNotBlank() }
+            ?: compStyle?.fontFamily?.resolvedPrimaryName()?.takeIf { it.isNotBlank() }
+            ?: effectiveStyle?.fontFamily?.takeIf { it.isNotBlank() }
+            ?: "Segoe UI"
+        val weight = styledSpec?.fontWeightNumeric
+            ?: compStyle?.fontWeightNumeric
+            ?: effectiveStyle?.fontWeightNumeric
+            ?: snapshot.fontWeight?.numericWeight
+            ?: textImpl?.defaultSemanticFontWeight()
+            ?: 400
+        val italic = (compStyle?.fontStyle ?: effectiveStyle?.fontStyle) == CssFontStyle.ITALIC
+        return obtainUiFont(fontFamily, fontSize, weight, italic)
+    }
+
+    /**
      * Syncs font, text color, and background brush on [handle] from its resolved style.
      */
     fun syncTypographyAndColors(
@@ -894,18 +1323,14 @@ object Win32ControlMessageRouter {
         impl: DesktopBaseNativeImpl<*>,
         defaultTransparentBg: Boolean = true
     ) {
-        val style = impl.resolveEffectiveStyle()
-        val fontSize = style?.fontSizePx?.roundToInt()?.coerceIn(9, 96) ?: 13
-        val fontFamily = style?.fontFamily?.takeIf { it.isNotBlank() } ?: "Segoe UI"
-        val weight = style?.fontWeightNumeric ?: 400
-        val italic = style?.fontStyle?.name?.equals("ITALIC", ignoreCase = true) == true
-        val font = obtainUiFont(fontFamily, fontSize, weight, italic)
+        val font = resolveUiFontForImpl(impl)
         val hwnd = handle.hwnd
         if (font != null && handle.fontHandle != font) {
             handle.fontHandle = font
             handle.ownsFontHandle = false
             if (hwnd != null && IsWindow(hwnd) != 0) {
                 SendMessageW(hwnd, WM_SETFONT.toUInt(), font.toLong().toULong(), 1L)
+                Win32RetainedControlPaintCache.invalidate(hwnd)
             }
         }
 
@@ -943,6 +1368,8 @@ object Win32ControlMessageRouter {
         }
 
         if (hwnd != null && IsWindow(hwnd) != 0) {
+            Win32StyledWidgetHelper.invalidateAncestorBackgroundCache(hwnd)
+            Win32ScrollViewCompositor.invalidateBackbufferContent()
             Win32DwmUxThemeBridge.setControlWindowTheme(hwnd, dark)
             InvalidateRect(hwnd, null, 0)
         }
@@ -999,6 +1426,9 @@ object Win32ControlMessageRouter {
                 val childHwnd = lParam.toCPointer<HWND__>() ?: return null
                 val entry = entriesByHwnd[childHwnd.toLong()] ?: return null
                 val notifyCode = ((wParam.toLong() ushr 16) and 0xFFFFL).toInt()
+                if (notifyCode == BN_CLICKED) {
+                    lastBnClickedHwnd = childHwnd
+                }
                 entry.onCommandCallback?.invoke(notifyCode, wParam, lParam)
                 0L
             }
@@ -1016,6 +1446,13 @@ object Win32ControlMessageRouter {
                         val nmcd = lParam.toCPointer<NMCUSTOMDRAW>() ?: return CDRF_DODEFAULT.toLong()
                         if (nmcd.pointed.dwDrawStage.toInt() == CDDS_PREPAINT.toInt()) {
                             val customDrawHdc = nmcd.pointed.hdc ?: return CDRF_DODEFAULT.toLong()
+                            val clippedOut = memScoped {
+                                val clipRc = alloc<RECT>()
+                                GetClipBox(customDrawHdc, clipRc.ptr) == NULLREGION
+                            }
+                            if (clippedOut) {
+                                return CDRF_SKIPDEFAULT.toLong()
+                            }
                             val w = (nmcd.pointed.rc.right - nmcd.pointed.rc.left).coerceAtLeast(1)
                             val h = (nmcd.pointed.rc.bottom - nmcd.pointed.rc.top).coerceAtLeast(1)
                             Win32StyledWidgetHelper.paintCustomBootstrapButtonToHdc(entry, fromHwnd, customDrawHdc, w, h, ownerBtn)
@@ -1025,6 +1462,13 @@ object Win32ControlMessageRouter {
                     }
                 }
                 entry.onNotifyCallback?.invoke(nmhdr.pointed.code, nmhdr)
+            }
+
+            WM_DRAWITEM -> {
+                val dis = lParam.toCPointer<DRAWITEMSTRUCT>() ?: return null
+                val itemHwnd = dis.pointed.hwndItem ?: return null
+                val entry = entriesByHwnd[itemHwnd.toLong()] ?: return null
+                entry.onDrawItemCallback?.invoke(dis)
             }
 
             WM_HSCROLL, WM_VSCROLL -> {
@@ -1074,8 +1518,15 @@ object Win32ControlMessageRouter {
                 }
 
                 if (entry.isTransparentCtlColor) {
-                    SetBkMode(hdc, TRANSPARENT)
-                    return GetStockObject(NULL_BRUSH)?.toLong()
+                    if (shouldUseTransparentStageCtlColor(childHwnd, entry)) {
+                        SetBkMode(hdc, TRANSPARENT)
+                        return GetStockObject(NULL_BRUSH)?.toLong()
+                    }
+                    val inheritedBg = Win32StyledWidgetHelper.resolveAncestorBackgroundColor(childHwnd, dark)
+                    val bgRef = colorRefRgb(inheritedBg.r, inheritedBg.g, inheritedBg.b)
+                    SetBkMode(hdc, OPAQUE)
+                    SetBkColor(hdc, bgRef)
+                    return obtainCachedSolidBrush(bgRef)?.toLong()
                 }
                 SetBkMode(hdc, OPAQUE)
                 SetBkColor(hdc, entry.bgColorRef)
@@ -1087,9 +1538,58 @@ object Win32ControlMessageRouter {
         }
     }
 
+    internal fun obtainCachedSolidBrush(colorRef: UInt): HBRUSH? {
+        cachedCtlColorBrushes[colorRef]?.let { return it }
+        val created = CreateSolidBrush(colorRef) ?: return null
+        cachedCtlColorBrushes[colorRef] = created
+        return created
+    }
+
+    internal fun shouldUseTransparentStageCtlColor(childHwnd: HWND, entry: Win32HwndHandle): Boolean {
+        if (!Win32LayeredStageHostHwnd.hasAnyStageHosts()) return false
+        var seenOpaqueBackdrop = false
+        var cur: HWND? = GetParent(childHwnd)
+        var hops = 0
+        while (cur != null && IsWindow(cur) != 0 && hops < 32) {
+            val ancestorEntry = entriesByHwnd[cur.toLong()]
+            if (ancestorEntry?.actualWin32ClassName == "GenericUILayeredStageHostW" ||
+                Win32LayeredStageHostHwnd.isStageHostHwnd(cur)
+            ) {
+                return !seenOpaqueBackdrop
+            }
+            val bg = ancestorEntry?.ownerImpl?.let {
+                Win32StyledWidgetHelper.resolveStyledSpecFromOwner(it).backgroundColor
+            }
+            if (!seenOpaqueBackdrop && bg != null && bg.a >= 250) {
+                seenOpaqueBackdrop = true
+            }
+            cur = GetParent(cur)
+            hops++
+        }
+        var widgetCur: com.nexustools.genericui.desktop.core.DesktopNativeWidget? = entry.parentWidget
+        while (widgetCur != null) {
+            val h = widgetCur as? Win32HwndHandle
+            if (h != null) {
+                if (h.actualWin32ClassName == "GenericUILayeredStageHostW" ||
+                    Win32LayeredStageHostHwnd.isStageHostHwnd(h.hwnd)
+                ) {
+                    return !seenOpaqueBackdrop
+                }
+                val bg = h.ownerImpl?.let {
+                    Win32StyledWidgetHelper.resolveStyledSpecFromOwner(it).backgroundColor
+                }
+                if (!seenOpaqueBackdrop && bg != null && bg.a >= 250) {
+                    seenOpaqueBackdrop = true
+                }
+            }
+            widgetCur = widgetCur.parentWidget
+        }
+        return false
+    }
+
     /**
      * Forwards synthetic top-level `WM_MOUSE*` messages sent to [rootHwnd] cleanly into the
-     * deepest visible, non-`pointer-events: none` child `HWND` via `ChildWindowFromPointEx`.
+     * deepest visible, non-`pointer-events: none` child `HWND` via manual Z-order traversal.
      */
     fun forwardMouseMessageToChild(
         rootHwnd: HWND,
@@ -1098,6 +1598,9 @@ object Win32ControlMessageRouter {
         lParam: LPARAM
     ): LRESULT? {
         val msgInt = msg.toInt()
+        if (msgInt == WM_MOUSEWHEEL) {
+            wheelConsumedByChild = false
+        }
         val captured = GetCapture()
         if (captured != null && captured != rootHwnd && IsWindow(captured) != 0) {
             val forwardedLParam = if (msgInt == WM_MOUSEWHEEL) {
@@ -1105,7 +1608,9 @@ object Win32ControlMessageRouter {
             } else {
                 translateClientLParam(rootHwnd, captured, lParam)
             }
-            return SendMessageW(captured, msg, wParam, forwardedLParam)
+            val res = dispatchForwardedMouseMessage(rootHwnd, captured, msg, wParam, forwardedLParam)
+            if (msgInt == WM_MOUSEWHEEL && !wheelConsumedByChild) return null
+            return res
         }
 
         val clientPtX: Int
@@ -1134,35 +1639,306 @@ object Win32ControlMessageRouter {
         } else {
             translateClientLParam(rootHwnd, targetChild, lParam)
         }
+        val res = dispatchForwardedMouseMessage(rootHwnd, targetChild, msg, wParam, forwardedLParam)
+        if (msgInt == WM_MOUSEWHEEL && !wheelConsumedByChild) return null
+        return res
+    }
+
+    private fun isClippedOutByScrollAncestor(entry: Win32HwndHandle?): Boolean {
+        val h0 = entry ?: return false
+        if (isViewportCulled(h0)) return true
+        val childW = h0.lastAppliedW.takeIf { it > 0 } ?: h0.bounds.width
+        val childH = h0.lastAppliedH.takeIf { it > 0 } ?: h0.bounds.height
+        if (childW <= 0 || childH <= 0) return false
+        var accX = if (h0.lastAppliedX != Int.MIN_VALUE) h0.lastAppliedX else h0.bounds.x
+        var accY = if (h0.lastAppliedY != Int.MIN_VALUE) h0.lastAppliedY else h0.bounds.y
+        var cur: DesktopNativeWidget? = h0.parentWidget
+        var hops = 0
+        while (cur != null && hops < 24) {
+            val h = cur as? Win32HwndHandle ?: break
+            val owner = h.ownerImpl
+            if (owner is WindowsScrollViewNativeImpl || owner is WindowsLazyListNativeImpl) {
+                val svW = h.lastAppliedW.takeIf { it > 0 } ?: h.bounds.width
+                val svH = h.lastAppliedH.takeIf { it > 0 } ?: h.bounds.height
+                if (svW > 0 && svH > 0) {
+                    if (accX + childW <= 0 || accX >= svW || accY + childH <= 0 || accY >= svH) {
+                        return true
+                    }
+                }
+            }
+            if ((h.dwStyle and WS_CHILD.toLong()) == 0L && h.parentHwnd == null) {
+                break
+            }
+            accX += if (h.lastAppliedX != Int.MIN_VALUE) h.lastAppliedX else h.bounds.x
+            accY += if (h.lastAppliedY != Int.MIN_VALUE) h.lastAppliedY else h.bounds.y
+            cur = h.parentWidget
+            hops++
+        }
+        return false
+    }
+
+    private fun dispatchForwardedMouseMessage(
+        rootHwnd: HWND,
+        targetChild: HWND,
+        msg: UINT,
+        wParam: WPARAM,
+        forwardedLParam: LPARAM
+    ): LRESULT {
+        if (msg.toInt() == WM_LBUTTONUP) {
+            val targetEntry = entriesByHwnd[targetChild.toLong()]
+            val x = (forwardedLParam and 0xFFFFL).toShort().toInt()
+            val y = ((forwardedLParam shr 16) and 0xFFFFL).toShort().toInt()
+            val wasPressedHere = targetEntry != null && activePressEntry === targetEntry
+            val withinClickDistance = wasPressedHere &&
+                abs(x - pressStartClientX) <= CLICK_DRAG_THRESHOLD_PX &&
+                abs(y - pressStartClientY) <= CLICK_DRAG_THRESHOLD_PX
+            val ensureButtonClick = withinClickDistance &&
+                targetEntry != null &&
+                targetEntry.actualWin32ClassName == "Button" &&
+                (targetEntry.ownerImpl is DesktopButtonNativeImpl<*> ||
+                    targetEntry.ownerImpl is DesktopDropdownNativeImpl<*>)
+            lastBnClickedHwnd = null
+            val res = SendMessageW(targetChild, msg, wParam, forwardedLParam)
+            if (ensureButtonClick &&
+                lastBnClickedHwnd != targetChild &&
+                targetEntry != null &&
+                targetEntry.effectiveEnabled &&
+                targetEntry.ownerImpl?.isEnabled() == true
+            ) {
+                targetEntry.onCommandCallback?.invoke(BN_CLICKED, 0uL, targetChild.toLong())
+            }
+            return res
+        }
         return SendMessageW(targetChild, msg, wParam, forwardedLParam)
     }
 
     fun findDeepestHitChildHwnd(rootHwnd: HWND, clientX: Int, clientY: Int): HWND {
-        var current = rootHwnd
-        var curX = clientX
-        var curY = clientY
-        val flags = CWP_SKIPINVISIBLE.toUInt() or CWP_SKIPTRANSPARENT.toUInt()
-        for (depth in 0 until 32) {
-            val next = ChildWindowFromPointEx(
-                current,
-                cValue<POINT> {
-                    x = curX
-                    y = curY
-                },
-                flags
-            )
-            if (next == null || next == current) break
-            memScoped {
-                val pt = alloc<POINT>()
-                pt.x = curX
-                pt.y = curY
-                MapWindowPoints(current, next, pt.ptr, 1u)
-                curX = pt.x
-                curY = pt.y
+        return walkHitTest(rootHwnd, clientX, clientY, depth = 0) ?: rootHwnd
+    }
+
+    private fun walkHitTest(parentHwnd: HWND, clientX: Int, clientY: Int, depth: Int): HWND? {
+        if (depth >= 32 || IsWindow(parentHwnd) == 0) return null
+        val parentEntry = entriesByHwnd[parentHwnd.toLong()]
+        if (parentEntry != null &&
+            parentEntry.actualWin32ClassName.startsWith("GenericUI") &&
+            parentEntry.actualWin32ClassName != "GenericUILayeredStageHostW" &&
+            (parentEntry.dwStyle and 0x00800000L /* WS_BORDER */) == 0L &&
+            (parentEntry.dwExStyle and 0x00000200L /* WS_EX_CLIENTEDGE */) == 0L
+        ) {
+            val managedChildren = parentEntry.children
+            var canUseManagedFastWalk = true
+            for (i in managedChildren.indices) {
+                val c = managedChildren[i] as? Win32HwndHandle
+                if (c == null ||
+                    c.desiredZIndex != 0 ||
+                    c.hwnd == null ||
+                    c.parentHwnd != parentHwnd ||
+                    c.buddyHwnd != null ||
+                    c.secondaryHwnd != null ||
+                    c.secondaryHwnd2 != null ||
+                    c.actualWin32ClassName.equals("ComboBox", ignoreCase = true) ||
+                    (c.dwStyle and 0x00800000L /* WS_BORDER */) != 0L ||
+                    (c.dwExStyle and 0x00000200L /* WS_EX_CLIENTEDGE */) != 0L ||
+                    c.lastAppliedX == Int.MIN_VALUE
+                ) {
+                    canUseManagedFastWalk = false
+                    break
+                }
             }
-            current = next
+            if (canUseManagedFastWalk) {
+                var lazyHitTestLParam = Long.MIN_VALUE
+                fun obtainHitTestLParam(): Long {
+                    if (lazyHitTestLParam == Long.MIN_VALUE) {
+                        val sp = memScoped {
+                            val pt = alloc<POINT>()
+                            pt.x = clientX
+                            pt.y = clientY
+                            ClientToScreen(parentHwnd, pt.ptr)
+                            (((pt.y and 0xFFFF).toLong()) shl 16) or ((pt.x and 0xFFFF).toLong())
+                        }
+                        lazyHitTestLParam = sp
+                    }
+                    return lazyHitTestLParam
+                }
+                for (i in managedChildren.indices.reversed()) {
+                    val c = managedChildren[i] as Win32HwndHandle
+                    if (!c.effectiveVisible || c.effectiveOpacity <= 0.001f || isViewportCulled(c)) continue
+                    val cx = c.lastAppliedX
+                    val cy = c.lastAppliedY
+                    val cw = c.lastAppliedW
+                    val ch = c.lastAppliedH
+                    if (cw <= 0 || ch <= 0) continue
+                    if (clientX < cx || clientX >= cx + cw || clientY < cy || clientY >= cy + ch) continue
+                    val candidate = c.hwnd ?: continue
+                    val deeper = walkHitTest(candidate, clientX - cx, clientY - cy, depth + 1)
+                    if (deeper != null) return deeper
+                    val selfPointerBlocked = c.pointerEventsNone || c.ownerImpl?.isPointerInteractionDisabled() == true
+                    if (!selfPointerBlocked) {
+                        val ht = SendMessageW(candidate, WM_NCHITTEST.toUInt(), 0uL, obtainHitTestLParam())
+                        if (ht != HTTRANSPARENT.toLong()) {
+                            return candidate
+                        }
+                    }
+                }
+                return null
+            }
         }
-        return current
+
+        val screenPt = memScoped {
+            val pt = alloc<POINT>()
+            pt.x = clientX
+            pt.y = clientY
+            ClientToScreen(parentHwnd, pt.ptr)
+            pt.x to pt.y
+        }
+        val hitTestLParam = (((screenPt.second and 0xFFFF).toLong()) shl 16) or
+            ((screenPt.first and 0xFFFF).toLong())
+
+        var candidate = GetWindow(parentHwnd, GW_CHILD.toUInt())
+        while (candidate != null) {
+            val entry = entriesByHwnd[candidate.toLong()]
+            val fastHidden = entry != null &&
+                (!entry.effectiveVisible || entry.effectiveOpacity <= 0.001f || isViewportCulled(entry))
+            if (!fastHidden && (GetWindowLongPtrW(candidate, GWL_STYLE).toInt() and WS_VISIBLE) != 0) {
+                val contains = memScoped {
+                        val wr = alloc<RECT>()
+                        if (GetWindowRect(candidate, wr.ptr) == 0) {
+                            false
+                        } else {
+                            val effectiveBottom = if (
+                                entry != null &&
+                                entry.actualWin32ClassName.equals("ComboBox", ignoreCase = true) &&
+                                entry.lastAppliedH > 0
+                            ) {
+                                minOf(wr.bottom, wr.top + entry.lastAppliedH)
+                            } else {
+                                wr.bottom
+                            }
+                            screenPt.first >= wr.left && screenPt.first < wr.right &&
+                                screenPt.second >= wr.top && screenPt.second < effectiveBottom
+                        }
+                    }
+                    if (contains) {
+                        val childPt = memScoped {
+                            val pt = alloc<POINT>()
+                            pt.x = clientX
+                            pt.y = clientY
+                            MapWindowPoints(parentHwnd, candidate, pt.ptr, 1u)
+                            pt.x to pt.y
+                        }
+                        val deeper = walkHitTest(candidate, childPt.first, childPt.second, depth + 1)
+                        if (deeper != null) return deeper
+
+                        val selfPointerBlocked = entry != null &&
+                            (entry.pointerEventsNone || entry.ownerImpl?.isPointerInteractionDisabled() == true)
+                        if (!selfPointerBlocked) {
+                            val ht = SendMessageW(candidate, WM_NCHITTEST.toUInt(), 0uL, hitTestLParam)
+                            if (ht != HTTRANSPARENT.toLong()) {
+                                return candidate
+                            }
+                        }
+                    }
+                }
+            candidate = GetWindow(candidate, GW_HWNDNEXT.toUInt())
+        }
+        return null
+    }
+
+    private fun isFullyOccludedByOpaqueChild(entry: Win32HwndHandle?, hwnd: HWND): Boolean {
+        if (entry == null || entry.customPaintCallback != null || entry.children.isEmpty()) return false
+        if (Win32LayeredStageHostHwnd.isStageHostHwnd(hwnd) ||
+            (Win32LayeredStageHostHwnd.hasAnyStageHosts() && Win32LayeredStageHostHwnd.isDescendantOfStageHost(hwnd))
+        ) {
+            return false
+        }
+        if ((entry.dwStyle and WS_CLIPCHILDREN.toLong()) == 0L) return false
+        val cw: Int
+        val ch: Int
+        if (entry.lastAppliedW > 0 &&
+            entry.lastAppliedH > 0 &&
+            (entry.dwStyle and 0x00B00000L /* WS_BORDER | WS_VSCROLL | WS_HSCROLL */) == 0L
+        ) {
+            cw = entry.lastAppliedW
+            ch = entry.lastAppliedH
+        } else {
+            val pair = withOcclusionRect { cr ->
+                if (GetClientRect(hwnd, cr.ptr) == 0) {
+                    0 to 0
+                } else {
+                    (cr.right - cr.left) to (cr.bottom - cr.top)
+                }
+            }
+            cw = pair.first
+            ch = pair.second
+        }
+        if (cw <= 0 || ch <= 0) return false
+        for (child in entry.children) {
+            val c = child as? Win32HwndHandle ?: continue
+            val cHwnd = c.hwnd ?: continue
+            if (c.parentHwnd == hwnd &&
+                c.effectiveVisible &&
+                c.effectiveOpacity >= 0.996f &&
+                !isViewportCulled(c) &&
+                IsWindowVisible(cHwnd) != 0 &&
+                (c.dwExStyle and (WS_EX_LAYERED.toLong() or 0x00000020L /* WS_EX_TRANSPARENT */)) == 0L &&
+                c.lastAppliedX <= 0 &&
+                c.lastAppliedY <= 0 &&
+                c.lastAppliedX + c.lastAppliedW >= cw &&
+                c.lastAppliedY + c.lastAppliedH >= ch
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun handleCustomClassPaint(hwnd: HWND, entry: Win32HwndHandle?): LRESULT {
+        withCustomPaintStructs { ps, clipRc, rc ->
+            val hdc = BeginPaint(hwnd, ps.ptr)
+            try {
+                if (hdc != null &&
+                    ps.rcPaint.right > ps.rcPaint.left &&
+                    ps.rcPaint.bottom > ps.rcPaint.top &&
+                    GetClipBox(hdc, clipRc.ptr) != NULLREGION
+                ) {
+                    GetClientRect(hwnd, rc.ptr)
+                    val w = (rc.right - rc.left).coerceAtLeast(0)
+                    val h = (rc.bottom - rc.top).coerceAtLeast(0)
+                    if (w > 0 && h > 0) {
+                        val cb = entry?.customPaintCallback
+                        if (cb != null) {
+                            cb(hwnd, hdc, w, h)
+                        } else {
+                            Win32StyledWidgetHelper.paintCustomEntry(
+                                entry = entry,
+                                hwnd = hwnd,
+                                hdc = hdc,
+                                width = w,
+                                height = h,
+                                dirtyLeft = ps.rcPaint.left,
+                                dirtyTop = ps.rcPaint.top,
+                                dirtyRight = ps.rcPaint.right,
+                                dirtyBottom = ps.rcPaint.bottom
+                            )
+                        }
+                    }
+                }
+            } finally {
+                EndPaint(hwnd, ps.ptr)
+            }
+        }
+        return 0L
+    }
+
+    private fun hasHoverVisualEffect(handle: Win32HwndHandle?): Boolean {
+        if (handle == null) return false
+        if (handle.actualWin32ClassName == "Button") return true
+        if (!handle.actualWin32ClassName.startsWith("GenericUI")) return false
+        val owner = handle.ownerImpl ?: return false
+        if (owner is DesktopButtonNativeImpl<*>) return true
+        if (owner is DesktopStyledTextInputNativeImpl<*> && owner.getHoverVisuals() != null) return true
+        if (owner.resolveEffectiveStyle()?.hoverStyle != null) return true
+        return false
     }
 
     internal fun handleCustomOrSubclassedMessage(
@@ -1178,12 +1954,25 @@ object Win32ControlMessageRouter {
             handleReflectedParentMessage(hwnd, msg, wParam, lParam)?.let { return it }
         }
 
-        entry?.customMessageCallback?.invoke(hwnd, msg, wParam, lParam)?.let { return it }
+        entry?.customMessageCallback?.invoke(hwnd, msg, wParam, lParam)?.let { res ->
+            if (msg.toInt() == WM_MOUSEWHEEL) {
+                wheelConsumedByChild = true
+            }
+            return res
+        }
 
         val msgInt = msg.toInt()
         when (msgInt) {
             WM_NCDESTROY -> {
                 entriesByHwnd.remove(hwnd.toLong())
+                pendingReentryWmSizeByHwnd.remove(hwnd.toLong())
+                entry?.let {
+                    viewportCulledHandles.remove(it)
+                    viewportParkedHandles.remove(it)
+                    culledBoundsDirtyHandles.remove(it)
+                }
+                Win32RetainedControlPaintCache.invalidate(hwnd)
+                Win32StyledWidgetHelper.invalidateAncestorBackgroundCache(hwnd)
                 auxHadTabStopByHwnd.remove(hwnd.toLong())
                 if (hoveredEntry === entry) hoveredEntry = null
                 if (activePressEntry === entry) activePressEntry = null
@@ -1193,6 +1982,14 @@ object Win32ControlMessageRouter {
                 if (!isCustomClass) {
                     RemoveWindowSubclass(hwnd, staticCFunction(::win32RetainedSubclassProc), SUBCLASS_ID)
                 }
+                return null
+            }
+
+            0x000C /* WM_SETTEXT */,
+            WM_SETFONT,
+            0x000A /* WM_ENABLE */,
+            0x007D /* WM_STYLECHANGED */ -> {
+                Win32RetainedControlPaintCache.invalidate(hwnd)
                 return null
             }
 
@@ -1221,43 +2018,136 @@ object Win32ControlMessageRouter {
 
             WM_ERASEBKGND -> {
                 if (isCustomClass) return 1L
+                if (entry != null &&
+                    ((entry.actualWin32ClassName == "Static" && entry.isTransparentCtlColor) ||
+                        (!shouldUseTransparentStageCtlColor(hwnd, entry) &&
+                            entry.actualWin32ClassName == "Button" &&
+                            (entry.ownerImpl as? WindowsButtonNativeImpl)?.isNativeDefaultButtonMode() == true))
+                ) {
+                    return 1L
+                }
                 return null
             }
 
-            WM_PAINT -> {
+            0x0318 /* WM_PRINTCLIENT */ -> {
                 if (!isCustomClass) return null
+                val hdc = wParam.toLong().toCPointer<HDC__>() ?: return 0L
                 memScoped {
-                    val ps = alloc<PAINTSTRUCT>()
-                    val hdc = BeginPaint(hwnd, ps.ptr)
-                    try {
-                        val rc = alloc<RECT>()
-                        GetClientRect(hwnd, rc.ptr)
-                        val w = (rc.right - rc.left).coerceAtLeast(0)
-                        val h = (rc.bottom - rc.top).coerceAtLeast(0)
-                        if (hdc != null && w > 0 && h > 0) {
-                            val cb = entry?.customPaintCallback
-                            if (cb != null) {
-                                cb(hwnd, hdc, w, h)
-                            } else {
-                                Win32StyledWidgetHelper.paintCustomEntry(entry, hwnd, hdc, w, h)
-                            }
+                    val rc = alloc<RECT>()
+                    GetClientRect(hwnd, rc.ptr)
+                    val w = (rc.right - rc.left).coerceAtLeast(0)
+                    val h = (rc.bottom - rc.top).coerceAtLeast(0)
+                    if (w > 0 && h > 0) {
+                        val cb = entry?.customPaintCallback
+                        if (cb != null) {
+                            cb(hwnd, hdc, w, h)
+                        } else {
+                            Win32StyledWidgetHelper.paintCustomEntry(entry, hwnd, hdc, w, h)
                         }
-                    } finally {
-                        EndPaint(hwnd, ps.ptr)
                     }
                 }
-                return 0L
+                return 1L
+            }
+
+            WM_PAINT -> {
+                if (!isCustomClass) {
+                    if (isClippedOutByScrollAncestor(entry)) {
+                        ValidateRect(hwnd, null)
+                        return 0L
+                    }
+                    val isTransparentStage = entry != null && shouldUseTransparentStageCtlColor(hwnd, entry)
+                    if (entry != null &&
+                        entry.actualWin32ClassName == "Static" &&
+                        entry.isTransparentCtlColor &&
+                        isTransparentStage
+                    ) {
+                        withCustomPaintStructs { ps, clipRc, rc ->
+                            val hdc = BeginPaint(hwnd, ps.ptr)
+                            try {
+                                if (hdc != null &&
+                                    ps.rcPaint.right > ps.rcPaint.left &&
+                                    ps.rcPaint.bottom > ps.rcPaint.top &&
+                                    GetClipBox(hdc, clipRc.ptr) != NULLREGION
+                                ) {
+                                    GetClientRect(hwnd, rc.ptr)
+                                    val w = (rc.right - rc.left).coerceAtLeast(0)
+                                    val h = (rc.bottom - rc.top).coerceAtLeast(0)
+                                    if (w > 0 && h > 0) {
+                                        Win32StyledWidgetHelper.paintStageOverlayTextBackdrop(
+                                            hwnd = hwnd,
+                                            hdc = hdc,
+                                            width = w,
+                                            height = h,
+                                            isDark = Win32NativeWindowHost.isEffectivelyDarkTheme()
+                                        )
+                                        DefSubclassProc(hwnd, 0x0318u /* WM_PRINTCLIENT */, hdc.toLong().toULong(), 0x00000004L /* PRF_CLIENT */)
+                                    }
+                                }
+                            } finally {
+                                EndPaint(hwnd, ps.ptr)
+                            }
+                        }
+                        return 0L
+                    }
+                    if (entry != null &&
+                        (entry.actualWin32ClassName == "Static" || entry.actualWin32ClassName == "Button") &&
+                        Win32RetainedControlPaintCache.tryPaintCachedStandardControl(
+                            hwnd = hwnd,
+                            entry = entry,
+                            isDark = Win32NativeWindowHost.isEffectivelyDarkTheme(),
+                            isTransparentStage = isTransparentStage
+                        ) { memDc ->
+                            DefSubclassProc(hwnd, 0x0318u /* WM_PRINTCLIENT */, memDc.toLong().toULong(), 0x00000006L)
+                        }
+                    ) {
+                        return 0L
+                    }
+                    return null
+                }
+                val svOwner = entry?.ownerImpl as? WindowsScrollViewNativeImpl
+                if (svOwner != null && Win32ScrollViewCompositor.tryCompositeScrollViewPaint(svOwner, hwnd)) {
+                    return 0L
+                }
+                if (isClippedOutByScrollAncestor(entry) || isFullyOccludedByOpaqueChild(entry, hwnd)) {
+                    ValidateRect(hwnd, null)
+                    return 0L
+                }
+                return handleCustomClassPaint(hwnd, entry)
             }
 
             WM_SIZE -> {
                 if (isCustomClass) {
-                    val newW = (lParam and 0xFFFFL).toInt()
-                    val newH = ((lParam shr 16) and 0xFFFFL).toInt()
                     val owner = entry?.ownerImpl
-                    if (owner is com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*> &&
-                        newW > 0 && newH > 0
-                    ) {
-                        owner.layoutChildrenInBounds(newW.toFloat(), newH.toFloat())
+                    val needsPostDeferScrollSync =
+                        owner is WindowsScrollViewNativeImpl || owner is WindowsLazyListNativeImpl
+                    if (batchingHostLayoutDepth <= 0 || needsPostDeferScrollSync) {
+                        val newW = (lParam and 0xFFFFL).toInt()
+                        val newH = ((lParam shr 16) and 0xFFFFL).toInt()
+                        if (owner is com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*> &&
+                            newW > 0 && newH > 0
+                        ) {
+                            val key = hwnd.toLong()
+                            if (activeWmSizeHwnds.add(key)) {
+                                try {
+                                    var curW = newW
+                                    var curH = newH
+                                    var passes = 0
+                                    while (passes++ < 4) {
+                                        owner.layoutChildrenInBounds(curW.toFloat(), curH.toFloat())
+                                        val next = pendingReentryWmSizeByHwnd.remove(key) ?: break
+                                        if (next.first == curW && next.second == curH) break
+                                        curW = next.first
+                                        curH = next.second
+                                    }
+                                } finally {
+                                    pendingReentryWmSizeByHwnd.remove(key)
+                                    activeWmSizeHwnds.remove(key)
+                                }
+                            } else {
+                                // Capture re-entrant WM_SIZE triggered when SetScrollInfo toggles WS_HSCROLL/WS_VSCROLL
+                                pendingReentryWmSizeByHwnd[key] = newW to newH
+                            }
+                        }
                     }
                     InvalidateRect(hwnd, null, 0)
                     return 0L
@@ -1305,6 +2195,12 @@ object Win32ControlMessageRouter {
                 if (entry?.isNativeEditTarget == true) {
                     InputFocusManager.setEditableInputFocused(true)
                 }
+                if (entry != null) {
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
+                }
+                if (entry?.actualWin32ClassName == "Button") {
+                    Win32RetainedControlPaintCache.invalidate(hwnd)
+                }
                 return null
             }
 
@@ -1313,6 +2209,12 @@ object Win32ControlMessageRouter {
                 owner?.setFocusedState(false)
                 if (entry?.isNativeEditTarget == true) {
                     InputFocusManager.setEditableInputFocused(false)
+                }
+                if (entry != null) {
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
+                }
+                if (entry?.actualWin32ClassName == "Button") {
+                    Win32RetainedControlPaintCache.invalidate(hwnd)
                 }
                 return null
             }
@@ -1330,6 +2232,12 @@ object Win32ControlMessageRouter {
                             isTargetTextInput = entry?.isNativeEditTarget == true
                         )
                     )
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
+                    if (entry.actualWin32ClassName == "Button") {
+                        Win32RetainedControlPaintCache.invalidate(hwnd)
+                    }
+                } else if (entry != null) {
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
                 }
                 return null
             }
@@ -1345,6 +2253,12 @@ object Win32ControlMessageRouter {
                             isTargetTextInput = entry?.isNativeEditTarget == true
                         )
                     )
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
+                    if (entry.actualWin32ClassName == "Button") {
+                        Win32RetainedControlPaintCache.invalidate(hwnd)
+                    }
+                } else if (entry != null) {
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
                 }
                 return null
             }
@@ -1401,11 +2315,24 @@ object Win32ControlMessageRouter {
                     for (i in enterList.indices.reversed()) {
                         enterList[i].dispatchPointerEnter(pointerEv)
                     }
-                    if (prevHovered?.actualWin32ClassName?.startsWith("GenericUI") == true) {
-                        prevHovered.hwnd?.let { InvalidateRect(it, null, 0) }
+                    val prevHoverVisual = hasHoverVisualEffect(prevHovered)
+                    val curHoverVisual = hasHoverVisualEffect(entry)
+                    if (prevHoverVisual) {
+                        if (prevHovered?.actualWin32ClassName == "Button") {
+                            prevHovered.hwnd?.let { Win32RetainedControlPaintCache.invalidate(it) }
+                        } else {
+                            prevHovered?.hwnd?.let { InvalidateRect(it, null, 0) }
+                        }
                     }
-                    if (entry?.actualWin32ClassName?.startsWith("GenericUI") == true) {
-                        InvalidateRect(hwnd, null, 0)
+                    if (curHoverVisual) {
+                        if (entry?.actualWin32ClassName == "Button") {
+                            Win32RetainedControlPaintCache.invalidate(hwnd)
+                        } else {
+                            InvalidateRect(hwnd, null, 0)
+                        }
+                    }
+                    if (prevHoverVisual || curHoverVisual) {
+                        Win32ScrollViewCompositor.invalidateBackbufferContent()
                     }
                 }
                 val ev = buildPointerEvent(hwnd, wParam, lParam, 0)
@@ -1419,6 +2346,11 @@ object Win32ControlMessageRouter {
                         ev
                     }
                     PointerDragManager.notifyGlobalPointerMove(dragEv, coordinatesAreTargetLocal = false)
+                } else if (isCustomClass && entry != null) {
+                    forEachCustomPointerBubbleTarget(entry, hwnd, ev) { _, impl, localEv ->
+                        impl.dispatchPointerMove(localEv)
+                        true
+                    }
                 } else {
                     entry?.ownerImpl?.dispatchPointerMove(ev)
                 }
@@ -1438,9 +2370,12 @@ object Win32ControlMessageRouter {
                             impl?.dispatchPointerLeave(leaveEv)
                             cur = cur.parentWidget
                         }
+                        Win32ScrollViewCompositor.invalidateBackbufferContent()
                     }
                     if (entry.actualWin32ClassName.startsWith("GenericUI")) {
                         InvalidateRect(hwnd, null, 0)
+                    } else if (entry.actualWin32ClassName == "Button") {
+                        Win32RetainedControlPaintCache.invalidate(hwnd)
                     }
                 }
                 return if (isCustomClass) 0L else null
@@ -1461,12 +2396,23 @@ object Win32ControlMessageRouter {
                         SetCapture(hwnd)
                     }
                     val ev = buildPointerEvent(hwnd, wParam, lParam, button = 0)
-                    val owner = entry.ownerImpl
-                    owner?.setActivePressedState(true)
-                    owner?.dispatchPointerDown(ev)
+                    if (isCustomClass) {
+                        forEachCustomPointerBubbleTarget(entry, hwnd, ev) { _, impl, localEv ->
+                            impl.setActivePressedState(true)
+                            impl.dispatchPointerDown(localEv)
+                            true
+                        }
+                    } else {
+                        val owner = entry.ownerImpl
+                        owner?.setActivePressedState(true)
+                        owner?.dispatchPointerDown(ev)
+                    }
                     if (isCustomClass && entry.actualWin32ClassName.startsWith("GenericUI")) {
                         InvalidateRect(hwnd, null, 0)
+                    } else if (entry.actualWin32ClassName == "Button") {
+                        Win32RetainedControlPaintCache.invalidate(hwnd)
                     }
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
                 }
                 return if (isCustomClass) 0L else null
             }
@@ -1486,7 +2432,6 @@ object Win32ControlMessageRouter {
                     activePressEntry = null
                 }
                 if (entry != null && owner != null) {
-                    owner.setActivePressedState(false)
                     val ev = buildPointerEvent(hwnd, wParam, lParam, button = 0)
                     val wasDragging = PointerDragManager.isDragging
                     if (wasDragging) {
@@ -1494,7 +2439,16 @@ object Win32ControlMessageRouter {
                         val dragEv = ev.copy(screenX = b.x.toFloat() + x.toFloat(), screenY = b.y.toFloat() + y.toFloat())
                         PointerDragManager.notifyGlobalPointerUp(dragEv, coordinatesAreTargetLocal = false)
                     }
-                    owner.dispatchPointerUp(ev)
+                    if (isCustomClass) {
+                        forEachCustomPointerBubbleTarget(entry, hwnd, ev) { _, impl, localEv ->
+                            impl.setActivePressedState(false)
+                            impl.dispatchPointerUp(localEv)
+                            true
+                        }
+                    } else {
+                        owner.setActivePressedState(false)
+                        owner.dispatchPointerUp(ev)
+                    }
                     val suppressed = suppressNextLeftClickForEntry === entry
                     if (suppressed) {
                         suppressNextLeftClickForEntry = null
@@ -1504,22 +2458,51 @@ object Win32ControlMessageRouter {
                     if (isCustomClass && !wasDragging && !suppressed && withinClickDistance &&
                         !DesktopNativeWidget.interceptPopupClick(ev.x, ev.y, entry)
                     ) {
-                        owner.dispatchClick()
+                        forEachCustomPointerBubbleTarget(entry, hwnd, ev) { _, impl, _ ->
+                            if (impl.hasClickListener()) {
+                                impl.dispatchClick()
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                    } else if (!isCustomClass &&
+                        entry.actualWin32ClassName == "Static" &&
+                        !wasDragging &&
+                        !suppressed &&
+                        withinClickDistance &&
+                        !DesktopNativeWidget.interceptPopupClick(ev.x, ev.y, entry) &&
+                        owner.hasClickListener()
+                    ) {
+                        (owner as? WindowsTextNativeImpl)?.dispatchStaticClickFromPointerUp() ?: owner.dispatchClick()
                     }
                     if (isCustomClass && entry.actualWin32ClassName.startsWith("GenericUI")) {
                         InvalidateRect(hwnd, null, 0)
+                    } else if (entry.actualWin32ClassName == "Button") {
+                        Win32RetainedControlPaintCache.invalidate(hwnd)
                     }
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
                 } else if (PointerDragManager.isDragging) {
                     PointerDragManager.notifyGlobalPointerUp()
+                    if (entry != null) {
+                        Win32ScrollViewCompositor.invalidateBackbufferContent()
+                    }
+                } else if (entry != null) {
+                    Win32ScrollViewCompositor.invalidateBackbufferContent()
                 }
                 return if (isCustomClass) 0L else null
             }
 
             WM_LBUTTONDBLCLK -> {
                 if (entry != null) {
-                    val owner = entry.ownerImpl
-                    if (owner != null) {
-                        owner.dispatchDoubleClick()
+                    if (isCustomClass) {
+                        val ev = buildPointerEvent(hwnd, wParam, lParam, button = 0)
+                        forEachCustomPointerBubbleTarget(entry, hwnd, ev) { _, impl, _ ->
+                            impl.dispatchDoubleClick()
+                            true
+                        }
+                    } else {
+                        entry.ownerImpl?.dispatchDoubleClick()
                     }
                     suppressNextLeftClickForEntry = entry
                 }
@@ -1528,16 +2511,34 @@ object Win32ControlMessageRouter {
 
             WM_RBUTTONDOWN, WM_MBUTTONDOWN -> {
                 val button = if (msgInt == WM_RBUTTONDOWN) 2 else 1
-                entry?.ownerImpl?.dispatchPointerDown(buildPointerEvent(hwnd, wParam, lParam, button))
+                val ev = buildPointerEvent(hwnd, wParam, lParam, button)
+                if (isCustomClass && entry != null) {
+                    forEachCustomPointerBubbleTarget(entry, hwnd, ev) { _, impl, localEv ->
+                        impl.dispatchPointerDown(localEv)
+                        true
+                    }
+                } else {
+                    entry?.ownerImpl?.dispatchPointerDown(ev)
+                }
                 return if (isCustomClass) 0L else null
             }
 
             WM_RBUTTONUP, WM_MBUTTONUP -> {
                 val button = if (msgInt == WM_RBUTTONUP) 2 else 1
                 val ev = buildPointerEvent(hwnd, wParam, lParam, button)
-                entry?.ownerImpl?.dispatchPointerUp(ev)
-                if (msgInt == WM_RBUTTONUP) {
-                    entry?.ownerImpl?.dispatchContextMenu(ev)
+                if (isCustomClass && entry != null) {
+                    forEachCustomPointerBubbleTarget(entry, hwnd, ev) { _, impl, localEv ->
+                        impl.dispatchPointerUp(localEv)
+                        if (msgInt == WM_RBUTTONUP) {
+                            impl.dispatchContextMenu(localEv)
+                        }
+                        true
+                    }
+                } else {
+                    entry?.ownerImpl?.dispatchPointerUp(ev)
+                    if (msgInt == WM_RBUTTONUP) {
+                        entry?.ownerImpl?.dispatchContextMenu(ev)
+                    }
                 }
                 return if (isCustomClass) 0L else null
             }
@@ -1564,7 +2565,8 @@ object Win32ControlMessageRouter {
                 )
                 entry?.ownerImpl?.dispatchWheel(ev)
                 val parent = GetParent(hwnd)
-                if (parent != null && IsWindow(parent) != 0 && entriesByHwnd.containsKey(parent.toLong())) {
+                val parentEntry = parent?.takeIf { IsWindow(it) != 0 }?.let { entriesByHwnd[it.toLong()] }
+                if (parent != null && parentEntry != null && (parentEntry.dwStyle and WS_CHILD.toLong()) != 0L) {
                     return SendMessageW(parent, msg, wParam, lParam)
                 }
                 return if (isCustomClass) 0L else null
@@ -1679,6 +2681,35 @@ object Win32ControlMessageRouter {
             SetCursor(LoadCursorW(null, cursorId))
         }
         return true
+    }
+
+    private inline fun forEachCustomPointerBubbleTarget(
+        startEntry: Win32HwndHandle,
+        eventHwnd: HWND,
+        event: PointerEvent,
+        visitor: (handle: Win32HwndHandle, impl: DesktopBaseNativeImpl<*>, localEvent: PointerEvent) -> Boolean
+    ) {
+        var curWidget: DesktopNativeWidget? = startEntry
+        while (curWidget != null) {
+            val curHandle = curWidget as? Win32HwndHandle ?: break
+            if (!curHandle.actualWin32ClassName.startsWith("GenericUI")) break
+            val curImpl = curHandle.ownerImpl ?: break
+            if (!curImpl.nativeWidget.enabled || curImpl.isPointerInteractionDisabled()) break
+            val targetHwnd = curHandle.hwnd
+            val localEv = if (targetHwnd != null && targetHwnd != eventHwnd && IsWindow(targetHwnd) != 0) {
+                memScoped {
+                    val pt = alloc<POINT>()
+                    pt.x = event.x.roundToInt()
+                    pt.y = event.y.roundToInt()
+                    MapWindowPoints(eventHwnd, targetHwnd, pt.ptr, 1u)
+                    event.copy(x = pt.x.toFloat(), y = pt.y.toFloat())
+                }
+            } else {
+                event
+            }
+            if (!visitor(curHandle, curImpl, localEv)) break
+            curWidget = curWidget.parentWidget
+        }
     }
 
     private fun buildPointerEvent(hwnd: HWND, wParam: WPARAM, lParam: LPARAM, button: Int): PointerEvent {

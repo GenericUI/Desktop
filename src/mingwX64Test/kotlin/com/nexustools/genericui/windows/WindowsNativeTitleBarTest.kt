@@ -33,6 +33,8 @@ import platform.windows.HTMINBUTTON
 import platform.windows.HTSYSMENU
 import platform.windows.HWND
 import platform.windows.InvalidateRect
+import platform.windows.IsWindow
+import platform.windows.IsWindowVisible
 import platform.windows.MapWindowPoints
 import platform.windows.POINT
 import platform.windows.RDW_ALLCHILDREN
@@ -50,6 +52,10 @@ import platform.windows.SIF_POS
 import platform.windows.SIF_RANGE
 import platform.windows.SendMessageW
 import platform.windows.UpdateWindow
+import platform.windows.WM_NCLBUTTONDOWN
+import platform.windows.WM_NCLBUTTONUP
+import platform.windows.WM_NCMOUSELEAVE
+import platform.windows.WM_NCMOUSEMOVE
 import platform.windows.WM_VSCROLL
 import platform.windows.WS_VSCROLL
 import kotlin.test.Test
@@ -766,6 +772,110 @@ class WindowsNativeTitleBarTest {
         } finally {
             com.nexustools.genericui.event.PopupMouseCaptureManager.clear()
             com.nexustools.genericui.event.InputFocusManager.reset()
+            WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
+        }
+    }
+
+    @Test
+    fun testDwmExtendTopMarginCollapsesToOnePixelOnSolidWin10And11TitleBars() {
+        val win11Palette = Win32DwmUxThemeBridge.resolveTitleBarPalette(
+            hwnd = null,
+            generation = Win32VisualStyleGeneration.WIN11_MICA_FLUENT,
+            isDark = true,
+            colorPrevalence = false
+        )
+        assertFalse(win11Palette.useTransparentDwmBackdrop)
+        assertFalse(win11Palette.dwmDrawsCaptionButtons)
+        assertEquals(1, Win32DwmUxThemeBridge.resolveEffectiveExtendTopMarginPx(40, win11Palette))
+        assertEquals(0, Win32DwmUxThemeBridge.resolveEffectiveExtendTopMarginPx(0, win11Palette))
+
+        val win10Palette = Win32DwmUxThemeBridge.resolveTitleBarPalette(
+            hwnd = null,
+            generation = Win32VisualStyleGeneration.WIN10_FLUENT,
+            isDark = false,
+            colorPrevalence = false
+        )
+        assertEquals(1, Win32DwmUxThemeBridge.resolveEffectiveExtendTopMarginPx(40, win10Palette))
+
+        val aeroGlassPalette = Win32DwmUxThemeBridge.resolveTitleBarPalette(
+            hwnd = null,
+            generation = Win32VisualStyleGeneration.VISTA_7_AERO_GLASS,
+            isDark = false,
+            colorPrevalence = false
+        )
+        assertTrue(aeroGlassPalette.useTransparentDwmBackdrop)
+        assertTrue(aeroGlassPalette.dwmDrawsCaptionButtons)
+        assertEquals(40, Win32DwmUxThemeBridge.resolveEffectiveExtendTopMarginPx(40, aeroGlassPalette))
+    }
+
+    @Test
+    fun testCustomCaptionButtonsEatNcHoverAndDragOffCancelOnLiveHwnd() {
+        val prevInteractive = WindowsApplicationNativeImpl.interactiveWin32GuiEnabled
+        val prevVisualTest = Win32NativeWindowHost.visualTestMode
+        WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = true
+        Win32NativeWindowHost.visualTestMode = true
+        try {
+            val factory = WindowsNativeFactory()
+            GenericUI.initialize(factory)
+
+            val mainWindow = Window(title = "NC Caption Test")
+            mainWindow.setWindowSize(com.nexustools.genericui.geometry.Size(480, 320))
+            mainWindow.setTitleBar(
+                TitleBar(
+                    customTitleBar = true,
+                    showWindowIcon = false,
+                    showMinimizeButton = true,
+                    showMaximizeButton = true,
+                    showCloseButton = true,
+                    heightPx = 40
+                )
+            )
+            mainWindow.setContent(Container("div", "w-100 h-100"))
+            mainWindow.show(factory)
+            Win32NativeWindowHost.pumpVisualWindowEvents(24L)
+
+            val mainImpl = mainWindow.ensureNativeImpl() as WindowsWindowNativeImpl
+            val hwnd = assertNotNull(Win32NativeWindowHost.resolveHwndForWindow(mainImpl))
+            assertTrue(IsWindow(hwnd) != 0)
+            assertEquals(0, Win32ControlMessageRouter.batchingHostLayoutDepth)
+
+            // Icon disabled -> icon hit-test must yield HTCAPTION instead of HTSYSMENU
+            assertEquals(
+                HTCAPTION,
+                Win32NativeTitleBarRenderer.hitTestLocalCoordinates(
+                    cx = 16,
+                    cy = 16,
+                    windowWidth = 480,
+                    titleBarHeight = 40,
+                    showWindowIcon = false
+                )
+            )
+            assertFalse(Win32NativeTitleBarRenderer.isPointInCaptionButtonOrIcon(hwnd, 16, 16))
+            assertTrue(Win32NativeTitleBarRenderer.isPointInCaptionButtonOrIcon(hwnd, 468, 16))
+
+            val dwmButtons = Win32NativeTitleBarRenderer.doesDwmDrawCaptionButtons(hwnd)
+            if (!dwmButtons) {
+                val moveRes = Win32NativeWindowHost.handleHostWndProc(hwnd, WM_NCMOUSEMOVE.toUInt(), HTCLOSE.toULong(), 0L)
+                assertEquals(0L, moveRes, "WM_NCMOUSEMOVE over custom close button must return 0L to prevent DefWindowProcW ghost buttons")
+                assertEquals(HTCLOSE, Win32NativeTitleBarRenderer.getHoveredNcButton(hwnd))
+
+                val leaveRes = Win32NativeWindowHost.handleHostWndProc(hwnd, WM_NCMOUSELEAVE.toUInt(), 0uL, 0L)
+                assertEquals(0L, leaveRes, "WM_NCMOUSELEAVE must return 0L when custom caption buttons are active")
+                assertEquals(0, Win32NativeTitleBarRenderer.getHoveredNcButton(hwnd))
+            }
+
+            // Press close, drag off to HTCAPTION, release -> must cancel safely without closing window
+            val downRes = Win32NativeWindowHost.handleHostWndProc(hwnd, WM_NCLBUTTONDOWN.toUInt(), HTCLOSE.toULong(), 0L)
+            assertEquals(0L, downRes)
+            assertEquals(HTCLOSE, Win32NativeTitleBarRenderer.getPressedNcButton(hwnd))
+
+            val dragOffUpRes = Win32NativeWindowHost.handleHostWndProc(hwnd, WM_NCLBUTTONUP.toUInt(), HTCAPTION.toULong(), 0L)
+            assertEquals(0L, dragOffUpRes, "Dragged-off WM_NCLBUTTONUP must consume message cleanly without closing")
+            assertEquals(0, Win32NativeTitleBarRenderer.getPressedNcButton(hwnd))
+            assertTrue(IsWindow(hwnd) != 0 && IsWindowVisible(hwnd) != 0)
+        } finally {
+            Win32NativeWindowHost.closeAllVisualWindows()
+            Win32NativeWindowHost.visualTestMode = prevVisualTest
             WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
         }
     }

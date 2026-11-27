@@ -1,5 +1,6 @@
 package com.nexustools.genericui.linux.titlebar
 
+import com.nexustools.genericui.core.AbstractComponent
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
@@ -11,6 +12,7 @@ import com.nexustools.genericui.desktop.widget.DesktopSelectNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextInputNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
+import com.nexustools.genericui.enums.css.CssUnit
 import com.nexustools.genericui.enums.window.TitleBarControlsPlacement
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.style.color.RgbaColor
@@ -289,6 +291,21 @@ object LinuxOverlayTitleBarResolver {
         return hitInteractive(titleBarWidget, localX, localY)
     }
 
+    fun isExpandingTitleBarComponent(widget: DesktopNativeWidget, comp: AbstractComponent? = null): Boolean {
+        val attrWidth = (widget.attributes["styleWidth"] as? String)?.trim()?.lowercase()
+        if (attrWidth == "100%") return true
+        val impl = widget.attributes["nativeImpl"] as? DesktopBaseNativeImpl<*>
+        val computed = impl?.getComputedStyle() ?: comp?.computedStyle
+        if (computed?.width?.trim()?.lowercase() == "100%") return true
+        if ((computed?.flexGrow ?: 0f) > 0f) return true
+        val style = comp?.style ?: impl?.getComponentStyle()
+        val wLen = style?.getWidth()
+        if (wLen != null && wLen.unit == CssUnit.PERCENT && wLen.value >= 99.9f) return true
+        if ((style?.getFlexGrow() ?: 0f) > 0f) return true
+        val tokens = widget.cachedAllClassTokens
+        return "w-100" in tokens || "flex-grow-1" in tokens || "flex-fill" in tokens
+    }
+
     fun resolveOverlayControlsPlacement(windowTitleBar: DesktopNativeWidget): TitleBarControlsPlacement {
         val raw = (windowTitleBar.attributes["data-controls-placement"] as? String)?.trim()?.uppercase()
         return when (raw) {
@@ -332,8 +349,19 @@ object LinuxOverlayTitleBarResolver {
             }
 
             if (centerSlot != null) {
+                val maxRightBeforeTrail = (trailX - if (trailW > 0) 8 else 0).coerceAtLeast(padX)
+                val centerPrefW = centerSlot.measureIntrinsicSize(
+                    (maxRightBeforeTrail - padX).coerceAtLeast(0).toFloat(),
+                    ch.toFloat()
+                ).width.coerceIn(0, (maxRightBeforeTrail - padX).coerceAtLeast(0))
+                val leadMaxAvail = (maxRightBeforeTrail - centerPrefW - if (centerPrefW > 0) 8 else 0).coerceAtLeast(0)
                 val leadPrefW = if (leadingSlot != null) {
-                    leadingSlot.measureIntrinsicSize(totalW.toFloat(), ch.toFloat()).width.coerceIn(0, (trailX - padX - 8).coerceAtLeast(0))
+                    if (isExpandingTitleBarComponent(leadingSlot.nativeWidget)) {
+                        leadMaxAvail
+                    } else {
+                        leadingSlot.measureIntrinsicSize(totalW.toFloat(), ch.toFloat()).width
+                            .coerceIn(0, (trailX - padX - 8).coerceAtLeast(0))
+                    }
                 } else {
                     0
                 }
@@ -342,13 +370,12 @@ object LinuxOverlayTitleBarResolver {
                     (leadingSlot as? DesktopBaseContainerNativeImpl<*>)?.layoutChildrenInBounds(leadPrefW.toFloat(), ch.toFloat())
                 }
                 val minCenterX = padX + leadPrefW + if (leadPrefW > 0) 8 else 0
-                val maxCenterRight = (trailX - if (trailW > 0) 8 else 0).coerceAtLeast(minCenterX)
+                val maxCenterRight = maxRightBeforeTrail.coerceAtLeast(minCenterX)
                 val availCenterW = (maxCenterRight - minCenterX).coerceAtLeast(0)
-                val centerPrefW = centerSlot.measureIntrinsicSize(availCenterW.toFloat(), ch.toFloat()).width
-                    .coerceIn(0, availCenterW)
-                val centeredX = ((totalW - centerPrefW) / 2).coerceIn(minCenterX, (maxCenterRight - centerPrefW).coerceAtLeast(minCenterX))
-                centerSlot.setBounds(Rect(centeredX, 0, centerPrefW, ch))
-                (centerSlot as? DesktopBaseContainerNativeImpl<*>)?.layoutChildrenInBounds(centerPrefW.toFloat(), ch.toFloat())
+                val clampedCenterW = centerPrefW.coerceIn(0, availCenterW)
+                val centeredX = ((totalW - clampedCenterW) / 2).coerceIn(minCenterX, (maxCenterRight - clampedCenterW).coerceAtLeast(minCenterX))
+                centerSlot.setBounds(Rect(centeredX, 0, clampedCenterW, ch))
+                (centerSlot as? DesktopBaseContainerNativeImpl<*>)?.layoutChildrenInBounds(clampedCenterW.toFloat(), ch.toFloat())
             } else if (leadingSlot != null) {
                 val leadW = (trailX - padX - if (trailW > 0) 8 else 0).coerceAtLeast(0)
                 leadingSlot.setBounds(Rect(padX, 0, leadW, ch))

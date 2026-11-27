@@ -4,6 +4,8 @@ import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.nativeimpl.action.ButtonNativeImpl
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
 import java.awt.image.BufferedImage
 import javax.swing.JButton
 import javax.swing.JComponent
@@ -26,13 +28,41 @@ open class SwingButtonImpl(
 ) : SwingBaseNativeImpl(button, classPrefix), ButtonNativeImpl<JComponent> {
     override val nativeWidget: JButton get() = super.nativeWidget as JButton
     private var iconVal: String? = null
+    private var focusedStateVal: Boolean = false
 
     init {
         nativeWidget.addActionListener {
             onClickListener?.invoke()
         }
+        if (this !is SwingStyledButtonImpl) {
+            nativeWidget.addFocusListener(object : FocusAdapter() {
+                override fun focusGained(e: FocusEvent?) {
+                    val effective = isEnabled() && isEffectivelyFocusableInSwing()
+                    focusedStateVal = effective
+                    if (!effective) {
+                        clearAwtFocusOnEdtIfOwner(nativeWidget)
+                    }
+                }
+
+                override fun focusLost(e: FocusEvent?) {
+                    focusedStateVal = false
+                }
+            })
+        }
         syncSwingAppearance()
     }
+
+    override fun setFocusedState(focused: Boolean) {
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        focusedStateVal = effective
+        if (effective) {
+            requestAwtFocusOnEdt(nativeWidget)
+        } else {
+            clearAwtFocusOnEdtIfOwner(nativeWidget)
+        }
+    }
+
+    override fun isFocusedState(): Boolean = focusedStateVal || nativeWidget.isFocusOwner
 
     override fun syncSwingAppearance() {
         super.syncSwingAppearance()
@@ -83,6 +113,7 @@ open class SwingButtonImpl(
 
     override fun setText(text: String) {
         nativeWidget.text = text
+        applyResolvedTypographyFont()
         nativeWidget.repaint()
     }
 

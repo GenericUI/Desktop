@@ -361,6 +361,16 @@ class MacosButtonNativeImpl(
         syncActiveViewState()
     }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        MacosFocusSupport.syncViewFirstResponder(
+            targetView = nativeButton,
+            focused = isFocusedState(),
+            effectivelyFocusable = nativeWidget.isEffectivelyFocusable(),
+            enabled = nativeWidget.enabled
+        )
+    }
+
     override fun runNativeTransition(
         property: String,
         fromValue: String?,

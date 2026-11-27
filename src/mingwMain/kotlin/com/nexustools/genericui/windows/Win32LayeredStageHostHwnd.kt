@@ -11,6 +11,11 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toLong
+import platform.windows.CreateSolidBrush
+import platform.windows.DeleteObject
+import platform.windows.FillRect
+import platform.windows.GA_ROOT
+import platform.windows.GetAncestor
 import platform.windows.GetClientRect
 import platform.windows.GetParent
 import platform.windows.HDC
@@ -66,6 +71,17 @@ object Win32LayeredStageHostHwnd {
         handle.customPaintCallback = { h, hdc, w, hgt ->
             paintStageHostBackground(h, hdc, w, hgt)
         }
+        if (handle.stageOverlaySpec == null && handle.attributes["data-overlay-root"] != "true") {
+            val wasLayered = handle.attributes["isLayeredHost"] == true
+            if (!wasLayered) {
+                handle.attributes["isLayeredHost"] = true
+                handle.notifyTreeInvalidated()
+                val bounds = container.getBounds()
+                if (bounds.width > 0 && bounds.height > 0) {
+                    container.layoutChildrenInBounds(bounds.width.toFloat(), bounds.height.toFloat())
+                }
+            }
+        }
     }
 
     fun unregisterStageHost(hwnd: HWND?) {
@@ -77,6 +93,20 @@ object Win32LayeredStageHostHwnd {
     fun isStageHostHwnd(hwnd: HWND?): Boolean =
         hwnd != null && stageHostsByHwnd.containsKey(hwnd.toLong())
 
+    internal fun hasAnyStageHosts(): Boolean = stageHostsByHwnd.isNotEmpty()
+
+    internal fun isDescendantOfStageHost(hwnd: HWND): Boolean {
+        if (stageHostsByHwnd.isEmpty()) return false
+        var cur: HWND? = GetParent(hwnd)
+        var hops = 0
+        while (cur != null && hops < 64) {
+            if (stageHostsByHwnd.containsKey(cur.toLong())) return true
+            cur = GetParent(cur)
+            hops++
+        }
+        return false
+    }
+
     /**
      * Detects behaviorally (zero class/ID/text hardcoding) whether [container] is a layered stage
      * container (`OverlayHostBox` / `LayeredContainer` hosting an interactive stage surface plus
@@ -84,9 +114,8 @@ object Win32LayeredStageHostHwnd {
      */
     fun isLayeredStageContainer(container: DesktopBaseContainerNativeImpl<*>): Boolean {
         val w = container.nativeWidget
-        if (w.stageOverlaySpec != null) return true
         val attrs = w.attributes
-        if (attrs["isLayeredHost"] == true || attrs["data-overlay-root"] == "true") return true
+        if (attrs["isLayeredHost"] == true) return true
         var hasStage = false
         var hasOtherChild = false
         for (child in container.getLogicalChildren()) {
@@ -114,17 +143,27 @@ object Win32LayeredStageHostHwnd {
             return
         }
 
-        val startMark = TimeSource.Monotonic.markNow()
+        // Sync backdrop pixels & stage presentation rect cleanly without miscounting normal child
+        // WM_PAINT repaints (e.g. window resize or fullscreen transitions) as videoStageOnlyPaints.
         refreshBackdropForState(state, width, height, hdc)
 
         val bgColor = state.container.getEffectiveBackgroundColor()
             ?: com.nexustools.genericui.style.color.RgbaColor(0, 0, 0)
-        val bgPixels = IntArray(width * height) {
-            (0xFF shl 24) or (bgColor.r shl 16) or (bgColor.g shl 8) or bgColor.b
+        val brush = CreateSolidBrush(Win32DwmUxThemeBridge.colorRefRgb(bgColor.r, bgColor.g, bgColor.b))
+        if (brush != null) {
+            try {
+                memScoped {
+                    val rc = alloc<RECT>()
+                    rc.left = 0
+                    rc.top = 0
+                    rc.right = width
+                    rc.bottom = height
+                    FillRect(hdc, rc.ptr, brush)
+                }
+            } finally {
+                DeleteObject(brush)
+            }
         }
-        Win32StyledWidgetHelper.blitArgbArrayToHdc(hdc, width, height, bgPixels, premultiplied = true)
-        val elapsedUs = startMark.elapsedNow().inWholeMicroseconds
-        Win32NativeWindowHost.recordFramePaintDurationUs(elapsedUs, stageOnly = true)
     }
 
     /**
@@ -165,7 +204,7 @@ object Win32LayeredStageHostHwnd {
         capH: Int,
         dstArgb: IntArray
     ): Boolean {
-        if (capW <= 0 || capH <= 0 || dstArgb.size < capW * capH) return false
+        if (stageHostsByHwnd.isEmpty() || capW <= 0 || capH <= 0 || dstArgb.size < capW * capH) return false
         var ancestor: HWND? = GetParent(childHwnd)
         var state: StageHostState? = null
         while (ancestor != null) {
@@ -305,21 +344,54 @@ object Win32LayeredStageHostHwnd {
             )
             val sc = spec.swapCount()
             state.lastSyncedSwapCount = sc
-            if (spec.isActiveStream() || spec.defaultAspectRatio != null) {
+            if (spec.isActiveStream() || spec.shouldPaintBlackBackdrop()) {
                 val hostHwnd = state.hostHandle.hwnd
+                val ancestorRoot = hostHwnd?.let { GetAncestor(it, GA_ROOT.toUInt()) }
+                    ?.takeIf { IsWindow(it) != 0 && it != Win32ControlMessageRouter.getOrCreateParkingHwnd() }
                 val topWindow = Win32NativeWindowHost.activeHwnd
-                val mapped = if (hostHwnd != null && topWindow != null && IsWindow(topWindow) != 0) {
-                    memScoped {
-                        val pt = alloc<POINT>()
-                        pt.x = 0
-                        pt.y = 0
-                        MapWindowPoints(hostHwnd, topWindow, pt.ptr, 1u)
-                        intArrayOf(pt.x, pt.y, pt.x + width, pt.y + height)
-                    }
+                val rootHost = ancestorRoot ?: (if (topWindow != null && IsWindow(topWindow) != 0) topWindow else hostHwnd)
+                val synced = if (rootHost != null) {
+                    Win32InteractiveSurfaceHwnd.syncSurfaceStageRectForHost(surfaceHandle, rootHost)
                 } else {
-                    intArrayOf(0, 0, width, height)
+                    false
                 }
-                Win32NativeWindowHost.recordVideoStageSwap(sc, mapped[0], mapped[1], mapped[2], mapped[3])
+                if (synced) {
+                    Win32NativeWindowHost.lastRenderedVideoSwapCount = sc
+                } else {
+                    val pres = DesktopInteractiveSurfaceSpec.computePresentationRect(
+                        width.toDouble(),
+                        height.toDouble(),
+                        spec.surfaceWidth().coerceAtLeast(1),
+                        spec.surfaceHeight().coerceAtLeast(1),
+                        spec
+                    )
+                    if (pres.clippedDstW > 0 && pres.clippedDstH > 0) {
+                        val mappedOrigin = if (hostHwnd != null && rootHost != null && hostHwnd != rootHost) {
+                            memScoped {
+                                val pt = alloc<POINT>()
+                                pt.x = pres.clippedDstX
+                                pt.y = pres.clippedDstY
+                                MapWindowPoints(hostHwnd, rootHost, pt.ptr, 1u)
+                                pt.x to pt.y
+                            }
+                        } else {
+                            pres.clippedDstX to pres.clippedDstY
+                        }
+                        Win32NativeWindowHost.recordVideoStageSwap(
+                            sc,
+                            mappedOrigin.first,
+                            mappedOrigin.second,
+                            mappedOrigin.first + pres.clippedDstW,
+                            mappedOrigin.second + pres.clippedDstH
+                        )
+                        Win32NativeWindowHost.updateVideoStageRect(
+                            mappedOrigin.first,
+                            mappedOrigin.second,
+                            pres.clippedDstW,
+                            pres.clippedDstH
+                        )
+                    }
+                }
             }
         } else {
             val bg = state.container.getEffectiveBackgroundColor()
@@ -355,7 +427,8 @@ object Win32LayeredStageHostHwnd {
             val visual = handle.attributes["styledVisuals"] as? StyledVisualSpec
             val isTranslucent = visual?.hasBackdropFilter == true ||
                 (visual?.backgroundColor?.a ?: 255) < 250 ||
-                handle.attributes["backdropFilter"] != null
+                handle.attributes["backdropFilter"] != null ||
+                (handle.actualWin32ClassName == "Static" && handle.isTransparentCtlColor)
             if (spec != null || isTranslucent) {
                 InvalidateRect(hwnd, null, 0)
             }

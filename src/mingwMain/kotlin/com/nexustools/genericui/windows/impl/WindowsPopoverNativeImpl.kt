@@ -80,10 +80,14 @@ class WindowsPopoverNativeImpl(
         }
     }
 
-    override fun onChildrenClearedNative() {
-        for (child in childImpls.toList()) {
+    override fun onChildrenClearedNative(clearedChildren: List<NativeImpl<*>>) {
+        for (child in clearedChildren) {
             val childHandle = child.nativeWidget as? Win32HwndHandle ?: continue
             Win32ControlMessageRouter.detachChildHwnd(childHandle)
+        }
+        val hostHwnd = nativeWidget.hwnd
+        if (hostHwnd != null && IsWindow(hostHwnd) != 0) {
+            InvalidateRect(hostHwnd, null, 0)
         }
     }
 

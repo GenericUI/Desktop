@@ -3,31 +3,43 @@
 package com.nexustools.genericui.windows.impl
 
 import com.nexustools.genericui.component.tabs.TabBarStyle
+import com.nexustools.genericui.component.tabs.TabIconPlacement
 import com.nexustools.genericui.component.tabs.TabPosition
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.layout.DesktopContainerLayoutController
 import com.nexustools.genericui.desktop.widget.DesktopTabContainerNativeImpl
-import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
+import com.nexustools.genericui.style.color.RgbaColor
+import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.windows.Win32ControlMessageRouter
+import com.nexustools.genericui.windows.Win32DwmUxThemeBridge
 import com.nexustools.genericui.windows.Win32HwndHandle
+import com.nexustools.genericui.windows.Win32NativeWindowHost
 import com.nexustools.genericui.windows.Win32RetainedControlSupport
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toLong
 import kotlinx.cinterop.wcstr
+import platform.windows.CreateSolidBrush
+import platform.windows.FillRect
+import platform.windows.HBRUSH
+import platform.windows.HWND
 import platform.windows.InvalidateRect
+import platform.windows.IsWindow
 import platform.windows.NM_RCLICK
 import platform.windows.RECT
+import platform.windows.ReleaseCapture
 import platform.windows.SWP_NOACTIVATE
 import platform.windows.SWP_NOZORDER
 import platform.windows.SW_HIDE
 import platform.windows.SW_SHOWNOACTIVATE
 import platform.windows.SendMessageW
+import platform.windows.SetCapture
 import platform.windows.SetWindowPos
 import platform.windows.ShowWindow
 import platform.windows.TCIF_TEXT
@@ -36,12 +48,16 @@ import platform.windows.TCM_ADJUSTRECT
 import platform.windows.TCM_DELETEALLITEMS
 import platform.windows.TCM_GETCURSEL
 import platform.windows.TCM_INSERTITEMW
-import platform.windows.TCM_SETITEMW
 import platform.windows.TCM_SETCURSEL
+import platform.windows.TCM_SETITEMW
 import platform.windows.TCN_SELCHANGE
 import platform.windows.TCS_BOTTOM
 import platform.windows.TCS_TABS
 import platform.windows.TCS_VERTICAL
+import platform.windows.WM_LBUTTONDOWN
+import platform.windows.WM_LBUTTONUP
+import platform.windows.WM_MOUSELEAVE
+import platform.windows.WM_MOUSEMOVE
 import platform.windows.WS_CHILD
 import platform.windows.WS_CLIPCHILDREN
 import platform.windows.WS_CLIPSIBLINGS
@@ -51,15 +67,52 @@ import platform.windows.WS_VISIBLE
 /**
  * Retained Win32 ComCtl32 `"SysTabControl32"` (`WC_TABCONTROLW`) implementation for `TabContainer`.
  *
- * Tab headers live natively inside `SysTabControl32` via `TCM_INSERTITEMW` / `TCM_SETITEMW` /
- * `TCM_SETCURSEL` / `TCN_SELCHANGE`, while tab content pages are parented inside the control's
- * `TCM_ADJUSTRECT` client rect and toggled with `SW_SHOWNOACTIVATE` / `SW_HIDE`.
+ * Uses `TCS_OWNERDRAWFIXED` + parent-reflected `WM_DRAWITEM` to render tab favicons, ellipsized
+ * titles, active selection accents, and hoverable/clickable `×` close buttons directly onto
+ * native ComCtl32 tab items, while tab content pages are parented inside `TCM_ADJUSTRECT`.
  */
 class WindowsTabContainerNativeImpl(
     widget: Win32HwndHandle = Win32HwndHandle("SysTabControl32")
 ) : DesktopTabContainerNativeImpl<Win32HwndHandle>(widget) {
 
+    companion object {
+        private const val TCS_OWNERDRAWFIXED_FLAG: Int = 0x2000
+        private const val TCM_GETITEMRECT_MSG: Int = 0x130A
+        private const val TCM_SETPADDING_MSG: Int = 0x132B
+        private const val ODS_SELECTED_FLAG: Int = 0x0001
+        private const val ODT_TAB_TYPE: Int = 101
+        private const val WM_CAPTURECHANGED_MSG: Int = 0x0215
+
+        private val cachedBrushes = HashMap<UInt, HBRUSH>()
+
+        private fun obtainBrush(colorRef: UInt): HBRUSH? =
+            cachedBrushes[colorRef] ?: CreateSolidBrush(colorRef)?.also { cachedBrushes[colorRef] = it }
+
+        internal fun closeButtonRectForTabBounds(
+            left: Int,
+            top: Int,
+            right: Int,
+            bottom: Int,
+            hasIcon: Boolean,
+            iconSizePx: Int,
+            closable: Boolean
+        ): Rect? = WindowsTabNativeImpl.computeTabHeaderMetrics(
+            rectLeft = left,
+            rectTop = top,
+            rectRight = right,
+            rectBottom = bottom,
+            hasIcon = hasIcon,
+            iconSizePx = iconSizePx,
+            iconPlacement = TabIconPlacement.START,
+            closable = closable
+        ).closeRect
+    }
+
     private var syncingSelection: Boolean = false
+    private var hoveredTabIndex: Int = -1
+    private var hoveredCloseIndex: Int = -1
+    private var pressedCloseIndex: Int = -1
+    private var lastAppliedPadX: Int = -1
 
     init {
         nativeWidget.attributes["nativeImpl"] = this
@@ -78,7 +131,8 @@ class WindowsTabContainerNativeImpl(
     }
 
     private fun resolveTabControlStyle(): Int {
-        var style = WS_CHILD or WS_VISIBLE or WS_TABSTOP or WS_CLIPCHILDREN or WS_CLIPSIBLINGS or TCS_TABS
+        var style = WS_CHILD or WS_VISIBLE or WS_TABSTOP or WS_CLIPCHILDREN or WS_CLIPSIBLINGS or
+            TCS_TABS or TCS_OWNERDRAWFIXED_FLAG
         when (tabPositionVal) {
             TabPosition.BOTTOM -> style = style or TCS_BOTTOM
             TabPosition.LEFT -> style = style or TCS_VERTICAL
@@ -86,6 +140,61 @@ class WindowsTabContainerNativeImpl(
             TabPosition.TOP -> Unit
         }
         return style
+    }
+
+    private fun computeDesiredPadX(): Int {
+        val hasAnyIcon = tabImpls.any {
+            val t = it as? WindowsTabNativeImpl
+            t != null && (t.decodedIconBuffer != null || !t.iconVal.isNullOrBlank())
+        }
+        val hasAnyClose = tabImpls.any { (it as? WindowsTabNativeImpl)?.closableVal == true }
+        return when {
+            hasAnyIcon && hasAnyClose -> 24
+            hasAnyIcon || hasAnyClose -> 18
+            else -> 10
+        }
+    }
+
+    private fun hitTestTabAt(hwnd: HWND, mx: Int, my: Int): Int {
+        return memScoped {
+            val rc = alloc<RECT>()
+            for (i in tabTitles.indices) {
+                if (SendMessageW(hwnd, TCM_GETITEMRECT_MSG.toUInt(), i.toULong(), rc.ptr.toLong()) != 0L) {
+                    if (mx in rc.left until rc.right && my in rc.top until rc.bottom) {
+                        return@memScoped i
+                    }
+                }
+            }
+            -1
+        }
+    }
+
+    internal fun hitTestTabCloseButtonAt(hwnd: HWND, mx: Int, my: Int): Int {
+        return memScoped {
+            val rc = alloc<RECT>()
+            for (i in tabTitles.indices) {
+                val tab = tabImpls.getOrNull(i) as? WindowsTabNativeImpl ?: continue
+                if (!tab.closableVal) continue
+                if (SendMessageW(hwnd, TCM_GETITEMRECT_MSG.toUInt(), i.toULong(), rc.ptr.toLong()) != 0L) {
+                    val closeRect = closeButtonRectForTabBounds(
+                        left = rc.left,
+                        top = rc.top,
+                        right = rc.right,
+                        bottom = rc.bottom,
+                        hasIcon = tab.decodedIconBuffer != null,
+                        iconSizePx = tab.iconSizePxVal,
+                        closable = true
+                    )
+                    if (closeRect != null &&
+                        mx in closeRect.x until (closeRect.x + closeRect.width) &&
+                        my in closeRect.y until (closeRect.y + closeRect.height)
+                    ) {
+                        return@memScoped i
+                    }
+                }
+            }
+            -1
+        }
     }
 
     private fun wireCallbacks() {
@@ -114,6 +223,139 @@ class WindowsTabContainerNativeImpl(
                 else -> null
             }
         }
+
+        nativeWidget.onDrawItemCallback = draw@{ disPtr ->
+            val dis = disPtr.pointed
+            if (dis.CtlType.toInt() != ODT_TAB_TYPE) return@draw null
+            val hdc = dis.hDC ?: return@draw null
+            val idx = dis.itemID.toInt()
+            if (idx !in tabTitles.indices) return@draw null
+
+            val rc = dis.rcItem
+            val isSelected = ((dis.itemState.toInt() and ODS_SELECTED_FLAG) != 0) || idx == selectedIndexVal
+            val isHovered = idx == hoveredTabIndex
+            val dark = Win32NativeWindowHost.isEffectivelyDarkTheme()
+
+            val bgRef = when {
+                isSelected -> if (dark) Win32DwmUxThemeBridge.colorRefRgb(50, 54, 62) else Win32DwmUxThemeBridge.colorRefRgb(255, 255, 255)
+                isHovered -> if (dark) Win32DwmUxThemeBridge.colorRefRgb(43, 46, 53) else Win32DwmUxThemeBridge.colorRefRgb(236, 239, 244)
+                else -> if (dark) Win32DwmUxThemeBridge.colorRefRgb(32, 34, 39) else Win32DwmUxThemeBridge.colorRefRgb(243, 244, 246)
+            }
+            val fgColor = when {
+                isSelected -> if (dark) RgbaColor(242, 245, 250) else RgbaColor(17, 24, 39)
+                isHovered -> if (dark) RgbaColor(225, 229, 236) else RgbaColor(31, 41, 55)
+                else -> if (dark) RgbaColor(180, 186, 196) else RgbaColor(75, 85, 99)
+            }
+            memScoped {
+                val fillRc = alloc<RECT>()
+                fillRc.left = rc.left
+                fillRc.top = rc.top
+                fillRc.right = rc.right
+                fillRc.bottom = rc.bottom
+                obtainBrush(bgRef)?.let { FillRect(hdc, fillRc.ptr, it) }
+
+                if (isSelected) {
+                    val accentRef = if (dark) Win32DwmUxThemeBridge.colorRefRgb(59, 130, 246) else Win32DwmUxThemeBridge.colorRefRgb(13, 110, 253)
+                    val accentRc = alloc<RECT>()
+                    accentRc.left = rc.left
+                    accentRc.right = rc.right
+                    if (tabPositionVal == TabPosition.BOTTOM) {
+                        accentRc.top = (rc.bottom - 2).coerceAtLeast(rc.top)
+                        accentRc.bottom = rc.bottom
+                    } else {
+                        accentRc.top = rc.top
+                        accentRc.bottom = (rc.top + 2).coerceAtMost(rc.bottom)
+                    }
+                    obtainBrush(accentRef)?.let { FillRect(hdc, accentRc.ptr, it) }
+                } else {
+                    val divRef = if (dark) Win32DwmUxThemeBridge.colorRefRgb(56, 60, 68) else Win32DwmUxThemeBridge.colorRefRgb(210, 214, 222)
+                    val divRc = alloc<RECT>()
+                    divRc.left = (rc.right - 1).coerceAtLeast(rc.left)
+                    divRc.top = rc.top + 4
+                    divRc.right = rc.right
+                    divRc.bottom = (rc.bottom - 4).coerceAtLeast(divRc.top + 1)
+                    obtainBrush(divRef)?.let { FillRect(hdc, divRc.ptr, it) }
+                }
+            }
+
+            val tabImpl = tabImpls.getOrNull(idx) as? WindowsTabNativeImpl
+            WindowsTabNativeImpl.paintTabHeaderContent(
+                hdc = hdc,
+                rectLeft = rc.left,
+                rectTop = rc.top,
+                rectRight = rc.right,
+                rectBottom = rc.bottom,
+                label = formatTabHeaderText(idx),
+                fontHandle = nativeWidget.fontHandle,
+                iconBuffer = tabImpl?.decodedIconBuffer,
+                iconSizePx = tabImpl?.iconSizePxVal ?: 16,
+                iconPlacement = TabIconPlacement.START,
+                tintToTheme = tabImpl?.tintImageToThemeVal ?: false,
+                fgColor = fgColor,
+                closable = tabImpl?.closableVal == true,
+                closeHovered = idx == hoveredCloseIndex,
+                closePressed = idx == pressedCloseIndex,
+                isDark = dark
+            )
+            1L
+        }
+
+        nativeWidget.customMessageCallback = msg@{ hwnd, msg, _, lParam ->
+            val mx = (lParam and 0xFFFFL).toShort().toInt()
+            val my = ((lParam shr 16) and 0xFFFFL).toShort().toInt()
+            when (msg.toInt()) {
+                WM_MOUSEMOVE -> {
+                    val nextTab = hitTestTabAt(hwnd, mx, my)
+                    val nextClose = hitTestTabCloseButtonAt(hwnd, mx, my)
+                    if (nextTab != hoveredTabIndex || nextClose != hoveredCloseIndex) {
+                        hoveredTabIndex = nextTab
+                        hoveredCloseIndex = nextClose
+                        InvalidateRect(hwnd, null, 0)
+                    }
+                    null
+                }
+                WM_MOUSELEAVE, WM_CAPTURECHANGED_MSG -> {
+                    if (hoveredTabIndex != -1 || hoveredCloseIndex != -1 || pressedCloseIndex != -1) {
+                        hoveredTabIndex = -1
+                        hoveredCloseIndex = -1
+                        pressedCloseIndex = -1
+                        InvalidateRect(hwnd, null, 0)
+                    }
+                    null
+                }
+                WM_LBUTTONDOWN -> {
+                    val closeIdx = hitTestTabCloseButtonAt(hwnd, mx, my)
+                    if (closeIdx >= 0) {
+                        pressedCloseIndex = closeIdx
+                        hoveredCloseIndex = closeIdx
+                        SetCapture(hwnd)
+                        InvalidateRect(hwnd, null, 0)
+                        return@msg 0L
+                    }
+                    null
+                }
+                WM_LBUTTONUP -> {
+                    if (pressedCloseIndex >= 0) {
+                        val target = pressedCloseIndex
+                        pressedCloseIndex = -1
+                        ReleaseCapture()
+                        val stillCloseIdx = hitTestTabCloseButtonAt(hwnd, mx, my)
+                        hoveredCloseIndex = stillCloseIdx
+                        InvalidateRect(hwnd, null, 0)
+                        if (stillCloseIdx == target && target in tabTitles.indices) {
+                            if (onTabCloseRequestedListener != null) {
+                                requestCloseTab(target)
+                            } else {
+                                (tabImpls.getOrNull(target) as? WindowsTabNativeImpl)?.onCloseClickedListener?.invoke()
+                            }
+                        }
+                        return@msg 0L
+                    }
+                    null
+                }
+                else -> null
+            }
+        }
     }
 
     private fun formatTabHeaderText(index: Int): String {
@@ -128,6 +370,11 @@ class WindowsTabContainerNativeImpl(
         val idx = tabImpls.indexOfFirst { it === tabImpl }
         if (idx < 0) return
         val hwnd = nativeWidget.hwnd ?: return
+        if (IsWindow(hwnd) == 0) return
+        if (computeDesiredPadX() != lastAppliedPadX) {
+            syncTabControlItems()
+            return
+        }
         val label = formatTabHeaderText(idx)
         memScoped {
             val item = alloc<TCITEMW>()
@@ -135,13 +382,16 @@ class WindowsTabContainerNativeImpl(
             item.pszText = label.wcstr.ptr
             SendMessageW(hwnd, TCM_SETITEMW.toUInt(), idx.toULong(), item.ptr.toLong())
         }
-        layoutPagesInDisplayRect()
+        InvalidateRect(hwnd, null, 0)
     }
 
     private fun syncTabControlItems() {
         val hwnd = nativeWidget.hwnd ?: return
         syncingSelection = true
         try {
+            val desiredPadX = computeDesiredPadX()
+            lastAppliedPadX = desiredPadX
+            SendMessageW(hwnd, TCM_SETPADDING_MSG.toUInt(), 0uL, ((6 shl 16) or (desiredPadX and 0xFFFF)).toLong())
             SendMessageW(hwnd, TCM_DELETEALLITEMS.toUInt(), 0uL, 0L)
             memScoped {
                 val item = alloc<TCITEMW>()
@@ -182,6 +432,7 @@ class WindowsTabContainerNativeImpl(
     private fun layoutPagesInDisplayRect() {
         val hwnd = nativeWidget.hwnd ?: return
         val displayRect = computeContentDisplayRect()
+        val insideBatch = Win32ControlMessageRouter.batchingHostLayoutDepth > 0
         for (i in contentImpls.indices) {
             val content = contentImpls[i] as? DesktopBaseNativeImpl<*> ?: continue
             val contentHandle = content.nativeWidget as? Win32HwndHandle ?: continue
@@ -192,22 +443,27 @@ class WindowsTabContainerNativeImpl(
             val isActive = i == selectedIndexVal && !isButtonTabIndex(i)
             ShowWindow(contentHwnd, if (isActive) SW_SHOWNOACTIVATE else SW_HIDE)
             if (isActive) {
-                content.setBounds(displayRect)
-                SetWindowPos(
-                    contentHwnd,
-                    null,
-                    displayRect.x,
-                    displayRect.y,
-                    displayRect.width,
-                    displayRect.height,
-                    (SWP_NOZORDER or SWP_NOACTIVATE).toUInt()
-                )
-                contentHandle.lastAppliedX = displayRect.x
-                contentHandle.lastAppliedY = displayRect.y
-                contentHandle.lastAppliedW = displayRect.width
-                contentHandle.lastAppliedH = displayRect.height
-                if (content is com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>) {
-                    content.layoutChildrenInBounds(displayRect.width.toFloat(), displayRect.height.toFloat())
+                val boundsChanged = content.getBounds() != displayRect
+                if (boundsChanged) {
+                    content.setBounds(displayRect)
+                }
+                if (insideBatch || !boundsChanged) {
+                    SetWindowPos(
+                        contentHwnd,
+                        null,
+                        displayRect.x,
+                        displayRect.y,
+                        displayRect.width,
+                        displayRect.height,
+                        (SWP_NOZORDER or SWP_NOACTIVATE).toUInt()
+                    )
+                    contentHandle.lastAppliedX = displayRect.x
+                    contentHandle.lastAppliedY = displayRect.y
+                    contentHandle.lastAppliedW = displayRect.width
+                    contentHandle.lastAppliedH = displayRect.height
+                    if (content is com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl<*>) {
+                        content.layoutChildrenInBounds(displayRect.width.toFloat(), displayRect.height.toFloat())
+                    }
                 }
             }
         }
@@ -320,12 +576,14 @@ class WindowsTabContainerNativeImpl(
         layoutPagesInDisplayRect()
     }
 
-    override fun onChildrenClearedNative() {
-        for (child in childImpls.toList()) {
+    override fun onChildrenClearedNative(clearedChildren: List<NativeImpl<*>>) {
+        for (child in clearedChildren) {
+            if (child is TabNativeImpl<*>) continue
             val childHandle = child.nativeWidget as? Win32HwndHandle ?: continue
             Win32ControlMessageRouter.detachChildHwnd(childHandle)
         }
         syncTabControlItems()
+        layoutPagesInDisplayRect()
     }
 
     override fun layoutChildrenInBounds(containerWidth: Float, containerHeight: Float) {

@@ -186,8 +186,8 @@ class WindowsLazyGridNativeImpl(
         }
     }
 
-    override fun onChildrenClearedNative() {
-        Win32RetainedControlSupport.onContainerChildrenCleared(nativeWidget, childImpls.toList())
+    override fun onChildrenClearedNative(clearedChildren: List<NativeImpl<*>>) {
+        Win32RetainedControlSupport.onContainerChildrenCleared(nativeWidget, clearedChildren)
     }
 
     override fun onNativeBoundsChanged(rect: Rect) {

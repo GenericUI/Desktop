@@ -25,26 +25,30 @@ import javax.swing.text.JTextComponent
  * [JPasswordField], scrollable multiline [JTextArea], optional field label header, translucent
  * placeholder painting, and live [DocumentListener] change callbacks.
  */
-class SwingTextInputImpl(
-    initialMultiline: Boolean = false
-) : SwingBaseNativeImpl(JPanel(BorderLayout(0, 4)).apply { isOpaque = false }, "form-control"), TextInputNativeImpl<JComponent> {
+open class SwingTextInputImpl(
+    initialMultiline: Boolean = false,
+    rootComponent: JPanel = JPanel(BorderLayout(0, 4)).apply { isOpaque = false },
+    classPrefix: String = "form-control",
+    private val editorShellPanel: JPanel? = null
+) : SwingBaseNativeImpl(rootComponent, classPrefix), TextInputNativeImpl<JComponent> {
 
-    private val rootPanel: JPanel = nativeWidget as JPanel
-    private val headerLabel: JLabel = JLabel().apply { isVisible = false }
+    protected val rootPanel: JPanel = nativeWidget as JPanel
+    protected val headerLabel: JLabel = JLabel().apply { isVisible = false }
+    private val editorHostContainer: JPanel = editorShellPanel ?: rootPanel
 
-    private var placeholderVal: String = ""
-    private var labelText: String? = null
-    private var readOnlyState: Boolean = false
-    private var passwordModeState: Boolean = false
-    private var multilineState: Boolean = initialMultiline
-    private var focusedStateVal: Boolean = false
+    protected var placeholderVal: String = ""
+    protected var labelText: String? = null
+    protected var readOnlyState: Boolean = false
+    protected var passwordModeState: Boolean = false
+    protected var multilineState: Boolean = initialMultiline
+    protected var focusedStateVal: Boolean = false
     private var suppressDocumentEvents: Boolean = false
     private var lastObservedText: String = ""
     private var onValueChangedListener: ((String) -> Unit)? = null
     private var onSubmitListener: ((String) -> Unit)? = null
 
     var activeEditor: JTextComponent = createEditor(multiline = initialMultiline, password = false)
-        private set
+        protected set
 
     private val documentListener = object : DocumentListener {
         override fun insertUpdate(e: DocumentEvent?) = dispatchDocumentChange()
@@ -54,6 +58,9 @@ class SwingTextInputImpl(
 
     init {
         rootPanel.add(headerLabel, BorderLayout.NORTH)
+        if (editorShellPanel != null) {
+            rootPanel.add(editorShellPanel, BorderLayout.CENTER)
+        }
         mountEditor(activeEditor)
     }
 
@@ -138,14 +145,30 @@ class SwingTextInputImpl(
         val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
         focusedStateVal = effective
         com.nexustools.genericui.event.InputFocusManager.isNativeTextInputFocused = effective
-        if (effective && !activeEditor.isFocusOwner) {
-            activeEditor.requestFocusInWindow()
+        if (effective) {
+            requestAwtFocusOnEdt(activeEditor)
+        } else {
+            clearAwtFocusOnEdtIfOwner(activeEditor)
         }
     }
 
     override fun isFocusedState(): Boolean = focusedStateVal || activeEditor.isFocusOwner
 
     fun requestFocus(): Boolean = isEffectivelyFocusableInSwing() && isEnabled() && activeEditor.requestFocusInWindow()
+
+    override fun applyResolvedTypographyFont() {
+        super.applyResolvedTypographyFont()
+        val resolved = nativeWidget.font ?: return
+        activeEditor.font = resolved
+        headerLabel.font = resolved
+    }
+
+    protected open fun onEditorMounted(editor: JTextComponent, container: JComponent) {}
+
+    protected open fun resolvePlaceholderColor(comp: JTextComponent): Color {
+        val fg = comp.foreground ?: Color.DARK_GRAY
+        return Color(fg.red, fg.green, fg.blue, 128)
+    }
 
     private fun dispatchDocumentChange() {
         if (suppressDocumentEvents) return
@@ -160,9 +183,9 @@ class SwingTextInputImpl(
         val preservedText = getValue()
         val preservedEnabled = activeEditor.isEnabled
         activeEditor.document.removeDocumentListener(documentListener)
-        val centerComponent = (rootPanel.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER)
+        val centerComponent = (editorHostContainer.layout as BorderLayout).getLayoutComponent(BorderLayout.CENTER)
         if (centerComponent != null) {
-            rootPanel.remove(centerComponent)
+            editorHostContainer.remove(centerComponent)
         }
         val next = createEditor(multiline = multilineState, password = passwordModeState)
         next.isEditable = !readOnlyState
@@ -187,7 +210,7 @@ class SwingTextInputImpl(
         editor.addFocusListener(object : FocusAdapter() {
             override fun focusGained(e: FocusEvent?) {
                 if (!isEffectivelyFocusableInSwing()) {
-                    java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
+                    clearAwtFocusOnEdtIfOwner(editor)
                     setFocusedState(false)
                     return
                 }
@@ -212,7 +235,8 @@ class SwingTextInputImpl(
         } else {
             editor
         }
-        rootPanel.add(content, BorderLayout.CENTER)
+        editorHostContainer.add(content, BorderLayout.CENTER)
+        onEditorMounted(editor, content)
     }
 
     private fun createEditor(multiline: Boolean, password: Boolean): JTextComponent = when {
@@ -247,8 +271,7 @@ class SwingTextInputImpl(
         val g2 = g.create() as? Graphics2D ?: return
         try {
             g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-            val fg = comp.foreground ?: Color.DARK_GRAY
-            g2.color = Color(fg.red, fg.green, fg.blue, 128)
+            g2.color = resolvePlaceholderColor(comp)
             g2.font = comp.font
             val insets = comp.insets
             val fm = g2.fontMetrics

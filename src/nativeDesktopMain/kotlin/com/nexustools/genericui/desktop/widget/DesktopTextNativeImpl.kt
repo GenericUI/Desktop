@@ -31,6 +31,27 @@ open class DesktopTextNativeImpl<out W : DesktopNativeWidget>(
         return componentClassPrefix.split(' ').any { it.equals("badge", ignoreCase = true) }
     }
 
+    private fun normalizedSemanticTag(): String =
+        ((nativeWidget.attributes["tagName"] as? String)?.takeIf { it.isNotBlank() } ?: tagName)
+            .trim()
+            .lowercase()
+
+    fun defaultSemanticFontSizePx(): Float? = when (normalizedSemanticTag()) {
+        "h1" -> 32f
+        "h2" -> 26f
+        "h3" -> 22f
+        "h4" -> 18f
+        "h5" -> 16f
+        "h6" -> 14f
+        "small" -> 11f
+        else -> null
+    }
+
+    fun defaultSemanticFontWeight(): Int? = when (normalizedSemanticTag()) {
+        "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b" -> 700
+        else -> null
+    }
+
     override fun acceptsTypographyStyles(): Boolean = true
 
     override fun setText(text: String) {

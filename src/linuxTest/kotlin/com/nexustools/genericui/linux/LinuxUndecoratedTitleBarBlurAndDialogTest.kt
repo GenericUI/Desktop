@@ -4,7 +4,7 @@ package com.nexustools.genericui.linux
 
 import com.nexustools.genericui.component.action.Button
 import com.nexustools.genericui.component.action.DropdownButton
-import com.nexustools.genericui.component.action.StyledButton
+import com.nexustools.genericui.component.action.styled.StyledButton
 import com.nexustools.genericui.component.dialog.DialogWindow
 import com.nexustools.genericui.component.form.Select
 import com.nexustools.genericui.component.form.SelectOption

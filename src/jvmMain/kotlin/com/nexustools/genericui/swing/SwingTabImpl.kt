@@ -3,6 +3,8 @@ package com.nexustools.genericui.swing
 import com.nexustools.genericui.component.tabs.TabIconPlacement
 import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
+import com.nexustools.genericui.res.Resources
+import com.nexustools.genericui.style.color.RgbaColor
 import java.awt.Component
 import java.awt.FlowLayout
 import java.awt.Insets
@@ -12,6 +14,7 @@ import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.io.File
 import javax.swing.BorderFactory
 import javax.swing.BoxLayout
 import javax.swing.JButton
@@ -36,7 +39,7 @@ class SwingTabImpl(
 
     private val headerPanel: JPanel = nativeWidget as JPanel
     private val pinLabel: JLabel = JLabel("📌").apply { isVisible = false }
-    private val iconLabel: JLabel = JLabel().apply { isVisible = false }
+    val iconLabel: JLabel = JLabel().apply { isVisible = false }
     val titleLabel: JLabel = JLabel("")
     val titleEditor: JTextField = JTextField(12).apply { isVisible = false }
     val dirtyLabel: JLabel = JLabel("•").apply { isVisible = false }
@@ -71,6 +74,8 @@ class SwingTabImpl(
     var editableVal: Boolean = false
         private set
     var dirtyVal: Boolean = false
+        private set
+    var pinnedVal: Boolean = false
         private set
     var customHeaderComponent: JComponent? = null
         private set
@@ -134,8 +139,13 @@ class SwingTabImpl(
             titleLabel.foreground
         }
         titleLabel.foreground = tabFg
+        pinLabel.foreground = tabFg
+        iconLabel.foreground = tabFg
         dirtyLabel.foreground = tabFg
         closeButton.foreground = tabFg
+        if (!iconVal.isNullOrBlank() && tintImageToThemeVal) {
+            syncSwingTabIcon()
+        }
     }
 
     fun beginTitleEdit() {
@@ -212,15 +222,37 @@ class SwingTabImpl(
     }
 
     private fun syncHeaderLayout() {
-        if (iconPlacementVal == TabIconPlacement.TOP && !iconVal.isNullOrBlank()) {
+        val hasIcon = !iconVal.isNullOrBlank()
+        if (hasIcon && iconPlacementVal == TabIconPlacement.TOP) {
             headerPanel.layout = BoxLayout(headerPanel, BoxLayout.Y_AXIS)
             iconLabel.alignmentX = Component.CENTER_ALIGNMENT
             titleLabel.alignmentX = Component.CENTER_ALIGNMENT
         } else {
             headerPanel.layout = FlowLayout(FlowLayout.LEFT, 4, 0)
         }
+        val iconIdx = headerPanel.components.indexOf(iconLabel)
+        val titleIdx = headerPanel.components.indexOf(titleLabel)
+        if (iconIdx >= 0 && titleIdx >= 0 && iconIdx > titleIdx) {
+            headerPanel.setComponentZOrder(iconLabel, titleIdx)
+        }
         headerPanel.revalidate()
         headerPanel.repaint()
+        headerPanel.parent?.revalidate()
+        headerPanel.parent?.repaint()
+    }
+
+    private fun looksLikeImageOrVectorSpec(raw: String): Boolean {
+        if (raw.contains("://") || raw.contains('/') || raw.contains('\\')) return true
+        if (raw.startsWith("<svg", ignoreCase = true) || raw.startsWith("data:", ignoreCase = true)) return true
+        val lower = raw.substringBefore('?').substringBefore('#').lowercase()
+        if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
+            lower.endsWith(".gif") || lower.endsWith(".webp") || lower.endsWith(".bmp") ||
+            lower.endsWith(".ico") || lower.endsWith(".svg")
+        ) {
+            return true
+        }
+        if (Resources.getDrawable(raw) != null) return true
+        return File(raw).isFile
     }
 
     private fun syncSwingTabIcon() {
@@ -234,13 +266,32 @@ class SwingTabImpl(
             syncHeaderLayout()
             return
         }
+        if (!looksLikeImageOrVectorSpec(rawIcon)) {
+            iconLabel.icon = null
+            iconLabel.text = rawIcon
+            iconLabel.isVisible = true
+            syncHeaderLayout()
+            return
+        }
+        iconLabel.text = ""
         iconLabel.isVisible = true
         syncHeaderLayout()
-        activeIconLoadJob = SwingControlTintRenderUtil.loadScaledIconAsync(rawIcon, iconSizePxVal) { icon ->
+        val fg = titleLabel.foreground
+        val tintRgba = RgbaColor(fg.red, fg.green, fg.blue, fg.alpha)
+        val isDark = SwingControlTintRenderUtil.resolveIsDark(closeButton)
+        activeIconLoadJob = SwingControlTintRenderUtil.loadScaledIconAsync(
+            iconSpec = rawIcon,
+            targetSizePx = iconSizePxVal,
+            tintToTheme = tintImageToThemeVal,
+            tintColor = tintRgba,
+            isDarkTheme = isDark
+        ) { icon ->
             iconLabel.icon = icon
             iconLabel.revalidate()
             headerPanel.revalidate()
             headerPanel.repaint()
+            headerPanel.parent?.revalidate()
+            headerPanel.parent?.repaint()
         }
     }
 
@@ -252,8 +303,11 @@ class SwingTabImpl(
 
     override fun setClosableNative(closable: Boolean) {
         closableVal = closable
-        closeButton.isVisible = closable
+        closeButton.isVisible = closable && !pinnedVal
         headerPanel.revalidate()
+        headerPanel.repaint()
+        headerPanel.parent?.revalidate()
+        headerPanel.parent?.repaint()
     }
 
     override fun setDirtyNative(dirty: Boolean) {
@@ -265,8 +319,13 @@ class SwingTabImpl(
     }
 
     override fun setPinnedNative(pinned: Boolean) {
+        pinnedVal = pinned
         pinLabel.isVisible = pinned
+        closeButton.isVisible = closableVal && !pinned
         headerPanel.revalidate()
+        headerPanel.repaint()
+        headerPanel.parent?.revalidate()
+        headerPanel.parent?.repaint()
     }
 
     override fun setEditableNative(editable: Boolean) {

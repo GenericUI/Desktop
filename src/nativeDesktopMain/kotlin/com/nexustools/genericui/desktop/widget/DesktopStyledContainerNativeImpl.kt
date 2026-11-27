@@ -7,6 +7,7 @@ import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
 import com.nexustools.genericui.style.css.ComponentStyle
 import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.StyledVisualSpec
+import com.nexustools.genericui.style.policy.AestheticStylePolicy
 
 /**
  * Shared desktop base implementation of [StyledContainerNativeImpl] across `:windows`, `:macos`, `:gtk`, and `:kde`.
@@ -22,7 +23,7 @@ open class DesktopStyledContainerNativeImpl<out W : DesktopNativeWidget>(
     private val styledDelegate = DesktopStyledWidgetDelegate(
         owner = this,
         visualsAttributeKey = "styledContainerVisuals",
-        allowsBootstrapTypeTint = false,
+        allowsBootstrapTypeTint = AestheticStylePolicy.isBootstrapSpecificNonControlTagOrPrefix(tagName, classPrefix),
         onOpacitySynced = { op -> applyResolvedOpacity(op, notifyTree = false) },
         onStyleSynced = { notifyStyleSyncedIfReady() }
     )
@@ -53,7 +54,9 @@ open class DesktopStyledContainerNativeImpl<out W : DesktopNativeWidget>(
 
     override fun acceptsTypographyStyles(): Boolean = true
 
-    override fun acceptsBootstrapSemanticColors(): Boolean = isHostedInCustomStyleEngine()
+    override fun acceptsBootstrapSemanticColors(): Boolean =
+        isHostedInCustomStyleEngine() ||
+            AestheticStylePolicy.isBootstrapSpecificNonControlTagOrPrefix(tagName, componentClassPrefix)
 
     override fun applyComponentBootstrap(bootstrap: ComponentBootstrap) {
         styledDelegate.invalidate()

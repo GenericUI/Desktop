@@ -18,6 +18,7 @@ import platform.windows.PBS_MARQUEE
 import platform.windows.PBS_SMOOTH
 import platform.windows.SendMessageW
 import platform.windows.SetWindowLongPtrW
+import platform.windows.WM_TIMER
 import platform.windows.WS_CHILD
 import platform.windows.WS_CLIPSIBLINGS
 import platform.windows.WS_VISIBLE
@@ -30,6 +31,9 @@ class WindowsProgressBarNativeImpl(
     widget: Win32HwndHandle = Win32HwndHandle("msctls_progress32")
 ) : DesktopProgressBarNativeImpl<Win32HwndHandle>(widget) {
 
+    private var lastAppliedPos: Int = -1
+    private var lastMarqueeActive: Boolean = false
+
     init {
         nativeWidget.attributes["nativeImpl"] = this
         val hwnd = Win32ControlMessageRouter.createChildHwnd(
@@ -41,10 +45,22 @@ class WindowsProgressBarNativeImpl(
             initialHeight = 16,
             installSubclass = true
         )
+        nativeWidget.customMessageCallback = { _, msg, _, _ ->
+            // Suppress ComCtl32's internal pulse/tween WM_TIMER in determinate mode so
+            // consecutive captures of identical values remain pixel-deterministic while
+            // preserving marquee animations when indeterminate/busy.
+            if (msg.toInt() == WM_TIMER && !indeterminateState && !busyState) {
+                0L
+            } else {
+                null
+            }
+        }
         SendMessageW(hwnd, PBM_SETRANGE32.toUInt(), 0uL, 1000L)
         syncProgressState()
         Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = false)
     }
+
+    override fun acceptsBootstrapSemanticColors(): Boolean = false
 
     private fun syncProgressState() {
         val hwnd = nativeWidget.hwnd ?: return
@@ -56,14 +72,29 @@ class WindowsProgressBarNativeImpl(
                 SetWindowLongPtrW(hwnd, GWL_STYLE, style.toLong())
             }
             SendMessageW(hwnd, PBM_SETMARQUEE.toUInt(), 1uL, 30L)
+            lastMarqueeActive = true
         } else {
+            val wasMarquee = lastMarqueeActive
             if ((style and PBS_MARQUEE) != 0) {
                 style = style and PBS_MARQUEE.inv()
                 SetWindowLongPtrW(hwnd, GWL_STYLE, style.toLong())
                 SendMessageW(hwnd, PBM_SETMARQUEE.toUInt(), 0uL, 0L)
             }
+            lastMarqueeActive = false
             val pos = (progressValue.coerceIn(0f, 1f) * 1000f).roundToInt().coerceIn(0, 1000)
-            SendMessageW(hwnd, PBM_SETPOS.toUInt(), pos.toULong(), 0L)
+            if (wasMarquee || lastAppliedPos != pos) {
+                // Step downward to cancel ComCtl32's forward grow animation timer immediately.
+                if (pos >= 1000) {
+                    SendMessageW(hwnd, PBM_SETRANGE32.toUInt(), 0uL, 1001L)
+                    SendMessageW(hwnd, PBM_SETPOS.toUInt(), 1001uL, 0L)
+                    SendMessageW(hwnd, PBM_SETPOS.toUInt(), 1000uL, 0L)
+                    SendMessageW(hwnd, PBM_SETRANGE32.toUInt(), 0uL, 1000L)
+                } else {
+                    SendMessageW(hwnd, PBM_SETPOS.toUInt(), (pos + 1).toULong(), 0L)
+                    SendMessageW(hwnd, PBM_SETPOS.toUInt(), pos.toULong(), 0L)
+                }
+                lastAppliedPos = pos
+            }
         }
     }
 

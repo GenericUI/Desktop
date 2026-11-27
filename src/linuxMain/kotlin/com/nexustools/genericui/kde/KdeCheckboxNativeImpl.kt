@@ -201,6 +201,12 @@ class KdeCheckboxNativeImpl(
     override fun onNativeStyleSynced() { syncToggleToWidget() }
     override fun requestRepaintNative() { nativeWidget.requestRepaint() }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        KdePainterSupport.syncWidgetFocus(this, isFocusedState())
+        nativeWidget.requestRepaint()
+    }
+
     override fun dispose() {
         nativeWidget.destroyQWidget()
         super.dispose()

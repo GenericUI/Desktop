@@ -94,6 +94,11 @@ open class KdeDropdownNativeImpl(
     }
     override fun onNativeTransformChanged(transform: CssTransform?) { nativeWidget.requestRepaint() }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        KdePainterSupport.syncWidgetFocus(this, isFocusedState())
+    }
+
     override fun dispose() {
         qMenuPtr = null
         kActionMenuPtr = null

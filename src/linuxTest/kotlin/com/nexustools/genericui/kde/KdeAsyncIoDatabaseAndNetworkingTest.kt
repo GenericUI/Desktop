@@ -7,10 +7,10 @@ import com.nexustools.genericui.component.dialog.DialogWindow
 import com.nexustools.genericui.component.form.CheckBox
 import com.nexustools.genericui.component.form.TextField
 import com.nexustools.genericui.component.layout.Container
-import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.layout.VStack
 import com.nexustools.genericui.component.shell.Window
-import com.nexustools.genericui.component.surface.StyledComponent
+import com.nexustools.genericui.component.surface.styled.StyledComponent
 import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget

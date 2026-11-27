@@ -2,6 +2,7 @@
 
 package com.nexustools.genericui.windows.impl
 
+import com.nexustools.genericui.desktop.system.DesktopConfigDirectoryHelper
 import com.nexustools.genericui.desktop.widget.DesktopImageNativeImpl
 import com.nexustools.genericui.enums.ui.ObjectFit
 import com.nexustools.genericui.geometry.Rect
@@ -9,24 +10,26 @@ import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.image.ImageBuffer
 import com.nexustools.genericui.image.ImageDecodeOptions
 import com.nexustools.genericui.image.ImageFormat
+import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.image.ImageSource
+import com.nexustools.genericui.image.PixelFormat
+import com.nexustools.genericui.image.cache.ImageCacheManager
 import com.nexustools.genericui.res.DataUrlCodec
-import com.nexustools.genericui.resources.ResourceID
-import com.nexustools.genericui.resources.ResourceType
 import com.nexustools.genericui.style.color.ImageTintMode
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssCursorValue
+import com.nexustools.genericui.threading.GenericUiThreading
 import com.nexustools.genericui.windows.Win32ControlMessageRouter
 import com.nexustools.genericui.windows.Win32Direct2dBackdropBlurEngine
 import com.nexustools.genericui.windows.Win32HwndHandle
 import com.nexustools.genericui.windows.Win32NativeWindowHost
 import com.nexustools.genericui.windows.Win32RetainedControlSupport
 import com.nexustools.genericui.windows.Win32StyledWidgetHelper
-import com.nexustools.genericui.windows.WindowsResourceResolverImpl
 import com.nexustools.genericui.windows.WindowsWicImageCodecNativeImpl
 import platform.windows.HDC
 import platform.windows.HWND
 import platform.windows.InvalidateRect
+import platform.windows.IsWindow
 import platform.windows.WS_CHILD
 import platform.windows.WS_CLIPSIBLINGS
 import platform.windows.WS_VISIBLE
@@ -42,6 +45,12 @@ import kotlin.math.roundToInt
 class WindowsImageNativeImpl(
     widget: Win32HwndHandle = Win32HwndHandle("GenericUIImageW")
 ) : DesktopImageNativeImpl<Win32HwndHandle>(widget) {
+
+    companion object {
+        private val fallbackCodec: WindowsWicImageCodecNativeImpl by lazy {
+            WindowsWicImageCodecNativeImpl()
+        }
+    }
 
     init {
         nativeWidget.attributes["nativeImpl"] = this
@@ -61,17 +70,67 @@ class WindowsImageNativeImpl(
     override fun setSourceUrl(url: String?) {
         super.setSourceUrl(url)
         val trimmed = url?.trim()
+        val gen = loadGeneration
         if (!trimmed.isNullOrEmpty() && loadedImageBuffer == null) {
-            tryDecodeSynchronously(trimmed)?.let { decoded ->
-                notifyAsyncLoadSucceeded(decoded)
+            val decoded = tryDecodeSynchronously(trimmed)
+            if (decoded != null) {
+                if (gen == loadGeneration) {
+                    notifyAsyncLoadSucceeded(decoded)
+                }
+                return
+            }
+            if (trimmed.startsWith("http://", ignoreCase = true) ||
+                trimmed.startsWith("https://", ignoreCase = true)
+            ) {
+                markLoading(true)
+                val decodeOpts = ImageDecodeOptions(
+                    preferredPixelFormat = PixelFormat.RGBA_8888,
+                    antialiasing = antialiasingState
+                )
+                activeLoadJob = ImageLoader.launchLoad(
+                    source = ImageSource.fromUrl(trimmed),
+                    options = decodeOpts,
+                    onLoaded = { buf ->
+                        GenericUiThreading.runOnUi {
+                            if (gen == loadGeneration) {
+                                notifyAsyncLoadSucceeded(buf)
+                            }
+                        }
+                    },
+                    onError = {
+                        GenericUiThreading.runOnUi {
+                            if (gen == loadGeneration) {
+                                notifyAsyncLoadFailed()
+                            }
+                        }
+                    }
+                )
             }
         }
-        nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+        nativeWidget.hwnd?.let { hwnd ->
+            if (IsWindow(hwnd) != 0) InvalidateRect(hwnd, null, 0)
+        }
+    }
+
+    override fun notifyAsyncLoadSucceeded(buffer: ImageBuffer?) {
+        super.notifyAsyncLoadSucceeded(buffer)
+        nativeWidget.hwnd?.let { hwnd ->
+            if (IsWindow(hwnd) != 0) InvalidateRect(hwnd, null, 0)
+        }
+    }
+
+    override fun notifyAsyncLoadFailed() {
+        super.notifyAsyncLoadFailed()
+        nativeWidget.hwnd?.let { hwnd ->
+            if (IsWindow(hwnd) != 0) InvalidateRect(hwnd, null, 0)
+        }
     }
 
     override fun setImageBuffer(buffer: ImageBuffer?) {
         super.setImageBuffer(buffer)
-        nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+        nativeWidget.hwnd?.let { hwnd ->
+            if (IsWindow(hwnd) != 0) InvalidateRect(hwnd, null, 0)
+        }
     }
 
     override fun setTintColor(color: RgbaColor?) {
@@ -94,22 +153,61 @@ class WindowsImageNativeImpl(
         nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
     }
 
+    private fun decodeWithActiveOrFallback(source: ImageSource, options: ImageDecodeOptions): ImageBuffer? {
+        val active = ImageLoader.activeNativeCodec
+        return active?.decode(source, options)
+            ?: if (active !is WindowsWicImageCodecNativeImpl) {
+                fallbackCodec.decode(source, options)
+            } else {
+                null
+            }
+    }
+
     private fun tryDecodeSynchronously(url: String): ImageBuffer? {
-        val codec = WindowsWicImageCodecNativeImpl()
+        val options = ImageDecodeOptions(
+            preferredPixelFormat = PixelFormat.RGBA_8888,
+            antialiasing = antialiasingState
+        )
+        if (url.startsWith("memory://", ignoreCase = true)) {
+            ImageLoader.resolveMemoryBuffer(url)?.let { return it }
+        }
+        ImageLoader.getWeakImageReference(url)?.let { return it }
+        ImageCacheManager.getMemoryCached(url)?.let { return it }
+
         return when {
             url.startsWith("data:", ignoreCase = true) -> {
                 val bytes = DataUrlCodec.decodeBytes(url) ?: return null
-                codec.decode(ImageSource.fromBytes(bytes, ImageFormat.detectFromHeader(bytes)), ImageDecodeOptions())
+                decodeWithActiveOrFallback(
+                    ImageSource.fromBytes(bytes, ImageFormat.detectFromHeader(bytes)),
+                    options
+                )
             }
             url.startsWith("res://", ignoreCase = true) || url.startsWith("drawable/", ignoreCase = true) -> {
-                val rel = url.removePrefix("res://").trimStart('/')
-                val bytes = WindowsResourceResolverImpl().resolveBytes(
-                    ResourceID(0, ResourceType.DRAWABLE, rel.substringAfterLast('/'), rel)
-                ) ?: return null
-                codec.decode(ImageSource.fromBytes(bytes, ImageFormat.detectFromHeader(bytes)), ImageDecodeOptions())
+                val bytes = DesktopConfigDirectoryHelper.readResourceOrLocalFile(url)
+                    ?: Win32NativeWindowHost.resolveGenericUiIconBytes(url)
+                    ?: return null
+                decodeWithActiveOrFallback(
+                    ImageSource.fromBytes(bytes, ImageFormat.detectFromHeader(bytes)),
+                    options
+                )
             }
             !url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true) -> {
-                codec.decode(ImageSource.fromFile(url.removePrefix("file:///").removePrefix("file://")), ImageDecodeOptions())
+                val resolvedPath = DesktopConfigDirectoryHelper.resolveLocalAssetFilePath(url)
+                if (resolvedPath != null) {
+                    val fileBytes = DesktopConfigDirectoryHelper.readBytesFromFile(resolvedPath)
+                    if (fileBytes != null && fileBytes.isNotEmpty()) {
+                        return decodeWithActiveOrFallback(
+                            ImageSource.fromBytes(fileBytes, ImageFormat.detectFromHeader(fileBytes)),
+                            options
+                        )
+                    }
+                    decodeWithActiveOrFallback(ImageSource.fromFile(resolvedPath), options)
+                } else {
+                    decodeWithActiveOrFallback(
+                        ImageSource.fromFile(url.removePrefix("file:///").removePrefix("file://")),
+                        options
+                    )
+                }
             }
             else -> null
         }

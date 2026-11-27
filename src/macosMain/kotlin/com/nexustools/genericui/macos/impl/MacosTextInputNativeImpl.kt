@@ -584,6 +584,23 @@ class MacosTextInputNativeImpl(
         }
     }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        val focusTarget: NSView? = multilineTextView
+            ?: searchField
+            ?: secureField
+            ?: singleLineField
+            ?: numberView?.textField
+            ?: datePicker
+            ?: colorWell
+        MacosFocusSupport.syncViewFirstResponder(
+            targetView = focusTarget,
+            focused = isFocusedState(),
+            effectivelyFocusable = nativeWidget.isEffectivelyFocusable(),
+            enabled = nativeWidget.enabled
+        )
+    }
+
     override fun onNativeBoundsChanged(rect: Rect) {
         if (!MacosAppKitDispatch.isMainThread()) {
             MacosAppKitDispatch.onMainOrDefer { onNativeBoundsChanged(nativeWidget.bounds) }

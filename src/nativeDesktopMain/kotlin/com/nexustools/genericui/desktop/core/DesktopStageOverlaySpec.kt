@@ -26,6 +26,7 @@ class DesktopStageOverlaySpec(
         widget.attributes["onBeforeTargetFramePresent"] = { sc: Long, ts: Double? ->
             onBeforeTargetFramePresent?.invoke(sc, ts)
         }
+        widget.notifyTreeInvalidated()
     }
 
     companion object {

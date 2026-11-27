@@ -33,6 +33,7 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
     defaultWindowIconPath = "icon.ico"
 ) {
     private var suppressHostSync: Boolean = false
+    private var hasShownNativeWindow: Boolean = false
 
     init {
         Win32WinMain.ensureWindowsControlsInitialized()
@@ -66,12 +67,15 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         }
     }
 
-    override fun onChildrenClearedNative() {
-        for (child in childImpls.toList()) {
+    override fun onChildrenClearedNative(clearedChildren: List<NativeImpl<*>>) {
+        for (child in clearedChildren) {
             val handle = child.nativeWidget as? Win32HwndHandle ?: continue
             Win32ControlMessageRouter.detachChildHwnd(handle)
         }
-        super.onChildrenClearedNative()
+        Win32NativeWindowHost.resolveHwndForWindow(this)?.let { hostHwnd ->
+            Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+        }
+        super.onChildrenClearedNative(clearedChildren)
     }
 
     val titleBarKind: Win32TitleBarKind
@@ -154,6 +158,11 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
             Win32NativeWindowHost.updateMainWindowTitle(this, title)
         }
+    }
+
+    override fun setWindowIcon(iconPathOrSvg: String?) {
+        super.setWindowIcon(iconPathOrSvg)
+        Win32NativeWindowHost.updateWindowIcon(this, iconPathOrSvg)
     }
 
     override fun isUndecorated(): Boolean = super.isUndecorated()
@@ -393,7 +402,9 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
         super.onNativeBoundsChanged(rect)
         val hostHwnd = Win32NativeWindowHost.resolveHwndForWindow(this)
         if (hostHwnd != null) {
-            Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+            if (!Win32NativeWindowHost.isInsideHostWmSize(hostHwnd)) {
+                Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+            }
         } else if (rect.width > 0 && rect.height > 0) {
             layoutChildrenInBounds(rect.width.toFloat(), rect.height.toFloat())
         }
@@ -401,12 +412,21 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
 
     override fun setVisible(visible: Boolean) {
         super.setVisible(visible)
-        if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
+        if (visible) {
+            nativeWidget.dwStyle = nativeWidget.dwStyle or Win32HwndHandle.WS_VISIBLE
+        } else {
+            nativeWidget.dwStyle = nativeWidget.dwStyle and Win32HwndHandle.WS_VISIBLE.inv()
+        }
+        Win32ControlMessageRouter.applyVisibility(nativeWidget, visible)
+        if ((hasShownNativeWindow && WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) ||
+            Win32NativeWindowHost.hasWindow(this)
+        ) {
             Win32NativeWindowHost.setWindowVisible(this, visible)
         }
     }
 
     override fun showWindow() {
+        hasShownNativeWindow = true
         val visible = isVisible()
         if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
             Win32NativeWindowHost.createAndShowWin32Window(this, startHidden = !visible)
@@ -418,8 +438,11 @@ class WindowsWindowNativeImpl : DesktopWindowNativeImpl<Win32HwndHandle>(
 
     override fun closeWindow() {
         super.closeWindow()
-        if (isDisposed && (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this))) {
-            Win32NativeWindowHost.closeSecondaryOrPrimaryWindow(this)
+        if (isDisposed) {
+            hasShownNativeWindow = false
+            if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled || Win32NativeWindowHost.hasWindow(this)) {
+                Win32NativeWindowHost.closeSecondaryOrPrimaryWindow(this)
+            }
         }
     }
 }

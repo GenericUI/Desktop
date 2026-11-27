@@ -191,6 +191,11 @@ class GtkDropdownNativeImpl(
     override fun onNativeTransformChanged(transform: CssTransform?) = GtkWidgetLifecycleBridge.onTransformChanged(this, transform)
     override fun onNativeStyleSynced() = GtkWidgetLifecycleBridge.onStyleSynced(this)
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        GtkWidgetLifecycleBridge.syncNativeFocus(this, isFocusedState())
+    }
+
     override fun dispose() {
         splitPrimaryClickRef?.dispose()
         splitPrimaryClickRef = null

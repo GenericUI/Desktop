@@ -17,6 +17,7 @@ import com.nexustools.genericui.component.shell.MenuItem
 import com.nexustools.genericui.component.shell.Window
 import com.nexustools.genericui.component.tabs.Tab
 import com.nexustools.genericui.component.tabs.TabContainer
+import com.nexustools.genericui.component.tabs.TabIconPlacement
 import com.nexustools.genericui.component.tabs.TabPosition
 import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.AbstractComponent
@@ -31,13 +32,16 @@ import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.image.ImageBuffer
+import com.nexustools.genericui.image.ImageColorSpace
 import com.nexustools.genericui.image.PixelFormat
+import com.nexustools.genericui.linux.LinuxTabIconHelper
 import com.nexustools.genericui.linux.titlebar.LinuxTitleBarProfileManager
 import com.nexustools.genericui.linux.titlebar.LinuxTitleBarThemeFamily
 import com.nexustools.genericui.linux.titlebar.LinuxTitleButtonKind
 import com.nexustools.genericui.linux.titlebar.LinuxWmDetector
 import com.nexustools.genericui.linux.titlebar.LinuxWmEnvironmentSnapshot
 import com.nexustools.genericui.linux.titlebar.LinuxWmType
+import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.window.TitleBar
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -664,5 +668,26 @@ class KdeLinuxTitleBarAndMdiTest {
             KdeApplicationNativeImpl.interactiveKdeGuiEnabled = prevInteractive
             GenericUI.activeFactory = prevFactory
         }
+    }
+
+    @Test
+    fun kdeTabNativeImplTracksIconTintClosableAndPinnedMetadata() {
+        val tab = KdeTabNativeImpl(closable = false)
+        assertFalse(tab.closableVal)
+        tab.setTitleNative("Docs")
+        tab.setIconNative("https://kotlinlang.org/favicon.ico")
+        tab.setIconSizePxNative(18)
+        tab.setIconPlacementNative(TabIconPlacement.START)
+        tab.setTintImageToThemeNative(false)
+        tab.setClosableNative(true)
+
+        assertTrue(tab.closableVal)
+        assertFalse(tab.tintImageToThemeVal)
+        assertEquals(18, tab.iconSizePxVal)
+        assertTrue(LinuxTabIconHelper.looksLikeImageOrVectorSpec(tab.iconVal!!))
+
+        tab.setPinnedNative(true)
+        assertTrue(tab.pinnedVal)
+        tab.dispose()
     }
 }

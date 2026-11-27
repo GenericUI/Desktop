@@ -334,6 +334,8 @@ internal object KdeDynamicBindings {
     private var fnQWidgetSetFixedWidth: CPointer<CFunction<(COpaquePointer, Int) -> Unit>>? = null
     private var fnQWidgetSetFixedHeight: CPointer<CFunction<(COpaquePointer, Int) -> Unit>>? = null
     private var fnQWidgetSetPalette: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
+    private var fnQWidgetSetStyleSheet: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
+    private var fnQWidgetSetAutoFillBackground: CPointer<CFunction<(COpaquePointer, Byte) -> Unit>>? = null
     private var fnQWidgetSetFont: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
     private var fnQWidgetRaise: CPointer<CFunction<(COpaquePointer) -> Unit>>? = null
     private var fnQWidgetLower: CPointer<CFunction<(COpaquePointer) -> Unit>>? = null
@@ -495,6 +497,7 @@ internal object KdeDynamicBindings {
     private var fnQLineEditSetPlaceholder: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
     private var fnQLineEditSetReadOnly: CPointer<CFunction<(COpaquePointer, Byte) -> Unit>>? = null
     private var fnQLineEditSetEchoMode: CPointer<CFunction<(COpaquePointer, Int) -> Unit>>? = null
+    private var fnQLineEditSetFrame: CPointer<CFunction<(COpaquePointer, Byte) -> Unit>>? = null
     private var fnQPlainTextCtor: CPointer<CFunction<(COpaquePointer, COpaquePointer?) -> Unit>>? = null
     private var fnQPlainTextSetText: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
     private var fnQPlainTextSetPlaceholder: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
@@ -574,6 +577,9 @@ internal object KdeDynamicBindings {
     private var fnQTabBarSetTabsClosable: CPointer<CFunction<(COpaquePointer, Byte) -> Unit>>? = null
     private var fnQTabBarSetShape: CPointer<CFunction<(COpaquePointer, Int) -> Unit>>? = null
     private var fnQTabBarSetExpanding: CPointer<CFunction<(COpaquePointer, Byte) -> Unit>>? = null
+    private var fnQTabBarSetTabIcon: CPointer<CFunction<(COpaquePointer, Int, COpaquePointer) -> Unit>>? = null
+    private var fnQTabBarSetTabButton: CPointer<CFunction<(COpaquePointer, Int, Int, COpaquePointer?) -> Unit>>? = null
+    private var fnQTabBarSetIconSize: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
     private var fnQStackedWidgetCtor: CPointer<CFunction<(COpaquePointer, COpaquePointer?) -> Unit>>? = null
     private var fnQStackedWidgetAddWidget: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Int>>? = null
     private var fnQStackedWidgetRemoveWidget: CPointer<CFunction<(COpaquePointer, COpaquePointer) -> Unit>>? = null
@@ -901,6 +907,8 @@ internal object KdeDynamicBindings {
         fnQWidgetSetFixedWidth = requireSym(hWidgets, "_ZN7QWidget13setFixedWidthEi").reinterpret()
         fnQWidgetSetFixedHeight = requireSym(hWidgets, "_ZN7QWidget14setFixedHeightEi").reinterpret()
         fnQWidgetSetPalette = requireSym(hWidgets, "_ZN7QWidget10setPaletteERK8QPalette").reinterpret()
+        fnQWidgetSetStyleSheet = optSym(hWidgets, "_ZN7QWidget13setStyleSheetERK7QString")?.reinterpret()
+        fnQWidgetSetAutoFillBackground = optSym(hWidgets, "_ZN7QWidget21setAutoFillBackgroundEb")?.reinterpret()
         fnQWidgetSetFont = requireSym(hWidgets, "_ZN7QWidget7setFontERK5QFont").reinterpret()
         fnQWidgetRaise = requireSym(hWidgets, "_ZN7QWidget5raiseEv").reinterpret()
         fnQWidgetLower = requireSym(hWidgets, "_ZN7QWidget5lowerEv").reinterpret()
@@ -1066,6 +1074,7 @@ internal object KdeDynamicBindings {
         fnQLineEditSetPlaceholder = requireSym(hWidgets, "_ZN9QLineEdit18setPlaceholderTextERK7QString").reinterpret()
         fnQLineEditSetReadOnly = optSym(hWidgets, "_ZN9QLineEdit11setReadOnlyEb")?.reinterpret()
         fnQLineEditSetEchoMode = requireSym(hWidgets, "_ZN9QLineEdit11setEchoModeENS_8EchoModeE").reinterpret()
+        fnQLineEditSetFrame = optSym(hWidgets, "_ZN9QLineEdit8setFrameEb")?.reinterpret()
         fnQPlainTextCtor = requireSym(hWidgets, "_ZN14QPlainTextEditC1EP7QWidget").reinterpret()
         fnQPlainTextSetText = requireSym(hWidgets, "_ZN14QPlainTextEdit12setPlainTextERK7QString").reinterpret()
         fnQPlainTextSetPlaceholder = requireSym(hWidgets, "_ZN14QPlainTextEdit18setPlaceholderTextERK7QString").reinterpret()
@@ -1146,6 +1155,9 @@ internal object KdeDynamicBindings {
         fnQTabBarSetTabsClosable = requireSym(hWidgets, "_ZN7QTabBar15setTabsClosableEb").reinterpret()
         fnQTabBarSetShape = requireSym(hWidgets, "_ZN7QTabBar8setShapeENS_5ShapeE").reinterpret()
         fnQTabBarSetExpanding = requireSym(hWidgets, "_ZN7QTabBar12setExpandingEb").reinterpret()
+        fnQTabBarSetTabIcon = optSym(hWidgets, "_ZN7QTabBar10setTabIconEiRK5QIcon")?.reinterpret()
+        fnQTabBarSetTabButton = optSym(hWidgets, "_ZN7QTabBar12setTabButtonEiNS_14ButtonPositionEP7QWidget")?.reinterpret()
+        fnQTabBarSetIconSize = optSym(hWidgets, "_ZN7QTabBar11setIconSizeERK5QSize")?.reinterpret()
         fnQStackedWidgetCtor = requireSym(hWidgets, "_ZN14QStackedWidgetC1EP7QWidget").reinterpret()
         fnQStackedWidgetAddWidget = requireSym(hWidgets, "_ZN14QStackedWidget9addWidgetEP7QWidget").reinterpret()
         fnQStackedWidgetRemoveWidget = requireSym(hWidgets, "_ZN14QStackedWidget12removeWidgetEP7QWidget").reinterpret()
@@ -3005,6 +3017,51 @@ internal object KdeDynamicBindings {
     fun getComboBoxCurrentIndex(combo: COpaquePointer): Int = fnQComboBoxCurrentIndex?.invoke(combo) ?: -1
     fun setComboBoxCurrentIndex(combo: COpaquePointer, idx: Int) { fnQComboBoxSetCurrentIndex?.invoke(combo, idx) }
 
+    fun setWidgetStyleSheet(widget: COpaquePointer, css: String) {
+        withTempQString(css) { q -> fnQWidgetSetStyleSheet?.invoke(widget, q) }
+    }
+
+    fun setWidgetAutoFillBackground(widget: COpaquePointer, enabled: Boolean) {
+        fnQWidgetSetAutoFillBackground?.invoke(widget, if (enabled) 1 else 0)
+    }
+
+    fun setLineEditFrame(le: COpaquePointer, hasFrame: Boolean) {
+        fnQLineEditSetFrame?.invoke(le, if (hasFrame) 1 else 0)
+    }
+
+    fun setFrameShape(frame: COpaquePointer, shape: Int) {
+        fnQFrameSetShape?.invoke(frame, shape)
+    }
+
+    fun applyStyledInputPalette(widget: COpaquePointer, textFg: RgbaColor, placeholderFg: RgbaColor) {
+        if (!ensureLoaded()) return
+        memScoped {
+            val pal = allocArray<LongVar>(4)
+            fnQPaletteCtor?.invoke(pal)
+            try {
+                fun setRole(group: Int, role: Int, rgba: RgbaColor) {
+                    val col = allocArray<LongVar>(4)
+                    val br = allocArray<LongVar>(2)
+                    setQColorRgba(col, rgba)
+                    fnQBrushCtorColor?.invoke(br, col, BRUSH_SOLID_PATTERN)
+                    fnQPaletteSetBrush?.invoke(pal, group, role, br)
+                    fnQBrushDtor?.invoke(br)
+                }
+                val transparent = RgbaColor(0, 0, 0, 0)
+                for (group in intArrayOf(0 /*Active*/, 1 /*Disabled*/, 2 /*Inactive*/)) {
+                    setRole(group, 9 /*Base*/, transparent)
+                    setRole(group, 10 /*Window*/, transparent)
+                    setRole(group, 6 /*Text*/, textFg)
+                    setRole(group, 0 /*WindowText*/, textFg)
+                    setRole(group, 20 /*PlaceholderText*/, placeholderFg)
+                }
+                fnQWidgetSetPalette?.invoke(widget, pal)
+            } finally {
+                fnQPaletteDtor?.invoke(pal)
+            }
+        }
+    }
+
     fun setLineEditState(le: COpaquePointer, text: String, placeholder: String, readOnly: Boolean, password: Boolean) {
         withTempQString(text) { q -> fnQLineEditSetText?.invoke(le, q) }
         withTempQString(placeholder) { q -> fnQLineEditSetPlaceholder?.invoke(le, q) }
@@ -3119,6 +3176,9 @@ internal object KdeDynamicBindings {
 
     fun splitterSetOrientation(sp: COpaquePointer, vertical: Boolean) { fnQSplitterSetOrientation?.invoke(sp, if (vertical) VERTICAL else HORIZONTAL) }
 
+    const val TAB_BUTTON_LEFT = 0
+    const val TAB_BUTTON_RIGHT = 1
+
     fun tabBarAddTab(tb: COpaquePointer, title: String): Int = withTempQString(title) { q -> fnQTabBarAddTab?.invoke(tb, q) ?: -1 }
     fun tabBarInsertTab(tb: COpaquePointer, idx: Int, title: String): Int = withTempQString(title) { q -> fnQTabBarInsertTab?.invoke(tb, idx, q) ?: -1 }
     fun tabBarRemoveTab(tb: COpaquePointer, idx: Int) { fnQTabBarRemoveTab?.invoke(tb, idx) }
@@ -3127,6 +3187,76 @@ internal object KdeDynamicBindings {
     fun tabBarSetClosable(tb: COpaquePointer, closable: Boolean) { fnQTabBarSetTabsClosable?.invoke(tb, if (closable) 1 else 0) }
     fun tabBarSetShape(tb: COpaquePointer, shape: Int) { fnQTabBarSetShape?.invoke(tb, shape) }
     fun tabBarSetExpanding(tb: COpaquePointer, exp: Boolean) { fnQTabBarSetExpanding?.invoke(tb, if (exp) 1 else 0) }
+
+    fun tabBarSetIconSize(tb: COpaquePointer, widthPx: Int, heightPx: Int) {
+        val fn = fnQTabBarSetIconSize ?: return
+        memScoped {
+            val sz = alloc<LongVar>()
+            sz.value = widthPx.coerceAtLeast(1).toLong() or (heightPx.coerceAtLeast(1).toLong() shl 32)
+            fn.invoke(tb, sz.ptr)
+        }
+    }
+
+    fun tabBarClearTabIcon(tb: COpaquePointer, idx: Int) {
+        val fn = fnQTabBarSetTabIcon ?: return
+        memScoped {
+            val icon = allocArray<LongVar>(2)
+            fnQIconCtorEmpty?.invoke(icon)
+            fn.invoke(tb, idx, icon)
+            fnQIconDtor?.invoke(icon)
+        }
+    }
+
+    fun tabBarSetTabIconFromBuffer(tb: COpaquePointer, idx: Int, buffer: com.nexustools.genericui.image.ImageBuffer): Boolean {
+        val fn = fnQTabBarSetTabIcon ?: return false
+        val w = buffer.width
+        val h = buffer.height
+        if (w <= 0 || h <= 0) return false
+        val rgba = buffer.toRgba8888()
+        val img = createQImage(w, h, IMAGE_FORMAT_ARGB32_PREMULTIPLIED)
+        val bitsPtr = qImageBits(img)
+        if (bitsPtr == null) {
+            destroyQImage(img)
+            return false
+        }
+        val bpl = qImageBytesPerLine(img).takeIf { it >= w * 4 } ?: (w * 4)
+        val src = rgba.bytes
+        val rowBuf = IntArray(w)
+        for (y in 0 until h) {
+            val srcRowBase = y * w * 4
+            for (x in 0 until w) {
+                val o = srcRowBase + x * 4
+                val r = src[o].toInt() and 0xFF
+                val g = src[o + 1].toInt() and 0xFF
+                val b = src[o + 2].toInt() and 0xFF
+                val a = src[o + 3].toInt() and 0xFF
+                val pr = if (a == 255) r else (r * a + 127) / 255
+                val pg = if (a == 255) g else (g * a + 127) / 255
+                val pb = if (a == 255) b else (b * a + 127) / 255
+                rowBuf[x] = (a shl 24) or (pr shl 16) or (pg shl 8) or pb
+            }
+            val dstRow = (bitsPtr.rawValue.toLong() + (y.toLong() * bpl.toLong())).toCPointer<ByteVar>()!!
+            rowBuf.usePinned { pinned ->
+                memcpy(dstRow, pinned.addressOf(0), (w * 4).convert())
+            }
+        }
+        memScoped {
+            val pm = allocArray<LongVar>(4)
+            fnQPixmapCtorEmpty?.invoke(pm)
+            fnQPixmapConvertFromImage?.invoke(pm, img, 0)
+            val icon = allocArray<LongVar>(2)
+            fnQIconCtorPixmap?.invoke(icon, pm)
+            fn.invoke(tb, idx, icon)
+            fnQIconDtor?.invoke(icon)
+            fnQPixmapDtor?.invoke(pm)
+        }
+        destroyQImage(img)
+        return true
+    }
+
+    fun tabBarHideTabCloseButton(tb: COpaquePointer, idx: Int) {
+        fnQTabBarSetTabButton?.invoke(tb, idx, TAB_BUTTON_RIGHT, null)
+    }
 
     fun stackedAddWidget(st: COpaquePointer, w: COpaquePointer): Int = fnQStackedWidgetAddWidget?.invoke(st, w) ?: -1
     fun stackedRemoveWidget(st: COpaquePointer, w: COpaquePointer) { fnQStackedWidgetRemoveWidget?.invoke(st, w) }

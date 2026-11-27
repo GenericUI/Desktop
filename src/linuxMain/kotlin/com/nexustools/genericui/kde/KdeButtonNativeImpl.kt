@@ -142,6 +142,11 @@ open class KdeButtonNativeImpl(
     override fun onNativeStyleSynced() { syncLabelAndStyleToLiveWidget() }
     override fun requestRepaintNative() { nativeWidget.requestRepaint() }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        KdePainterSupport.syncWidgetFocus(this, isFocusedState())
+    }
+
     override fun dispose() {
         nativeWidget.destroyQWidget()
         super.dispose()

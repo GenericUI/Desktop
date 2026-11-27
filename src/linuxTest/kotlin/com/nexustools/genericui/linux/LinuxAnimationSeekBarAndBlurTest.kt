@@ -3,11 +3,11 @@
 package com.nexustools.genericui.linux
 
 import com.nexustools.genericui.animation.AnimationSpec
-import com.nexustools.genericui.component.action.StyledButton
-import com.nexustools.genericui.component.form.StyledSlider
+import com.nexustools.genericui.component.action.styled.StyledButton
+import com.nexustools.genericui.component.form.styled.StyledSlider
 import com.nexustools.genericui.component.layout.Container
 import com.nexustools.genericui.component.shell.Window
-import com.nexustools.genericui.component.surface.StyledComponent
+import com.nexustools.genericui.component.surface.styled.StyledComponent
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget

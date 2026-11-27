@@ -3,12 +3,14 @@
 package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
+import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.widget.DesktopButtonNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopImageNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopTextNativeImpl
 import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.enums.css.CssBorderStyle
+import com.nexustools.genericui.enums.css.CssUnit
 import com.nexustools.genericui.image.ImageBuffer
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
@@ -31,6 +33,7 @@ import kotlinx.cinterop.ptr
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.set
 import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.toLong
 import kotlinx.cinterop.usePinned
 import kotlinx.cinterop.value
 import platform.windows.AC_SRC_ALPHA
@@ -43,6 +46,8 @@ import platform.windows.BLENDFUNCTION
 import platform.windows.BitBlt
 import platform.windows.CreateCompatibleDC
 import platform.windows.CreateDIBSection
+import platform.windows.CreatePen
+import platform.windows.CreateSolidBrush
 import platform.windows.DIB_RGB_COLORS
 import platform.windows.DT_CENTER
 import platform.windows.DT_END_ELLIPSIS
@@ -54,21 +59,27 @@ import platform.windows.DT_VCENTER
 import platform.windows.DeleteDC
 import platform.windows.DeleteObject
 import platform.windows.DrawTextW
+import platform.windows.FillRect
 import platform.windows.GW_HWNDNEXT
 import platform.windows.GdiFlush
 import platform.windows.GetParent
 import platform.windows.GetWindow
 import platform.windows.GetWindowRect
 import platform.windows.HBITMAP
+import platform.windows.HBRUSH
 import platform.windows.HDC
 import platform.windows.HFONT
 import platform.windows.HGDIOBJ
+import platform.windows.HPEN
 import platform.windows.HWND
 import platform.windows.IsWindowVisible
 import platform.windows.MapWindowPoints
 import platform.windows.POINT
+import platform.windows.PS_INSIDEFRAME
+import platform.windows.PS_SOLID
 import platform.windows.PrintWindow
 import platform.windows.RECT
+import platform.windows.RoundRect
 import platform.windows.SRCCOPY
 import platform.windows.SelectObject
 import platform.windows.SetBkMode
@@ -111,6 +122,102 @@ object Win32StyledWidgetHelper {
 
     private var backdropCaptureDepth: Int = 0
 
+    private class CachedEffectiveSpec(
+        val selfAttrVer: Long,
+        val stateBits: Int,
+        val spec: StyledVisualSpec
+    )
+
+    private val cachedSolidBrushes = HashMap<UInt, HBRUSH>()
+    private val cachedSolidPens = HashMap<Long, HPEN>()
+    private val cachedAncestorBgByHwnd = HashMap<Long, RgbaColor>()
+    private val cachedInTransparentDwmByHwnd = HashMap<Long, Boolean>()
+    private var cachedAncestorBgMutationVer: Long = -1L
+    private var cachedAncestorBgIsDark: Boolean = false
+    private val cachedEffectiveSpecsByHwnd = HashMap<Long, CachedEffectiveSpec>()
+    private var cachedSpecMutationVer: Long = -1L
+    private var cachedSpecIsDark: Boolean = false
+
+    internal var ancestorBgCacheEpoch: Long = 0L
+
+    internal fun invalidateAncestorBackgroundCache(hwnd: HWND? = null) {
+        ancestorBgCacheEpoch++
+        if (hwnd == null) {
+            cachedAncestorBgByHwnd.clear()
+            cachedInTransparentDwmByHwnd.clear()
+            cachedAncestorBgMutationVer = -1L
+            cachedEffectiveSpecsByHwnd.clear()
+            cachedSpecMutationVer = -1L
+        } else {
+            val key = hwnd.toLong()
+            cachedAncestorBgByHwnd.remove(key)
+            cachedInTransparentDwmByHwnd.remove(key)
+            cachedEffectiveSpecsByHwnd.remove(key)
+        }
+    }
+
+    private var scratchSurfacePixels = IntArray(0)
+    private var scratchCapturePixels = IntArray(0)
+    private var scratchStagePixels = IntArray(0)
+    private var scratchTextBeforeWords = IntArray(0)
+    private var scratchFilterPixels = IntArray(0)
+
+    private fun obtainScratchSurfacePixels(needed: Int): IntArray {
+        if (scratchSurfacePixels.size < needed) {
+            scratchSurfacePixels = IntArray(needed)
+        }
+        return scratchSurfacePixels
+    }
+
+    private fun obtainScratchCapturePixels(needed: Int): IntArray {
+        if (scratchCapturePixels.size < needed) {
+            scratchCapturePixels = IntArray(needed)
+        }
+        return scratchCapturePixels
+    }
+
+    private fun obtainScratchStagePixels(needed: Int): IntArray {
+        if (scratchStagePixels.size < needed) {
+            scratchStagePixels = IntArray(needed)
+        }
+        return scratchStagePixels
+    }
+
+    private fun obtainScratchTextBeforeWords(needed: Int): IntArray {
+        if (scratchTextBeforeWords.size < needed) {
+            scratchTextBeforeWords = IntArray(needed)
+        }
+        return scratchTextBeforeWords
+    }
+
+    private fun obtainScratchFilterPixels(needed: Int): IntArray {
+        if (scratchFilterPixels.size < needed) {
+            scratchFilterPixels = IntArray(needed)
+        }
+        return scratchFilterPixels
+    }
+
+    private fun obtainSolidBrush(color: RgbaColor): HBRUSH? {
+        val colorRef = Win32DwmUxThemeBridge.colorRefRgb(color.r, color.g, color.b)
+        return obtainSolidBrushRef(colorRef)
+    }
+
+    private fun obtainSolidBrushRef(colorRef: UInt): HBRUSH? =
+        cachedSolidBrushes[colorRef] ?: CreateSolidBrush(colorRef)?.also {
+            cachedSolidBrushes[colorRef] = it
+        }
+
+    private fun obtainSolidPen(widthPx: Int, color: RgbaColor, insideFrame: Boolean = false): HPEN? {
+        val colorRef = Win32DwmUxThemeBridge.colorRefRgb(color.r, color.g, color.b)
+        val style = if (insideFrame) PS_INSIDEFRAME else PS_SOLID
+        val key = ((style.toLong() and 0xFFL) shl 48) or
+            ((widthPx.toLong() and 0xFFFFL) shl 32) or
+            colorRef.toLong()
+        return cachedSolidPens[key] ?: CreatePen(style, widthPx, colorRef)?.also {
+            cachedSolidPens[key] = it
+        }
+    }
+
     /**
      * Paints a custom retained child [Win32HwndHandle] into its `WM_PAINT` [hdc].
      */
@@ -119,16 +226,30 @@ object Win32StyledWidgetHelper {
         hwnd: HWND,
         hdc: HDC,
         width: Int,
-        height: Int
+        height: Int,
+        dirtyLeft: Int = 0,
+        dirtyTop: Int = 0,
+        dirtyRight: Int = width,
+        dirtyBottom: Int = height
     ) {
         if (width <= 0 || height <= 0) return
-        val owner = entry?.ownerImpl
         val isDark = Win32NativeWindowHost.isEffectivelyDarkTheme()
 
-        if (entry == null || owner == null) {
-            fillSolidParentBackdrop(hwnd, hdc, width, height, isDark)
+        if (entry == null || entry.ownerImpl == null) {
+            fillSolidParentBackdrop(
+                hwnd = hwnd,
+                hdc = hdc,
+                width = width,
+                height = height,
+                isDark = isDark,
+                dirtyLeft = dirtyLeft,
+                dirtyTop = dirtyTop,
+                dirtyRight = dirtyRight,
+                dirtyBottom = dirtyBottom
+            )
             return
         }
+        val owner = entry.ownerImpl!!
 
         val resolvedClass = entry.actualWin32ClassName
         val spec = resolveEffectiveVisualSpec(entry, owner, resolvedClass, isDark)
@@ -142,7 +263,17 @@ object Win32StyledWidgetHelper {
         }
 
         if (!hasContentSpec && textLabel.isNullOrBlank()) {
-            fillSolidParentBackdrop(hwnd, hdc, width, height, isDark)
+            fillSolidParentBackdrop(
+                hwnd = hwnd,
+                hdc = hdc,
+                width = width,
+                height = height,
+                isDark = isDark,
+                dirtyLeft = dirtyLeft,
+                dirtyTop = dirtyTop,
+                dirtyRight = dirtyRight,
+                dirtyBottom = dirtyBottom
+            )
             return
         }
 
@@ -163,7 +294,12 @@ object Win32StyledWidgetHelper {
             fontHandle = entry.fontHandle,
             text = textLabel,
             textColorOverride = resolveTextColorForSpec(entry, owner, spec, resolvedClass, isDark),
-            iconBuffer = iconBuffer
+            iconBuffer = iconBuffer,
+            cornerRadii = resolveCornerRadii(entry, owner, spec, width, height),
+            dirtyLeft = dirtyLeft,
+            dirtyTop = dirtyTop,
+            dirtyRight = dirtyRight,
+            dirtyBottom = dirtyBottom
         )
     }
 
@@ -192,7 +328,7 @@ object Win32StyledWidgetHelper {
     ) {
         if (width <= 0 || height <= 0) return
         val isDark = Win32NativeWindowHost.isEffectivelyDarkTheme()
-        val spec = resolveBootstrapButtonVisualSpec(owner, isDark)
+        val spec = resolveEffectiveVisualSpec(entry, owner, "Button", isDark)
         val iconBuffer = resolveChildIconBuffer(entry)
         renderStyledSpecToHdc(
             hwnd = hwnd,
@@ -211,9 +347,47 @@ object Win32StyledWidgetHelper {
 
     /**
      * Resolves the effective [StyledVisualSpec] for custom surface, button, semantic container,
-     * and badge child `HWND`s.
+     * and badge child `HWND`s, cached per `HWND` against `(selfAttrMutationVersion, stateBits)`
+     * and non-overlay mutation/theme versions.
      */
     fun resolveEffectiveVisualSpec(
+        entry: Win32HwndHandle,
+        owner: DesktopBaseNativeImpl<*>,
+        win32Class: String,
+        isDark: Boolean
+    ): StyledVisualSpec {
+        val ver = DesktopNativeWidget.globalNonOverlayMutationVersion
+        if (cachedSpecMutationVer != ver || cachedSpecIsDark != isDark) {
+            cachedEffectiveSpecsByHwnd.clear()
+            cachedSpecMutationVer = ver
+            cachedSpecIsDark = isDark
+        }
+        val stateBits = (if (owner.isHoveredState()) 1 else 0) or
+            (if (owner.isActivePressedState()) 2 else 0) or
+            (if (owner.isFocusedState()) 4 else 0) or
+            (if (owner.isEnabled()) 8 else 0)
+        val hwndKey = entry.hwnd?.toLong()
+        if (hwndKey != null) {
+            val cached = cachedEffectiveSpecsByHwnd[hwndKey]
+            if (cached != null &&
+                cached.selfAttrVer == entry.selfAttrMutationVersion &&
+                cached.stateBits == stateBits
+            ) {
+                return cached.spec
+            }
+        }
+        val spec = computeEffectiveVisualSpec(entry, owner, win32Class, isDark)
+        if (hwndKey != null) {
+            cachedEffectiveSpecsByHwnd[hwndKey] = CachedEffectiveSpec(
+                selfAttrVer = entry.selfAttrMutationVersion,
+                stateBits = stateBits,
+                spec = spec
+            )
+        }
+        return spec
+    }
+
+    private fun computeEffectiveVisualSpec(
         entry: Win32HwndHandle,
         owner: DesktopBaseNativeImpl<*>,
         win32Class: String,
@@ -346,7 +520,106 @@ object Win32StyledWidgetHelper {
      * background gradient/color, rounded SDF clipping, borders, focus ring, optional ClearType text,
      * and all 10 foreground `filter` ops) into a double-buffered 32-bpp DIB and blits cleanly to [hdc].
      */
-    fun renderStyledSpecToHdc(
+    internal data class ResolvedCornerRadii(
+        val topLeft: Float,
+        val topRight: Float,
+        val bottomRight: Float,
+        val bottomLeft: Float,
+        val chromiumFilletEarPx: Float = 0f,
+        val skipBottomBorder: Boolean = false
+    ) {
+        val isUniform: Boolean
+            get() = abs(topLeft - topRight) <= 0.1f &&
+                abs(topRight - bottomRight) <= 0.1f &&
+                abs(bottomRight - bottomLeft) <= 0.1f &&
+                chromiumFilletEarPx <= 0.1f
+
+        val maxRadius: Float
+            get() = max(max(topLeft, topRight), max(bottomRight, bottomLeft))
+    }
+
+    internal fun resolveCornerRadii(
+        entry: Win32HwndHandle?,
+        owner: DesktopBaseNativeImpl<*>?,
+        spec: StyledVisualSpec,
+        width: Int,
+        height: Int
+    ): ResolvedCornerRadii {
+        val maxCap = (min(width, height) * 0.5f).coerceAtLeast(0f)
+        val baseFallback = (spec.borderRadiusPx ?: 0f).coerceIn(0f, maxCap)
+        if (owner == null) {
+            return ResolvedCornerRadii(baseFallback, baseFallback, baseFallback, baseFallback)
+        }
+        val eff = owner.resolveEffectiveStyle()
+        val activeState = when {
+            !owner.isEnabled() -> eff?.disabledStyle
+            owner.isActivePressedState() -> eff?.activeStyle
+            owner.isFocusedState() -> eff?.focusStyle
+            owner.isHoveredState() -> eff?.hoverStyle
+            else -> null
+        }
+        val compR = owner.getComponentStyle()?.getBorderRadius()
+        val refMin = min(width, height).toFloat().coerceAtLeast(1f)
+
+        fun resolveCorner(explicitStatePx: Float?, stateRadiiLen: com.nexustools.genericui.style.css.CssLength?, effPx: Float?, effLen: com.nexustools.genericui.style.css.CssLength?, compLen: com.nexustools.genericui.style.css.CssLength?): Float? {
+            if (explicitStatePx != null) return explicitStatePx.coerceIn(0f, maxCap)
+            if (stateRadiiLen != null) {
+                val px = if (stateRadiiLen.unit == CssUnit.PERCENT) stateRadiiLen.value * 0.01f * refMin else stateRadiiLen.resolvePx()
+                if (px != null) return px.coerceIn(0f, maxCap)
+            }
+            if (effPx != null) return effPx.coerceIn(0f, maxCap)
+            if (effLen != null) {
+                val px = if (effLen.unit == CssUnit.PERCENT) effLen.value * 0.01f * refMin else effLen.resolvePx()
+                if (px != null) return px.coerceIn(0f, maxCap)
+            }
+            if (compLen != null) {
+                val px = if (compLen.unit == CssUnit.PERCENT) compLen.value * 0.01f * refMin else compLen.resolvePx()
+                if (px != null) return px.coerceIn(0f, maxCap)
+            }
+            return null
+        }
+
+        val stateR = activeState?.borderRadius
+        val effR = eff?.borderRadius
+        var tl = resolveCorner(activeState?.borderRadiusTopLeftPx, stateR?.topLeft, eff?.borderRadiusTopLeftPx, effR?.topLeft, compR?.topLeft) ?: baseFallback
+        var tr = resolveCorner(activeState?.borderRadiusTopRightPx, stateR?.topRight, eff?.borderRadiusTopRightPx, effR?.topRight, compR?.topRight) ?: baseFallback
+        var br = resolveCorner(activeState?.borderRadiusBottomRightPx, stateR?.bottomRight, eff?.borderRadiusBottomRightPx, effR?.bottomRight, compR?.bottomRight) ?: baseFallback
+        var bl = resolveCorner(activeState?.borderRadiusBottomLeftPx, stateR?.bottomLeft, eff?.borderRadiusBottomLeftPx, effR?.bottomLeft, compR?.bottomLeft) ?: baseFallback
+
+        val isRawAllSame = abs(tl - tr) <= 0.1f && abs(tr - br) <= 0.1f && abs(br - bl) <= 0.1f
+        if (isRawAllSame && spec.borderRadiusPx != null && abs(tl - baseFallback) > 0.1f) {
+            tl = baseFallback
+            tr = baseFallback
+            br = baseFallback
+            bl = baseFallback
+        }
+
+        val tokens = entry?.cachedAllClassTokens.orEmpty()
+        val isChromiumTabFlag = ("gui-tab-item--active" in tokens && ("gui-tab-item--chromium" in tokens || "gui-tab-item" in tokens)) ||
+            ("genericui-tabbed-chip" in tokens && "active" in tokens) ||
+            entry?.attributes?.get("chromiumTabFillet") == true
+        if (isChromiumTabFlag && "gui-tab-item--chromium" in tokens && tl <= 0.5f && tr <= 0.5f && br <= 0.5f && bl <= 0.5f) {
+            tl = 8f.coerceAtMost(maxCap)
+            tr = 8f.coerceAtMost(maxCap)
+        }
+        val topRoundedBottomSquare = (tl > 0.5f || tr > 0.5f) && br <= 0.5f && bl <= 0.5f
+        val earPx = if (isChromiumTabFlag && topRoundedBottomSquare && width >= 28 && height >= 16) {
+            val maxAllowedEar = ((width - tl - tr - 6f) * 0.5f).coerceAtLeast(0f)
+            min(max(tl, tr), min(8f, min(height * 0.35f, maxAllowedEar))).coerceAtLeast(0f)
+        } else {
+            0f
+        }
+        return ResolvedCornerRadii(
+            topLeft = tl,
+            topRight = tr,
+            bottomRight = br,
+            bottomLeft = bl,
+            chromiumFilletEarPx = earPx,
+            skipBottomBorder = earPx > 0.5f
+        )
+    }
+
+    internal fun renderStyledSpecToHdc(
         hwnd: HWND,
         hdc: HDC,
         width: Int,
@@ -358,9 +631,19 @@ object Win32StyledWidgetHelper {
         text: String? = null,
         textColorOverride: RgbaColor? = null,
         alignLeft: Boolean = false,
-        iconBuffer: ImageBuffer? = null
+        iconBuffer: ImageBuffer? = null,
+        cornerRadii: ResolvedCornerRadii? = null,
+        dirtyLeft: Int = 0,
+        dirtyTop: Int = 0,
+        dirtyRight: Int = width,
+        dirtyBottom: Int = height
     ) {
         if (width <= 0 || height <= 0) return
+
+        val resolvedRadii = cornerRadii ?: run {
+            val u = (spec.borderRadiusPx ?: 0f).coerceIn(0f, min(width, height) * 0.5f)
+            ResolvedCornerRadii(u, u, u, u)
+        }
 
         val backdropFilter = spec.backdropFilter ?: if ((spec.backdropBlurPx ?: 0f) > 0f) {
             CssFilter(blur = com.nexustools.genericui.style.css.CssLength.px(spec.backdropBlurPx!!))
@@ -369,59 +652,102 @@ object Win32StyledWidgetHelper {
         }
         val hasBackdrop = backdropFilter != null && backdropFilter.hasActiveEffects
 
-        val surfacePixels = IntArray(width * height)
-        val radiusPx = (spec.borderRadiusPx ?: 0f).coerceIn(0f, min(width, height) * 0.5f)
+        if (resolvedRadii.isUniform &&
+            tryRenderFastGdiStyledSpec(
+                hwnd = hwnd,
+                hdc = hdc,
+                width = width,
+                height = height,
+                spec = spec,
+                isDark = isDark,
+                hasBackdrop = hasBackdrop,
+                focused = focused,
+                fontHandle = fontHandle,
+                text = text,
+                textColorOverride = textColorOverride,
+                alignLeft = alignLeft,
+                iconBuffer = iconBuffer,
+                dirtyLeft = dirtyLeft,
+                dirtyTop = dirtyTop,
+                dirtyRight = dirtyRight,
+                dirtyBottom = dirtyBottom
+            )
+        ) {
+            return
+        }
 
-        // 1. Sample parent / stage / lower-Z sibling backdrop when backdrop-filter OR transparent overlay needs it
-        val needsParentPixels = hasBackdrop ||
-            ((spec.backgroundColor?.a ?: 0) in 1..254) ||
-            spec.backgroundGradient != null ||
-            radiusPx > 0.5f
-        if (needsParentPixels) {
+        val surfacePixels = obtainScratchSurfacePixels(width * height)
+        val radiusPx = resolvedRadii.maxRadius.coerceIn(0f, min(width, height) * 0.5f)
+        val bgColor = spec.backgroundColor
+        val isTranslucentBg = (bgColor?.a ?: 0) in 1..254
+        val isOpaqueFlatCard = !hasBackdrop &&
+            resolvedRadii.isUniform &&
+            bgColor != null && bgColor.a >= 255 &&
+            radiusPx <= 0.5f &&
+            spec.backgroundGradient == null &&
+            (spec.boxShadowColor == null || (spec.boxShadowBlurPx ?: 0f) <= 0f)
+
+        // 1. Capture live backdrop via PrintWindow ONLY for backdrop-filter or truly translucent overlays.
+        //    Opaque rounded cards / gradients pre-fill from stage host (if present) or resolveAncestorBackgroundColor.
+        if (hasBackdrop) {
             val pad = computeFilterPadPx(backdropFilter)
-            if (hasBackdrop) {
-                val capW = width + pad * 2
-                val capH = height + pad * 2
-                val capPixels = IntArray(capW * capH)
-                captureBackdropIntoBuffer(hwnd, -pad, -pad, capW, capH, capPixels, isDark)
-                Win32Direct2dBackdropBlurEngine.applyBackdropToArgbArray(
-                    filter = backdropFilter!!,
-                    argbPixels = capPixels,
-                    bufferWidth = capW,
-                    bufferHeight = capH,
-                    regionX = pad,
-                    regionY = pad,
-                    regionWidth = width,
-                    regionHeight = height,
-                    cornerRadiusPx = radiusPx,
-                    opacity = 1f
-                )
-                for (py in 0 until height) {
-                    val srcOff = (py + pad) * capW + pad
-                    val dstOff = py * width
-                    for (px in 0 until width) {
-                        surfacePixels[dstOff + px] = capPixels[srcOff + px] or 0xFF000000.toInt()
-                    }
+            val capW = width + pad * 2
+            val capH = height + pad * 2
+            val capPixels = obtainScratchCapturePixels(capW * capH)
+            captureBackdropIntoBuffer(hwnd, -pad, -pad, capW, capH, capPixels, isDark)
+            Win32Direct2dBackdropBlurEngine.applyBackdropToArgbArray(
+                filter = backdropFilter!!,
+                argbPixels = capPixels,
+                bufferWidth = capW,
+                bufferHeight = capH,
+                regionX = pad,
+                regionY = pad,
+                regionWidth = width,
+                regionHeight = height,
+                cornerRadiusPx = radiusPx,
+                opacity = 1f
+            )
+            for (py in 0 until height) {
+                val srcOff = (py + pad) * capW + pad
+                val dstOff = py * width
+                for (px in 0 until width) {
+                    surfacePixels[dstOff + px] = capPixels[srcOff + px] or 0xFF000000.toInt()
                 }
-            } else {
-                captureBackdropIntoBuffer(hwnd, 0, 0, width, height, surfacePixels, isDark)
+            }
+        } else if (isTranslucentBg) {
+            captureBackdropIntoBuffer(hwnd, 0, 0, width, height, surfacePixels, isDark)
+        } else if (!isOpaqueFlatCard) {
+            val copiedStage = backdropCaptureDepth == 0 &&
+                Win32LayeredStageHostHwnd.hasAnyStageHosts() &&
+                Win32LayeredStageHostHwnd.tryCopyBackdropForChild(hwnd, 0, 0, width, height, surfacePixels)
+            if (!copiedStage) {
+                val fallbackBg = resolveAncestorBackgroundColor(hwnd, isDark)
+                val fallbackWord = (0xFF shl 24) or (fallbackBg.r shl 16) or (fallbackBg.g shl 8) or fallbackBg.b
+                surfacePixels.fill(fallbackWord, 0, width * height)
             }
         }
 
         // 2. Subtle outer box shadow inset / border allowance
         val shadowColor = spec.boxShadowColor
         val shadowBlur = (spec.boxShadowBlurPx ?: 0f).coerceAtLeast(0f)
-        if (shadowColor != null && shadowColor.a > 0 && shadowBlur > 0f) {
+        if (resolvedRadii.chromiumFilletEarPx <= 0.5f && shadowColor != null && shadowColor.a > 0 && shadowBlur > 0f) {
             drawSoftInnerOuterElevationRim(surfacePixels, width, height, radiusPx, shadowColor)
         }
 
         // 3. Background gradient or solid fill inside rounded SDF mask
         val gradient = spec.backgroundGradient
-        val bgColor = spec.backgroundColor
         if (gradient != null) {
-            fillRoundedGradientArgb(surfacePixels, width, height, gradient, radiusPx)
+            if (resolvedRadii.isUniform) {
+                fillRoundedGradientArgb(surfacePixels, width, height, gradient, radiusPx)
+            } else {
+                fillPerCornerRoundedGradientArgb(surfacePixels, width, height, gradient, resolvedRadii)
+            }
         } else if (bgColor != null && bgColor.a > 0) {
-            fillRoundedSolidArgb(surfacePixels, width, height, bgColor, radiusPx)
+            if (resolvedRadii.isUniform) {
+                fillRoundedSolidArgb(surfacePixels, width, height, bgColor, radiusPx)
+            } else {
+                fillPerCornerRoundedSolidArgb(surfacePixels, width, height, bgColor, resolvedRadii)
+            }
         }
 
         // 4. Rounded SDF border
@@ -430,30 +756,54 @@ object Win32StyledWidgetHelper {
         if (borderW > 0f && borderColor != null && borderColor.a > 0 &&
             spec.borderStyle != CssBorderStyle.NONE && spec.borderStyle != CssBorderStyle.HIDDEN
         ) {
-            strokeRoundedBorderArgb(
-                pixels = surfacePixels,
-                width = width,
-                height = height,
-                borderColor = borderColor,
-                borderWidthPx = borderW,
-                radiusPx = radiusPx,
-                style = spec.borderStyle ?: CssBorderStyle.SOLID
-            )
+            if (resolvedRadii.isUniform) {
+                strokeRoundedBorderArgb(
+                    pixels = surfacePixels,
+                    width = width,
+                    height = height,
+                    borderColor = borderColor,
+                    borderWidthPx = borderW,
+                    radiusPx = radiusPx,
+                    style = spec.borderStyle ?: CssBorderStyle.SOLID
+                )
+            } else {
+                strokePerCornerRoundedBorderArgb(
+                    pixels = surfacePixels,
+                    width = width,
+                    height = height,
+                    borderColor = borderColor,
+                    borderWidthPx = borderW,
+                    radii = resolvedRadii,
+                    style = spec.borderStyle ?: CssBorderStyle.SOLID
+                )
+            }
         }
 
         // 5. Focus ring
         val ringW = (spec.focusRingWidthPx ?: 0f).coerceAtLeast(0f)
         val ringColor = spec.focusRingColor
         if (focused && ringW > 0f && ringColor != null && ringColor.a > 0) {
-            strokeRoundedBorderArgb(
-                pixels = surfacePixels,
-                width = width,
-                height = height,
-                borderColor = ringColor,
-                borderWidthPx = ringW,
-                radiusPx = radiusPx,
-                style = CssBorderStyle.SOLID
-            )
+            if (resolvedRadii.isUniform) {
+                strokeRoundedBorderArgb(
+                    pixels = surfacePixels,
+                    width = width,
+                    height = height,
+                    borderColor = ringColor,
+                    borderWidthPx = ringW,
+                    radiusPx = radiusPx,
+                    style = CssBorderStyle.SOLID
+                )
+            } else {
+                strokePerCornerRoundedBorderArgb(
+                    pixels = surfacePixels,
+                    width = width,
+                    height = height,
+                    borderColor = ringColor,
+                    borderWidthPx = ringW,
+                    radii = resolvedRadii,
+                    style = CssBorderStyle.SOLID
+                )
+            }
         }
 
         // 5.5. Composite optional child ImageBuffer icon (pure SrcOver alpha blend, never opaque box)
@@ -463,18 +813,42 @@ object Win32StyledWidgetHelper {
 
         // 6. Optional text overlay + foreground CSS filter (all 10 ops) + final BitBlt
         val dib = ensureSurfaceDib(hdc, width, height) ?: return
-        for (i in 0 until width * height) {
-            val argb = surfacePixels[i]
-            val a = (argb ushr 24) and 0xFF
-            dib[i] = if (a >= 255) {
-                argb.toUInt()
-            } else if (a <= 0) {
-                0x00000000u
-            } else {
-                val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
-                val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
-                val b = ((argb and 0xFF) * a + 127) / 255
-                ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+        val dibStride = reusableSurfaceW
+        val dibDc = reusableSurfaceDc ?: return
+        val total = width * height
+        if (dibStride == width) {
+            for (i in 0 until total) {
+                val argb = surfacePixels[i]
+                val a = (argb ushr 24) and 0xFF
+                dib[i] = if (a >= 255) {
+                    argb.toUInt()
+                } else if (a <= 0) {
+                    0x00000000u
+                } else {
+                    val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
+                    val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
+                    val b = ((argb and 0xFF) * a + 127) / 255
+                    ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+                }
+            }
+        } else {
+            for (py in 0 until height) {
+                val srcRow = py * width
+                val dstRow = py * dibStride
+                for (px in 0 until width) {
+                    val argb = surfacePixels[srcRow + px]
+                    val a = (argb ushr 24) and 0xFF
+                    dib[dstRow + px] = if (a >= 255) {
+                        argb.toUInt()
+                    } else if (a <= 0) {
+                        0x00000000u
+                    } else {
+                        val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
+                        val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
+                        val b = ((argb and 0xFF) * a + 127) / 255
+                        ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+                    }
+                }
             }
         }
 
@@ -482,8 +856,9 @@ object Win32StyledWidgetHelper {
             val textCol = textColorOverride ?: spec.textColor
                 ?: if (isDark) RgbaColor(242, 242, 245) else RgbaColor(20, 20, 24)
             drawTextIntoPremulSurfaceDib(
-                dibDc = reusableSurfaceDc!!,
+                dibDc = dibDc,
                 pixelsPtr = dib,
+                stride = dibStride,
                 width = width,
                 height = height,
                 text = text,
@@ -496,17 +871,21 @@ object Win32StyledWidgetHelper {
         val fgFilter = spec.filter
         if (fgFilter != null && fgFilter.hasActiveEffects) {
             GdiFlush()
-            val argbForFilter = IntArray(width * height)
-            for (i in 0 until width * height) {
-                val p = dib[i].toInt()
-                val a = (p ushr 24) and 0xFF
-                if (a == 255 || a == 0) {
-                    argbForFilter[i] = p
-                } else {
-                    val r = (((p ushr 16) and 0xFF) * 255 + a / 2) / a
-                    val g = (((p ushr 8) and 0xFF) * 255 + a / 2) / a
-                    val b = ((p and 0xFF) * 255 + a / 2) / a
-                    argbForFilter[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            val argbForFilter = obtainScratchFilterPixels(total)
+            for (py in 0 until height) {
+                val srcRow = py * dibStride
+                val dstRow = py * width
+                for (px in 0 until width) {
+                    val p = dib[srcRow + px].toInt()
+                    val a = (p ushr 24) and 0xFF
+                    argbForFilter[dstRow + px] = if (a == 255 || a == 0) {
+                        p
+                    } else {
+                        val r = (((p ushr 16) and 0xFF) * 255 + a / 2) / a
+                        val g = (((p ushr 8) and 0xFF) * 255 + a / 2) / a
+                        val b = ((p and 0xFF) * 255 + a / 2) / a
+                        (a shl 24) or (r shl 16) or (g shl 8) or b
+                    }
                 }
             }
             Win32Direct2dBackdropBlurEngine.applyBackdropToArgbArray(
@@ -521,24 +900,279 @@ object Win32StyledWidgetHelper {
                 cornerRadiusPx = radiusPx,
                 opacity = 1f
             )
-            for (i in 0 until width * height) {
-                val argb = argbForFilter[i]
-                val a = (argb ushr 24) and 0xFF
-                dib[i] = if (a >= 255) {
-                    argb.toUInt()
-                } else if (a <= 0) {
-                    0u
-                } else {
-                    val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
-                    val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
-                    val b = ((argb and 0xFF) * a + 127) / 255
-                    ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+            for (py in 0 until height) {
+                val srcRow = py * width
+                val dstRow = py * dibStride
+                for (px in 0 until width) {
+                    val argb = argbForFilter[srcRow + px]
+                    val a = (argb ushr 24) and 0xFF
+                    dib[dstRow + px] = if (a >= 255) {
+                        argb.toUInt()
+                    } else if (a <= 0) {
+                        0u
+                    } else {
+                        val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
+                        val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
+                        val b = ((argb and 0xFF) * a + 127) / 255
+                        ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+                    }
                 }
             }
         }
 
         GdiFlush()
-        BitBlt(hdc, 0, 0, width, height, reusableSurfaceDc, 0, 0, SRCCOPY)
+        BitBlt(hdc, 0, 0, width, height, dibDc, 0, 0, SRCCOPY)
+    }
+
+    /**
+     * Native Win32 GDI fast path for opaque/transparent solid-background and rounded cards/containers
+     * outside video stage hosts, avoiding software pixel-buffer allocation and DIB copies.
+     */
+    private fun tryRenderFastGdiStyledSpec(
+        hwnd: HWND,
+        hdc: HDC,
+        width: Int,
+        height: Int,
+        spec: StyledVisualSpec,
+        isDark: Boolean,
+        hasBackdrop: Boolean,
+        focused: Boolean,
+        fontHandle: HFONT? = null,
+        text: String? = null,
+        textColorOverride: RgbaColor? = null,
+        alignLeft: Boolean = false,
+        iconBuffer: ImageBuffer? = null,
+        dirtyLeft: Int = 0,
+        dirtyTop: Int = 0,
+        dirtyRight: Int = width,
+        dirtyBottom: Int = height
+    ): Boolean {
+        if (hasBackdrop) return false
+        if (spec.backgroundGradient != null) return false
+        if (spec.filter?.hasActiveEffects == true) return false
+        if (iconBuffer != null) return false
+        if (focused) return false
+
+        val dl = dirtyLeft.coerceIn(0, width)
+        val dt = dirtyTop.coerceIn(0, height)
+        val dr = dirtyRight.coerceIn(dl, width)
+        val db = dirtyBottom.coerceIn(dt, height)
+        if (dr <= dl || db <= dt) return true
+
+        val hasText = !text.isNullOrBlank()
+        val resolvedTextCol = if (hasText) {
+            (textColorOverride ?: spec.textColor ?: if (isDark) RgbaColor(242, 242, 245) else RgbaColor(20, 20, 24)).also {
+                if (it.a < 255) return false
+            }
+        } else {
+            null
+        }
+
+        val bgColor = spec.backgroundColor
+        val bgOpaque = bgColor != null && bgColor.a >= 255
+        val bgTransparent = bgColor == null || bgColor.a <= 0
+        if (!bgOpaque && !bgTransparent) return false
+
+        val shadowColor = spec.boxShadowColor
+        val shadowBlur = (spec.boxShadowBlurPx ?: 0f).coerceAtLeast(0f)
+        val hasBlockingShadow = shadowColor != null &&
+            shadowColor.a > 0 &&
+            shadowBlur > 0f &&
+            !(bgOpaque && shadowBlur <= 4.5f && shadowColor.a <= 80)
+        if (hasBlockingShadow) return false
+
+        val borderW = (spec.borderWidthPx ?: 0f).coerceAtLeast(0f)
+        val borderColor = spec.borderColor
+        val hasVisibleBorder = borderW > 0f &&
+            borderColor != null &&
+            borderColor.a > 0 &&
+            spec.borderStyle != CssBorderStyle.NONE &&
+            spec.borderStyle != CssBorderStyle.HIDDEN
+        if (hasVisibleBorder && spec.borderStyle != null && spec.borderStyle != CssBorderStyle.SOLID) {
+            return false
+        }
+
+        if (isInTransparentDwmTitleBar(hwnd, isDark)) {
+            return false
+        }
+
+        if (Win32LayeredStageHostHwnd.hasAnyStageHosts() && Win32LayeredStageHostHwnd.isDescendantOfStageHost(hwnd)) {
+            return false
+        }
+
+        val radiusPx = (spec.borderRadiusPx ?: 0f).coerceIn(0f, min(width, height) * 0.5f)
+        val cornerSpan = min(ceil(radiusPx).toInt() + 2, (min(width, height) + 1) / 2).coerceAtLeast(1)
+        val inStraightVerticalMiddle = radiusPx > 0.5f &&
+            !hasText &&
+            dt >= cornerSpan &&
+            db <= height - cornerSpan
+
+        val canUseRectPath = radiusPx <= 0.5f || (bgTransparent && !hasVisibleBorder) || (bgOpaque && inStraightVerticalMiddle)
+        if (hasVisibleBorder && borderColor!!.a < 255) {
+            if (!(radiusPx <= 0.5f || (bgOpaque && inStraightVerticalMiddle))) {
+                return false
+            }
+        }
+
+        val fillColor = if (bgOpaque) bgColor!! else resolveAncestorBackgroundColor(hwnd, isDark)
+        val effectiveBorderRef: UInt? = if (hasVisibleBorder) {
+            val bc = borderColor!!
+            if (bc.a >= 255) {
+                Win32DwmUxThemeBridge.colorRefRgb(bc.r, bc.g, bc.b)
+            } else if (fillColor.a >= 255) {
+                val a = bc.a
+                val invA = 255 - a
+                val br = ((bc.r * a + fillColor.r * invA + 127) / 255).coerceIn(0, 255)
+                val bg = ((bc.g * a + fillColor.g * invA + 127) / 255).coerceIn(0, 255)
+                val bb = ((bc.b * a + fillColor.b * invA + 127) / 255).coerceIn(0, 255)
+                Win32DwmUxThemeBridge.colorRefRgb(br, bg, bb)
+            } else {
+                return false
+            }
+        } else {
+            null
+        }
+        val fillBrush = obtainSolidBrush(fillColor) ?: return false
+
+        if (canUseRectPath) {
+            val borderBrush = if (effectiveBorderRef != null) obtainSolidBrushRef(effectiveBorderRef) ?: return false else null
+            memScoped {
+                val rc = alloc<RECT>()
+                if (borderBrush == null) {
+                    rc.left = dl
+                    rc.top = dt
+                    rc.right = dr
+                    rc.bottom = db
+                    FillRect(hdc, rc.ptr, fillBrush)
+                } else {
+                    val bw = borderW.roundToInt().coerceIn(1, max(1, min(width, height) / 2))
+                    val intL = max(dl, bw)
+                    val intT = if (inStraightVerticalMiddle) dt else max(dt, bw)
+                    val intR = min(dr, width - bw)
+                    val intB = if (inStraightVerticalMiddle) db else min(db, height - bw)
+                    if (intR > intL && intB > intT) {
+                        rc.left = intL
+                        rc.top = intT
+                        rc.right = intR
+                        rc.bottom = intB
+                        FillRect(hdc, rc.ptr, fillBrush)
+                    }
+                    if (!inStraightVerticalMiddle) {
+                        // Top border strip
+                        if (dt < bw) {
+                            rc.left = dl
+                            rc.top = dt
+                            rc.right = dr
+                            rc.bottom = min(db, bw)
+                            FillRect(hdc, rc.ptr, borderBrush)
+                        }
+                        // Bottom border strip
+                        if (height > bw && db > height - bw) {
+                            rc.left = dl
+                            rc.top = max(dt, height - bw)
+                            rc.right = dr
+                            rc.bottom = db
+                            FillRect(hdc, rc.ptr, borderBrush)
+                        }
+                    }
+                    // Left & right border strips
+                    val midTop = if (inStraightVerticalMiddle) dt else max(dt, bw)
+                    val midBottom = if (inStraightVerticalMiddle) db else min(db, height - bw).coerceAtLeast(midTop)
+                    if (midBottom > midTop) {
+                        if (dl < bw) {
+                            rc.left = dl
+                            rc.top = midTop
+                            rc.right = min(dr, bw)
+                            rc.bottom = midBottom
+                            FillRect(hdc, rc.ptr, borderBrush)
+                        }
+                        if (width > bw && dr > width - bw) {
+                            rc.left = max(dl, width - bw)
+                            rc.top = midTop
+                            rc.right = dr
+                            rc.bottom = midBottom
+                            FillRect(hdc, rc.ptr, borderBrush)
+                        }
+                    }
+                }
+            }
+        } else {
+            val cornerBrush = if (bgOpaque) {
+                obtainSolidBrush(resolveAncestorBackgroundColor(hwnd, isDark)) ?: return false
+            } else {
+                fillBrush
+            }
+            val bw = if (hasVisibleBorder) {
+                borderW.roundToInt().coerceIn(1, max(1, min(width, height) / 2))
+            } else {
+                1
+            }
+            val penColor = if (hasVisibleBorder) borderColor!! else fillColor
+            val pen = obtainSolidPen(bw, penColor, insideFrame = hasVisibleBorder && bw > 1) ?: return false
+            val diam = (radiusPx * 2f).roundToInt().coerceIn(2, min(width, height).coerceAtLeast(2))
+
+            memScoped {
+                val rc = alloc<RECT>()
+                // Top-left corner cutout
+                rc.left = 0
+                rc.top = 0
+                rc.right = cornerSpan
+                rc.bottom = cornerSpan
+                FillRect(hdc, rc.ptr, cornerBrush)
+                // Top-right corner cutout
+                rc.left = (width - cornerSpan).coerceAtLeast(0)
+                rc.top = 0
+                rc.right = width
+                rc.bottom = cornerSpan
+                FillRect(hdc, rc.ptr, cornerBrush)
+                // Bottom-left corner cutout
+                rc.left = 0
+                rc.top = (height - cornerSpan).coerceAtLeast(0)
+                rc.right = cornerSpan
+                rc.bottom = height
+                FillRect(hdc, rc.ptr, cornerBrush)
+                // Bottom-right corner cutout
+                rc.left = (width - cornerSpan).coerceAtLeast(0)
+                rc.top = (height - cornerSpan).coerceAtLeast(0)
+                rc.right = width
+                rc.bottom = height
+                FillRect(hdc, rc.ptr, cornerBrush)
+            }
+
+            val oldBrush = SelectObject(hdc, fillBrush)
+            val oldPen = SelectObject(hdc, pen)
+            try {
+                RoundRect(hdc, 0, 0, width, height, diam, diam)
+            } finally {
+                if (oldPen != null) SelectObject(hdc, oldPen)
+                if (oldBrush != null) SelectObject(hdc, oldBrush)
+            }
+        }
+
+        if (hasText) {
+            val textCol = resolvedTextCol!!
+            val oldFont = if (fontHandle != null) SelectObject(hdc, fontHandle) else null
+            val prevBk = SetBkMode(hdc, TRANSPARENT)
+            val prevTextCol = SetTextColor(hdc, Win32DwmUxThemeBridge.colorRefRgb(textCol.r, textCol.g, textCol.b))
+            try {
+                memScoped {
+                    val textRc = alloc<RECT>()
+                    val padX = if (alignLeft) 8 else 4
+                    textRc.left = padX
+                    textRc.top = 0
+                    textRc.right = (width - padX).coerceAtLeast(padX)
+                    textRc.bottom = height
+                    val alignFlag = if (alignLeft) DT_LEFT else DT_CENTER
+                    val flags = (DT_SINGLELINE or DT_VCENTER or alignFlag or DT_END_ELLIPSIS or DT_NOPREFIX).toUInt()
+                    DrawTextW(hdc, text!!, -1, textRc.ptr, flags)
+                }
+            } finally {
+                if (prevTextCol != 0xFFFFFFFFu) SetTextColor(hdc, prevTextCol)
+                if (prevBk != 0) SetBkMode(hdc, prevBk)
+                if (oldFont != null) SelectObject(hdc, oldFont)
+            }
+        }
+        return true
     }
 
     /**
@@ -553,29 +1187,58 @@ object Win32StyledWidgetHelper {
     ) {
         if (width <= 0 || height <= 0 || argbPixels.size < width * height) return
         val dib = ensureSurfaceDib(hdc, width, height) ?: return
-        val count = width * height
-        if (premultiplied) {
-            for (i in 0 until count) {
-                dib[i] = argbPixels[i].toUInt()
+        val dibStride = reusableSurfaceW
+        val dibDc = reusableSurfaceDc ?: return
+        if (dibStride == width) {
+            val count = width * height
+            if (premultiplied) {
+                for (i in 0 until count) {
+                    dib[i] = argbPixels[i].toUInt()
+                }
+            } else {
+                for (i in 0 until count) {
+                    val argb = argbPixels[i]
+                    val a = (argb ushr 24) and 0xFF
+                    dib[i] = when {
+                        a >= 255 -> argb.toUInt()
+                        a <= 0 -> 0u
+                        else -> {
+                            val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
+                            val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
+                            val b = ((argb and 0xFF) * a + 127) / 255
+                            ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+                        }
+                    }
+                }
             }
         } else {
-            for (i in 0 until count) {
-                val argb = argbPixels[i]
-                val a = (argb ushr 24) and 0xFF
-                dib[i] = when {
-                    a >= 255 -> argb.toUInt()
-                    a <= 0 -> 0u
-                    else -> {
-                        val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
-                        val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
-                        val b = ((argb and 0xFF) * a + 127) / 255
-                        ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+            for (py in 0 until height) {
+                val srcRow = py * width
+                val dstRow = py * dibStride
+                if (premultiplied) {
+                    for (px in 0 until width) {
+                        dib[dstRow + px] = argbPixels[srcRow + px].toUInt()
+                    }
+                } else {
+                    for (px in 0 until width) {
+                        val argb = argbPixels[srcRow + px]
+                        val a = (argb ushr 24) and 0xFF
+                        dib[dstRow + px] = when {
+                            a >= 255 -> argb.toUInt()
+                            a <= 0 -> 0u
+                            else -> {
+                                val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
+                                val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
+                                val b = ((argb and 0xFF) * a + 127) / 255
+                                ((a shl 24) or (r shl 16) or (g shl 8) or b).toUInt()
+                            }
+                        }
                     }
                 }
             }
         }
         GdiFlush()
-        BitBlt(hdc, 0, 0, width, height, reusableSurfaceDc, 0, 0, SRCCOPY)
+        BitBlt(hdc, 0, 0, width, height, dibDc, 0, 0, SRCCOPY)
     }
 
     /**
@@ -726,49 +1389,240 @@ object Win32StyledWidgetHelper {
         }
     }
 
-    fun fillSolidParentBackdrop(
+    internal fun paintStageOverlayTextBackdrop(
         hwnd: HWND,
         hdc: HDC,
         width: Int,
         height: Int,
         isDark: Boolean
+    ): Boolean {
+        if (width <= 0 || height <= 0) return false
+        val total = width * height
+        val pixels = obtainScratchStagePixels(total)
+        if (!Win32LayeredStageHostHwnd.tryCopyBackdropForChild(hwnd, 0, 0, width, height, pixels)) {
+            return false
+        }
+        val ancestorBgs = ArrayList<RgbaColor>(4)
+        var cur: HWND? = GetParent(hwnd)
+        var hops = 0
+        while (cur != null && hops < 16) {
+            val entry = Win32ControlMessageRouter.resolveEntry(cur)
+            if (entry?.actualWin32ClassName == "GenericUILayeredStageHostW" ||
+                Win32LayeredStageHostHwnd.isStageHostHwnd(cur)
+            ) {
+                break
+            }
+            val bg = entry?.ownerImpl?.let { resolveStyledSpecFromOwner(it).backgroundColor }
+            if (bg != null && bg.a > 0) {
+                ancestorBgs.add(bg)
+                if (bg.a >= 255) break
+            }
+            cur = GetParent(cur)
+            hops++
+        }
+        for (idx in ancestorBgs.indices.reversed()) {
+            val bg = ancestorBgs[idx]
+            if (bg.a >= 255) {
+                val solidWord = (0xFF shl 24) or (bg.r shl 16) or (bg.g shl 8) or bg.b
+                pixels.fill(solidWord, 0, total)
+            } else {
+                for (i in 0 until total) {
+                    pixels[i] = blendStraightOverArgb(bg.r, bg.g, bg.b, bg.a, pixels[i])
+                }
+            }
+        }
+        blitArgbArrayToHdc(hdc, width, height, pixels, premultiplied = true)
+        return true
+    }
+
+    fun fillSolidParentBackdrop(
+        hwnd: HWND,
+        hdc: HDC,
+        width: Int,
+        height: Int,
+        isDark: Boolean,
+        dirtyLeft: Int = 0,
+        dirtyTop: Int = 0,
+        dirtyRight: Int = width,
+        dirtyBottom: Int = height
     ) {
         if (width <= 0 || height <= 0) return
-        if (backdropCaptureDepth == 0) {
-            val stagePixels = IntArray(width * height)
+        val dl = dirtyLeft.coerceIn(0, width)
+        val dt = dirtyTop.coerceIn(0, height)
+        val dr = dirtyRight.coerceIn(dl, width)
+        val db = dirtyBottom.coerceIn(dt, height)
+        if (dr <= dl || db <= dt) return
+        if (backdropCaptureDepth == 0 && Win32LayeredStageHostHwnd.hasAnyStageHosts()) {
+            val stagePixels = obtainScratchStagePixels(width * height)
             if (Win32LayeredStageHostHwnd.tryCopyBackdropForChild(hwnd, 0, 0, width, height, stagePixels)) {
                 blitArgbArrayToHdc(hdc, width, height, stagePixels, premultiplied = true)
                 return
             }
-            if (GetWindow(hwnd, GW_HWNDNEXT.toUInt()) != null) {
-                captureBackdropIntoBuffer(hwnd, 0, 0, width, height, stagePixels, isDark)
-                blitArgbArrayToHdc(hdc, width, height, stagePixels, premultiplied = true)
-                return
-            }
         }
+        val inTransparentDwm = isInTransparentDwmTitleBar(hwnd, isDark)
         val bg = resolveAncestorBackgroundColor(hwnd, isDark)
+        val brush = if (!inTransparentDwm) obtainSolidBrush(bg) else null
+        if (brush != null) {
+            memScoped {
+                val rc = alloc<RECT>()
+                rc.left = dl
+                rc.top = dt
+                rc.right = dr
+                rc.bottom = db
+                FillRect(hdc, rc.ptr, brush)
+            }
+            return
+        }
+        // In transparent DWM titlebars (Vista/7 Aero glass / Win8), avoid GDI FillRect (alpha=0)
+        // and write explicit alpha via 32-bpp DIB so DWM doesn't double-expose child backgrounds.
         val word = ((0xFF shl 24) or (bg.r shl 16) or (bg.g shl 8) or bg.b).toUInt()
         val dib = ensureSurfaceDib(hdc, width, height) ?: return
-        val count = width * height
-        for (i in 0 until count) {
-            dib[i] = word
+        val dibStride = reusableSurfaceW
+        val dibDc = reusableSurfaceDc ?: return
+        for (py in dt until db) {
+            val rowOff = py * dibStride
+            for (px in dl until dr) {
+                dib[rowOff + px] = word
+            }
         }
         GdiFlush()
-        BitBlt(hdc, 0, 0, width, height, reusableSurfaceDc, 0, 0, SRCCOPY)
+        BitBlt(hdc, dl, dt, dr - dl, db - dt, dibDc, dl, dt, SRCCOPY)
     }
 
-    private fun resolveAncestorBackgroundColor(hwnd: HWND, isDark: Boolean): RgbaColor {
+    internal fun resolveEffectiveEditBackdropColor(
+        hwnd: HWND,
+        spec: StyledVisualSpec,
+        isDark: Boolean
+    ): RgbaColor {
+        val parentBg = resolveAncestorBackgroundColor(hwnd, isDark)
+        val gradient = spec.backgroundGradient
+        val sampleColor: RgbaColor? = when (gradient) {
+            is LinearGradient -> {
+                val norm = GradientStopNormalizer.normalizeLinear(gradient, 100f, 32f)
+                sampleStops(norm.positions, norm.colors, 0.5f)
+            }
+            is RadialGradient -> {
+                val norm = GradientStopNormalizer.normalizeRadial(gradient, 100f, 32f)
+                sampleStops(norm.positions, norm.colors, 0.5f)
+            }
+            else -> spec.backgroundColor
+        }
+        val fg = sampleColor ?: return if (isDark) RgbaColor(34, 34, 40) else RgbaColor(255, 255, 255)
+        if (fg.a >= 255) return fg
+        if (fg.a <= 0) return parentBg
+        val invA = 255 - fg.a
+        return RgbaColor(
+            r = ((fg.r * fg.a + parentBg.r * invA + 127) / 255).coerceIn(0, 255),
+            g = ((fg.g * fg.a + parentBg.g * invA + 127) / 255).coerceIn(0, 255),
+            b = ((fg.b * fg.a + parentBg.b * invA + 127) / 255).coerceIn(0, 255),
+            a = 255
+        )
+    }
+
+    internal fun isInTransparentDwmTitleBar(hwnd: HWND, isDark: Boolean): Boolean {
+        val gen = Win32DwmUxThemeBridge.detectVisualStyleGeneration()
+        if (gen != Win32VisualStyleGeneration.VISTA_7_AERO_GLASS &&
+            gen != Win32VisualStyleGeneration.WIN8_AERO
+        ) {
+            return false
+        }
+        val ver = DesktopNativeWidget.globalNonOverlayMutationVersion
+        if (cachedAncestorBgMutationVer != ver || cachedAncestorBgIsDark != isDark) {
+            cachedAncestorBgByHwnd.clear()
+            cachedInTransparentDwmByHwnd.clear()
+            cachedAncestorBgMutationVer = ver
+            cachedAncestorBgIsDark = isDark
+        }
+        val key = hwnd.toLong()
+        cachedInTransparentDwmByHwnd[key]?.let { return it }
+
+        var cur: HWND? = GetParent(hwnd)
+        var inTransparent = false
+        while (cur != null) {
+            val nextParent = GetParent(cur)
+            if (nextParent == null) {
+                val hostWin = Win32NativeWindowHost.resolveWindowForHwnd(cur)
+                if (hostWin != null && Win32NativeWindowHost.hasCustomTitleBarForWindow(hostWin, cur)) {
+                    val tbH = Win32NativeWindowHost.getMainWindowTitleBarHeight(hostWin)
+                    val relTop = memScoped {
+                        val pt = alloc<POINT>()
+                        pt.x = 0
+                        pt.y = 0
+                        MapWindowPoints(hwnd, cur, pt.ptr, 1u)
+                        pt.y
+                    }
+                    if (relTop in 0 until tbH) {
+                        val pal = Win32DwmUxThemeBridge.resolveTitleBarPalette(
+                            hwnd = cur,
+                            isToolWindow = hostWin.isToolModalWindow,
+                            kind = hostWin.titleBarKind,
+                            isDark = isDark
+                        )
+                        inTransparent = pal.useTransparentDwmBackdrop
+                    }
+                }
+            }
+            cur = nextParent
+        }
+        cachedInTransparentDwmByHwnd[key] = inTransparent
+        return inTransparent
+    }
+
+    internal fun resolveAncestorBackgroundColor(hwnd: HWND, isDark: Boolean): RgbaColor {
+        val ver = DesktopNativeWidget.globalNonOverlayMutationVersion
+        if (cachedAncestorBgMutationVer != ver || cachedAncestorBgIsDark != isDark) {
+            cachedAncestorBgByHwnd.clear()
+            cachedInTransparentDwmByHwnd.clear()
+            cachedAncestorBgMutationVer = ver
+            cachedAncestorBgIsDark = isDark
+        }
+        val key = hwnd.toLong()
+        cachedAncestorBgByHwnd[key]?.let { return it }
+
         var cur: HWND? = GetParent(hwnd)
         while (cur != null) {
             val entry = Win32ControlMessageRouter.resolveEntry(cur)
             val owner = entry?.ownerImpl
             if (owner != null) {
                 val bg = owner.getEffectiveBackgroundColor()
-                if (bg != null && bg.a >= 250) return bg
+                if (bg != null && bg.a >= 250) {
+                    cachedAncestorBgByHwnd[key] = bg
+                    return bg
+                }
             }
-            cur = GetParent(cur)
+            val nextParent = GetParent(cur)
+            if (nextParent == null) {
+                val hostWin = Win32NativeWindowHost.resolveWindowForHwnd(cur)
+                if (hostWin != null && Win32NativeWindowHost.hasCustomTitleBarForWindow(hostWin, cur)) {
+                    val tbH = Win32NativeWindowHost.getMainWindowTitleBarHeight(hostWin)
+                    val relTop = memScoped {
+                        val pt = alloc<POINT>()
+                        pt.x = 0
+                        pt.y = 0
+                        MapWindowPoints(hwnd, cur, pt.ptr, 1u)
+                        pt.y
+                    }
+                    if (relTop in 0 until tbH) {
+                        val pal = Win32DwmUxThemeBridge.resolveTitleBarPalette(
+                            hwnd = cur,
+                            isToolWindow = hostWin.isToolModalWindow,
+                            kind = hostWin.titleBarKind,
+                            isDark = isDark
+                        )
+                        if (!pal.useTransparentDwmBackdrop) {
+                            val cr = pal.captionBgColor.toInt()
+                            val tbBg = RgbaColor(cr and 0xFF, (cr ushr 8) and 0xFF, (cr ushr 16) and 0xFF, 255)
+                            cachedAncestorBgByHwnd[key] = tbBg
+                            return tbBg
+                        }
+                    }
+                }
+            }
+            cur = nextParent
         }
-        return if (isDark) RgbaColor(24, 24, 28) else RgbaColor(246, 246, 248)
+        val fallback = if (isDark) RgbaColor(24, 24, 28) else RgbaColor(246, 246, 248)
+        cachedAncestorBgByHwnd[key] = fallback
+        return fallback
     }
 
     internal fun resolveStyledSpecFromOwner(owner: DesktopBaseNativeImpl<*>): StyledVisualSpec {
@@ -816,6 +1670,7 @@ object Win32StyledWidgetHelper {
     private fun drawTextIntoPremulSurfaceDib(
         dibDc: HDC,
         pixelsPtr: CPointer<UIntVar>,
+        stride: Int,
         width: Int,
         height: Int,
         text: String,
@@ -825,12 +1680,16 @@ object Win32StyledWidgetHelper {
     ) {
         val count = width * height
         // Snapshot current pixels before GDI DrawTextW writes opaque RGB values with alpha=0
-        val beforeWords = IntArray(count)
-        for (i in 0 until count) {
-            val p = pixelsPtr[i].toInt()
-            beforeWords[i] = p
-            // Ensure alpha byte sentinel = 0xFF temporarily so we detect GDI rasterized texels cleanly
-            pixelsPtr[i] = (p.toUInt() and 0x00FFFFFFu) or 0xFF000000u
+        val beforeWords = obtainScratchTextBeforeWords(count)
+        for (py in 0 until height) {
+            val dibRow = py * stride
+            val bufRow = py * width
+            for (px in 0 until width) {
+                val p = pixelsPtr[dibRow + px].toInt()
+                beforeWords[bufRow + px] = p
+                // Ensure alpha byte sentinel = 0xFF temporarily so we detect GDI rasterized texels cleanly
+                pixelsPtr[dibRow + px] = (p.toUInt() and 0x00FFFFFFu) or 0xFF000000u
+            }
         }
 
         val oldFont = if (fontHandle != null) SelectObject(dibDc, fontHandle) else null
@@ -851,21 +1710,25 @@ object Win32StyledWidgetHelper {
         if (oldFont != null) SelectObject(dibDc, oldFont)
         GdiFlush()
 
-        for (i in 0 until count) {
-            val drawn = pixelsPtr[i].toInt()
-            val gdiAlphaByte = (drawn ushr 24) and 0xFF
-            val orig = beforeWords[i]
-            val origA = (orig ushr 24) and 0xFF
-            if (gdiAlphaByte == 0xFF) {
-                // Pixel untouched by GDI DrawTextW -> restore exact premul RGBA
-                pixelsPtr[i] = orig.toUInt()
-            } else {
-                // GDI cleared alpha byte on touched texels -> extract final premul RGB safely
-                val dr = (drawn ushr 16) and 0xFF
-                val dg = (drawn ushr 8) and 0xFF
-                val db = drawn and 0xFF
-                val outA = max(origA, textColor.a).coerceIn(0, 255)
-                pixelsPtr[i] = ((outA shl 24) or (dr shl 16) or (dg shl 8) or db).toUInt()
+        for (py in 0 until height) {
+            val dibRow = py * stride
+            val bufRow = py * width
+            for (px in 0 until width) {
+                val drawn = pixelsPtr[dibRow + px].toInt()
+                val gdiAlphaByte = (drawn ushr 24) and 0xFF
+                val orig = beforeWords[bufRow + px]
+                val origA = (orig ushr 24) and 0xFF
+                if (gdiAlphaByte == 0xFF) {
+                    // Pixel untouched by GDI DrawTextW -> restore exact premul RGBA
+                    pixelsPtr[dibRow + px] = orig.toUInt()
+                } else {
+                    // GDI cleared alpha byte on touched texels -> extract final premul RGB safely
+                    val dr = (drawn ushr 16) and 0xFF
+                    val dg = (drawn ushr 8) and 0xFF
+                    val db = drawn and 0xFF
+                    val outA = max(origA, textColor.a).coerceIn(0, 255)
+                    pixelsPtr[dibRow + px] = ((outA shl 24) or (dr shl 16) or (dg shl 8) or db).toUInt()
+                }
             }
         }
     }
@@ -883,31 +1746,69 @@ object Win32StyledWidgetHelper {
         val sa = color.a
         if (sa <= 0) return
 
+        val solidWord = (0xFF shl 24) or (sr shl 16) or (sg shl 8) or sb
         val checkR = radiusPx > 0.5f
+        if (!checkR) {
+            if (sa >= 255) {
+                pixels.fill(solidWord, 0, w * h)
+            } else {
+                for (i in 0 until w * h) {
+                    pixels[i] = blendStraightOverArgb(sr, sg, sb, sa, pixels[i])
+                }
+            }
+            return
+        }
+
         val hw = w * 0.5f
         val hh = h * 0.5f
         val rx = radiusPx.coerceIn(0f, min(hw, hh))
+        val cornerSpan = ceil(rx + 1.5f).toInt()
+        val topEndY = min(cornerSpan, h)
+        val bottomStartY = max(topEndY, h - cornerSpan)
+        val centerLeftX = min(cornerSpan, w)
+        val centerRightX = max(centerLeftX, w - cornerSpan)
 
         for (py in 0 until h) {
             val rowOff = py * w
-            val dy = if (checkR) abs(py + 0.5f - hh) - (hh - rx) else 0f
-            for (px in 0 until w) {
-                val cov: Float = if (!checkR) {
-                    1f
+            if (py in topEndY until bottomStartY) {
+                if (sa >= 255) {
+                    pixels.fill(solidWord, rowOff, rowOff + w)
                 } else {
-                    val dx = abs(px + 0.5f - hw) - (hw - rx)
-                    val sd = roundedRectSignedDistance(dx, dy, rx)
-                    (0.5f - sd).coerceIn(0f, 1f)
+                    for (px in 0 until w) {
+                        pixels[rowOff + px] = blendStraightOverArgb(sr, sg, sb, sa, pixels[rowOff + px])
+                    }
                 }
+                continue
+            }
+
+            val dy = abs(py + 0.5f - hh) - (hh - rx)
+            for (px in 0 until centerLeftX) {
+                val dx = abs(px + 0.5f - hw) - (hw - rx)
+                val cov = (0.5f - roundedRectSignedDistance(dx, dy, rx)).coerceIn(0f, 1f)
                 if (cov <= 0f) continue
                 val effA = (sa * cov).roundToInt().coerceIn(0, 255)
                 if (effA <= 0) continue
                 val idx = rowOff + px
-                if (effA >= 255) {
-                    pixels[idx] = (0xFF shl 24) or (sr shl 16) or (sg shl 8) or sb
+                pixels[idx] = if (effA >= 255) solidWord else blendStraightOverArgb(sr, sg, sb, effA, pixels[idx])
+            }
+            if (centerRightX > centerLeftX) {
+                if (sa >= 255) {
+                    pixels.fill(solidWord, rowOff + centerLeftX, rowOff + centerRightX)
                 } else {
-                    pixels[idx] = blendStraightOverArgb(sr, sg, sb, effA, pixels[idx])
+                    for (px in centerLeftX until centerRightX) {
+                        val idx = rowOff + px
+                        pixels[idx] = blendStraightOverArgb(sr, sg, sb, sa, pixels[idx])
+                    }
                 }
+            }
+            for (px in centerRightX until w) {
+                val dx = abs(px + 0.5f - hw) - (hw - rx)
+                val cov = (0.5f - roundedRectSignedDistance(dx, dy, rx)).coerceIn(0f, 1f)
+                if (cov <= 0f) continue
+                val effA = (sa * cov).roundToInt().coerceIn(0, 255)
+                if (effA <= 0) continue
+                val idx = rowOff + px
+                pixels[idx] = if (effA >= 255) solidWord else blendStraightOverArgb(sr, sg, sb, effA, pixels[idx])
             }
         }
     }
@@ -996,23 +1897,58 @@ object Win32StyledWidgetHelper {
         val rx = radiusPx.coerceIn(0f, min(hw, hh))
         val bw = borderWidthPx.coerceIn(0.5f, min(hw, hh))
         val halfDash = if (style == CssBorderStyle.DASHED) 6 else if (style == CssBorderStyle.DOTTED) 2 else 0
+        val borderSpanY = ceil(rx + bw + 2f).toInt()
+        val topEndY = min(borderSpanY, height)
+        val bottomStartY = max(topEndY, height - borderSpanY)
+        val edgeBandX = ceil(bw + 2f).toInt()
+        val leftEndX = min(edgeBandX, width)
+        val rightStartX = max(leftEndX, width - edgeBandX)
 
         for (py in 0 until height) {
             val rowOff = py * width
             val dy = abs(py + 0.5f - hh) - (hh - rx)
-            for (px in 0 until width) {
-                if (halfDash > 0 && (((px + py) / halfDash) and 1) != 0) continue
-                val dx = abs(px + 0.5f - hw) - (hw - rx)
-                val sd = roundedRectSignedDistance(dx, dy, rx)
-                // Outside edge sd = 0, inner border edge sd = -bw
-                val outerCov = (0.5f - sd).coerceIn(0f, 1f)
-                val innerCov = (sd + bw + 0.5f).coerceIn(0f, 1f)
-                val strokeCov = min(outerCov, innerCov)
-                if (strokeCov <= 0f) continue
-                val effA = (borderColor.a * strokeCov).roundToInt().coerceIn(0, 255)
-                if (effA <= 0) continue
-                val idx = rowOff + px
-                pixels[idx] = blendStraightOverArgb(borderColor.r, borderColor.g, borderColor.b, effA, pixels[idx])
+            val isCornerRow = py < topEndY || py >= bottomStartY
+            if (isCornerRow) {
+                for (px in 0 until width) {
+                    if (halfDash > 0 && (((px + py) / halfDash) and 1) != 0) continue
+                    val dx = abs(px + 0.5f - hw) - (hw - rx)
+                    val sd = roundedRectSignedDistance(dx, dy, rx)
+                    val outerCov = (0.5f - sd).coerceIn(0f, 1f)
+                    val innerCov = (sd + bw + 0.5f).coerceIn(0f, 1f)
+                    val strokeCov = min(outerCov, innerCov)
+                    if (strokeCov <= 0f) continue
+                    val effA = (borderColor.a * strokeCov).roundToInt().coerceIn(0, 255)
+                    if (effA <= 0) continue
+                    val idx = rowOff + px
+                    pixels[idx] = blendStraightOverArgb(borderColor.r, borderColor.g, borderColor.b, effA, pixels[idx])
+                }
+            } else {
+                for (px in 0 until leftEndX) {
+                    if (halfDash > 0 && (((px + py) / halfDash) and 1) != 0) continue
+                    val dx = abs(px + 0.5f - hw) - (hw - rx)
+                    val sd = roundedRectSignedDistance(dx, dy, rx)
+                    val outerCov = (0.5f - sd).coerceIn(0f, 1f)
+                    val innerCov = (sd + bw + 0.5f).coerceIn(0f, 1f)
+                    val strokeCov = min(outerCov, innerCov)
+                    if (strokeCov <= 0f) continue
+                    val effA = (borderColor.a * strokeCov).roundToInt().coerceIn(0, 255)
+                    if (effA <= 0) continue
+                    val idx = rowOff + px
+                    pixels[idx] = blendStraightOverArgb(borderColor.r, borderColor.g, borderColor.b, effA, pixels[idx])
+                }
+                for (px in rightStartX until width) {
+                    if (halfDash > 0 && (((px + py) / halfDash) and 1) != 0) continue
+                    val dx = abs(px + 0.5f - hw) - (hw - rx)
+                    val sd = roundedRectSignedDistance(dx, dy, rx)
+                    val outerCov = (0.5f - sd).coerceIn(0f, 1f)
+                    val innerCov = (sd + bw + 0.5f).coerceIn(0f, 1f)
+                    val strokeCov = min(outerCov, innerCov)
+                    if (strokeCov <= 0f) continue
+                    val effA = (borderColor.a * strokeCov).roundToInt().coerceIn(0, 255)
+                    if (effA <= 0) continue
+                    val idx = rowOff + px
+                    pixels[idx] = blendStraightOverArgb(borderColor.r, borderColor.g, borderColor.b, effA, pixels[idx])
+                }
             }
         }
     }
@@ -1027,19 +1963,240 @@ object Win32StyledWidgetHelper {
         val hw = w * 0.5f
         val hh = h * 0.5f
         val rx = radiusPx.coerceIn(0f, min(hw, hh))
+        val rimSpanY = ceil(rx + 4f).toInt()
+        val topEndY = min(rimSpanY, h)
+        val bottomStartY = max(topEndY, h - rimSpanY)
+        val leftEndX = min(4, w)
+        val rightStartX = max(leftEndX, w - 4)
         for (py in 0 until h) {
             val rowOff = py * w
             val dy = abs(py + 0.5f - hh) - (hh - rx)
-            for (px in 0 until w) {
-                val dx = abs(px + 0.5f - hw) - (hw - rx)
-                val sd = roundedRectSignedDistance(dx, dy, rx)
-                if (sd > -1.5f && sd < 2.5f) {
-                    val alpha = (shadowColor.a * 0.35f * (1f - abs(sd) / 2.5f)).roundToInt().coerceIn(0, 120)
-                    if (alpha > 0) {
-                        val idx = rowOff + px
-                        pixels[idx] = blendStraightOverArgb(shadowColor.r, shadowColor.g, shadowColor.b, alpha, pixels[idx])
+            if (py < topEndY || py >= bottomStartY) {
+                for (px in 0 until w) {
+                    val dx = abs(px + 0.5f - hw) - (hw - rx)
+                    val sd = roundedRectSignedDistance(dx, dy, rx)
+                    if (sd > -1.5f && sd < 2.5f) {
+                        val alpha = (shadowColor.a * 0.35f * (1f - abs(sd) / 2.5f)).roundToInt().coerceIn(0, 120)
+                        if (alpha > 0) {
+                            val idx = rowOff + px
+                            pixels[idx] = blendStraightOverArgb(shadowColor.r, shadowColor.g, shadowColor.b, alpha, pixels[idx])
+                        }
                     }
                 }
+            } else {
+                for (px in 0 until leftEndX) {
+                    val dx = abs(px + 0.5f - hw) - (hw - rx)
+                    val sd = roundedRectSignedDistance(dx, dy, rx)
+                    if (sd > -1.5f && sd < 2.5f) {
+                        val alpha = (shadowColor.a * 0.35f * (1f - abs(sd) / 2.5f)).roundToInt().coerceIn(0, 120)
+                        if (alpha > 0) {
+                            val idx = rowOff + px
+                            pixels[idx] = blendStraightOverArgb(shadowColor.r, shadowColor.g, shadowColor.b, alpha, pixels[idx])
+                        }
+                    }
+                }
+                for (px in rightStartX until w) {
+                    val dx = abs(px + 0.5f - hw) - (hw - rx)
+                    val sd = roundedRectSignedDistance(dx, dy, rx)
+                    if (sd > -1.5f && sd < 2.5f) {
+                        val alpha = (shadowColor.a * 0.35f * (1f - abs(sd) / 2.5f)).roundToInt().coerceIn(0, 120)
+                        if (alpha > 0) {
+                            val idx = rowOff + px
+                            pixels[idx] = blendStraightOverArgb(shadowColor.r, shadowColor.g, shadowColor.b, alpha, pixels[idx])
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    internal fun chromiumActiveTabSignedDistance(
+        px: Float,
+        py: Float,
+        width: Float,
+        height: Float,
+        radii: ResolvedCornerRadii
+    ): Float {
+        val earR = radii.chromiumFilletEarPx
+        if (earR > 0.5f && width > earR * 2f + 2f) {
+            val earTopY = height - earR
+            if (py >= earTopY) {
+                if (px < earR) {
+                    val dxC = px
+                    val dyC = py - earTopY
+                    val dCenter = sqrt(dxC * dxC + dyC * dyC)
+                    return max(earR - dCenter, max(-px, py - height))
+                }
+                if (px > width - earR) {
+                    val dxC = width - px
+                    val dyC = py - earTopY
+                    val dCenter = sqrt(dxC * dxC + dyC * dyC)
+                    return max(earR - dCenter, max(px - width, py - height))
+                }
+            }
+            val innerW = (width - earR * 2f).coerceAtLeast(1f)
+            val hw = innerW * 0.5f
+            val hh = height * 0.5f
+            val relX = px - earR - hw
+            val relY = py - hh
+            val cornerR = if (relX > 0f) {
+                if (relY > 0f) radii.bottomRight else radii.topRight
+            } else {
+                if (relY > 0f) radii.bottomLeft else radii.topLeft
+            }.coerceIn(0f, min(hw, hh))
+            return roundedRectSignedDistance(abs(relX) - (hw - cornerR), abs(relY) - (hh - cornerR), cornerR)
+        }
+        val hw = width * 0.5f
+        val hh = height * 0.5f
+        val relX = px - hw
+        val relY = py - hh
+        val cornerR = if (relX > 0f) {
+            if (relY > 0f) radii.bottomRight else radii.topRight
+        } else {
+            if (relY > 0f) radii.bottomLeft else radii.topLeft
+        }.coerceIn(0f, min(hw, hh))
+        return roundedRectSignedDistance(abs(relX) - (hw - cornerR), abs(relY) - (hh - cornerR), cornerR)
+    }
+
+    private fun fillPerCornerRoundedSolidArgb(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        color: RgbaColor,
+        radii: ResolvedCornerRadii
+    ) {
+        val sa = color.a
+        if (sa <= 0) return
+        val solidWord = (0xFF shl 24) or (color.r shl 16) or (color.g shl 8) or color.b
+        val wf = w.toFloat()
+        val hf = h.toFloat()
+        for (py in 0 until h) {
+            val rowOff = py * w
+            val y = py + 0.5f
+            for (px in 0 until w) {
+                val sd = chromiumActiveTabSignedDistance(px + 0.5f, y, wf, hf, radii)
+                val cov = (0.5f - sd).coerceIn(0f, 1f)
+                if (cov <= 0f) continue
+                val effA = (sa * cov).roundToInt().coerceIn(0, 255)
+                if (effA <= 0) continue
+                val idx = rowOff + px
+                pixels[idx] = if (effA >= 255) solidWord else blendStraightOverArgb(color.r, color.g, color.b, effA, pixels[idx])
+            }
+        }
+    }
+
+    private fun fillPerCornerRoundedGradientArgb(
+        pixels: IntArray,
+        w: Int,
+        h: Int,
+        gradient: Gradient,
+        radii: ResolvedCornerRadii
+    ) {
+        val wf = w.toFloat()
+        val hf = h.toFloat()
+        when (gradient) {
+            is LinearGradient -> {
+                val norm = GradientStopNormalizer.normalizeLinear(gradient, wf, hf)
+                val dxLine = norm.x2 - norm.x1
+                val dyLine = norm.y2 - norm.y1
+                val invLenSq = 1f / (dxLine * dxLine + dyLine * dyLine).coerceAtLeast(1e-4f)
+                for (py in 0 until h) {
+                    val rowOff = py * w
+                    val y = py + 0.5f
+                    val gy = y - norm.y1
+                    for (px in 0 until w) {
+                        val x = px + 0.5f
+                        val cov = (0.5f - chromiumActiveTabSignedDistance(x, y, wf, hf, radii)).coerceIn(0f, 1f)
+                        if (cov <= 0f) continue
+                        val t = (((x - norm.x1) * dxLine + gy * dyLine) * invLenSq).coerceIn(0f, 1f)
+                        val c = sampleStops(norm.positions, norm.colors, t)
+                        val effA = (c.a * cov).roundToInt().coerceIn(0, 255)
+                        if (effA > 0) {
+                            val idx = rowOff + px
+                            pixels[idx] = blendStraightOverArgb(c.r, c.g, c.b, effA, pixels[idx])
+                        }
+                    }
+                }
+            }
+            is RadialGradient -> {
+                val norm = GradientStopNormalizer.normalizeRadial(gradient, wf, hf)
+                val invRx = 1f / norm.radiusX.coerceAtLeast(1f)
+                val invRy = 1f / norm.radiusY.coerceAtLeast(1f)
+                for (py in 0 until h) {
+                    val rowOff = py * w
+                    val y = py + 0.5f
+                    val ny = (y - norm.cy) * invRy
+                    for (px in 0 until w) {
+                        val x = px + 0.5f
+                        val cov = (0.5f - chromiumActiveTabSignedDistance(x, y, wf, hf, radii)).coerceIn(0f, 1f)
+                        if (cov <= 0f) continue
+                        val nx = (x - norm.cx) * invRx
+                        val t = sqrt(nx * nx + ny * ny).coerceIn(0f, 1f)
+                        val c = sampleStops(norm.positions, norm.colors, t)
+                        val effA = (c.a * cov).roundToInt().coerceIn(0, 255)
+                        if (effA > 0) {
+                            val idx = rowOff + px
+                            pixels[idx] = blendStraightOverArgb(c.r, c.g, c.b, effA, pixels[idx])
+                        }
+                    }
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun strokePerCornerRoundedBorderArgb(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        borderColor: RgbaColor,
+        borderWidthPx: Float,
+        radii: ResolvedCornerRadii,
+        style: CssBorderStyle
+    ) {
+        val bw = borderWidthPx.coerceIn(0.5f, min(width, height) * 0.5f)
+        val halfDash = if (style == CssBorderStyle.DASHED) 6 else if (style == CssBorderStyle.DOTTED) 2 else 0
+        val wf = width.toFloat()
+        val hf = height.toFloat()
+        val bottomCutoffY = if (radii.skipBottomBorder) height - ceil(bw).toInt() else height
+        for (py in 0 until height) {
+            if (radii.skipBottomBorder && py >= bottomCutoffY) {
+                val rowOff = py * width
+                val earSpan = ceil(radii.chromiumFilletEarPx + bw + 2f).toInt()
+                val y = py + 0.5f
+                for (px in 0 until min(earSpan, width)) {
+                    if (halfDash > 0 && (((px + py) / halfDash) and 1) != 0) continue
+                    val sd = chromiumActiveTabSignedDistance(px + 0.5f, y, wf, hf, radii)
+                    val strokeCov = min((0.5f - sd).coerceIn(0f, 1f), (sd + bw + 0.5f).coerceIn(0f, 1f))
+                    val effA = (borderColor.a * strokeCov).roundToInt().coerceIn(0, 255)
+                    if (effA > 0) {
+                        pixels[rowOff + px] = blendStraightOverArgb(borderColor.r, borderColor.g, borderColor.b, effA, pixels[rowOff + px])
+                    }
+                }
+                for (px in max(earSpan, width - earSpan) until width) {
+                    if (halfDash > 0 && (((px + py) / halfDash) and 1) != 0) continue
+                    val sd = chromiumActiveTabSignedDistance(px + 0.5f, y, wf, hf, radii)
+                    val strokeCov = min((0.5f - sd).coerceIn(0f, 1f), (sd + bw + 0.5f).coerceIn(0f, 1f))
+                    val effA = (borderColor.a * strokeCov).roundToInt().coerceIn(0, 255)
+                    if (effA > 0) {
+                        pixels[rowOff + px] = blendStraightOverArgb(borderColor.r, borderColor.g, borderColor.b, effA, pixels[rowOff + px])
+                    }
+                }
+                continue
+            }
+            val rowOff = py * width
+            val y = py + 0.5f
+            for (px in 0 until width) {
+                if (halfDash > 0 && (((px + py) / halfDash) and 1) != 0) continue
+                val sd = chromiumActiveTabSignedDistance(px + 0.5f, y, wf, hf, radii)
+                val outerCov = (0.5f - sd).coerceIn(0f, 1f)
+                val innerCov = (sd + bw + 0.5f).coerceIn(0f, 1f)
+                val strokeCov = min(outerCov, innerCov)
+                if (strokeCov <= 0f) continue
+                val effA = (borderColor.a * strokeCov).roundToInt().coerceIn(0, 255)
+                if (effA <= 0) continue
+                val idx = rowOff + px
+                pixels[idx] = blendStraightOverArgb(borderColor.r, borderColor.g, borderColor.b, effA, pixels[idx])
             }
         }
     }
@@ -1130,10 +2287,12 @@ object Win32StyledWidgetHelper {
 
     private fun ensureSurfaceDib(refDc: HDC, w: Int, h: Int): CPointer<UIntVar>? {
         if (reusableSurfaceDc != null && reusableSurfacePixels != null &&
-            reusableSurfaceW == w && reusableSurfaceH == h
+            reusableSurfaceW >= w && reusableSurfaceH >= h
         ) {
             return reusableSurfacePixels
         }
+        val allocW = max(w, reusableSurfaceW)
+        val allocH = max(h, reusableSurfaceH)
         reusableSurfaceOldBmp?.let { old -> reusableSurfaceDc?.let { dc -> SelectObject(dc, old) } }
         reusableSurfaceOldBmp = null
         reusableSurfaceBmp?.let { DeleteObject(it) }
@@ -1144,8 +2303,8 @@ object Win32StyledWidgetHelper {
         return memScoped {
             val bmi = alloc<BITMAPINFO>()
             bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
-            bmi.bmiHeader.biWidth = w
-            bmi.bmiHeader.biHeight = -h
+            bmi.bmiHeader.biWidth = allocW
+            bmi.bmiHeader.biHeight = -allocH
             bmi.bmiHeader.biPlanes = 1u
             bmi.bmiHeader.biBitCount = 32u
             bmi.bmiHeader.biCompression = BI_RGB.toUInt()
@@ -1161,8 +2320,8 @@ object Win32StyledWidgetHelper {
             reusableSurfaceOldBmp = SelectObject(dc, bmp)
             reusableSurfaceBmp = bmp
             reusableSurfacePixels = pixels
-            reusableSurfaceW = w
-            reusableSurfaceH = h
+            reusableSurfaceW = allocW
+            reusableSurfaceH = allocH
             pixels
         }
     }

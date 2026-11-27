@@ -546,12 +546,32 @@ internal object KdePainterSupport {
                 if (impl.nativeWidget.attributes["isTextInputComponent"] == true) {
                     InputFocusManager.setEditableInputFocused(true)
                 }
+                if (impl.nativeWidget.isEffectivelyFocusable()) {
+                    impl.setFocusedState(true)
+                }
             }
             this.onFocusOut = { _ ->
                 if (impl.nativeWidget.attributes["isTextInputComponent"] == true) {
                     InputFocusManager.setEditableInputFocused(false)
                 }
+                impl.setFocusedState(false)
             }
+        }
+    }
+
+    fun syncWidgetFocus(
+        impl: DesktopBaseNativeImpl<KdeWidgetHandle>,
+        focused: Boolean,
+        targetPtr: COpaquePointer? = impl.nativeWidget.qWidgetPtr
+    ) {
+        val ptr = targetPtr ?: return
+        val effective = focused && impl.nativeWidget.enabled && impl.isFocusable() && impl.nativeWidget.isEffectivelyFocusable()
+        if (effective) {
+            if (!KdeDynamicBindings.hasWidgetFocus(ptr)) {
+                KdeDynamicBindings.setWidgetFocus(ptr, true)
+            }
+        } else if (KdeDynamicBindings.hasWidgetFocus(ptr)) {
+            KdeDynamicBindings.setWidgetFocus(ptr, false)
         }
     }
 

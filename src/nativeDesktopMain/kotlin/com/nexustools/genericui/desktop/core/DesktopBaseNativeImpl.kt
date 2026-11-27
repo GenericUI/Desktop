@@ -135,6 +135,8 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     protected open fun onNativeStyleSynced() {}
 
+    protected open fun onNativeInputListenersChanged() {}
+
     fun notifyHostThemeChanged() {
         onNativeStyleSynced()
     }
@@ -261,6 +263,19 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
             onPointerUpListener != null ||
             onPointerEnterListener != null ||
             onPointerLeaveListener != null
+
+    fun hasAnyInputListener(): Boolean =
+        onClickListener != null ||
+            onDoubleClickListener != null ||
+            onContextMenuListener != null ||
+            onPointerDownListener != null ||
+            onPointerMoveListener != null ||
+            onPointerUpListener != null ||
+            onPointerEnterListener != null ||
+            onPointerLeaveListener != null ||
+            onWheelListener != null ||
+            onKeyDownListener != null ||
+            onKeyUpListener != null
 
     fun isPointerInteractionDisabled(): Boolean {
         if (nativeWidget.isSelfPointerEventsNone()) return true
@@ -1428,6 +1443,7 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         val styledPad = (nativeWidget.attributes["styledButtonVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
             ?: (nativeWidget.attributes["styledComponentVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
             ?: (nativeWidget.attributes["styledContainerVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
+            ?: (nativeWidget.attributes["styledTextInputVisuals"] as? com.nexustools.genericui.style.css.StyledVisualSpec)?.padding
         val resolvedPad = explicitPadding ?: styledPad ?: run {
             val pAll = styleSnapshot.paddingAll?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_P)
             val pX = styleSnapshot.paddingX?.toPixels()?.coerceAtLeast(0) ?: spacingTokenPx(tokens, TOKENS_PX) ?: pAll
@@ -1522,9 +1538,11 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
         return role == "styled-button" ||
             role == "styled-component" ||
             role == "styled-container" ||
+            role == "styled-text-input" ||
             nativeWidget.attributes.containsKey("styledButtonVisuals") ||
             nativeWidget.attributes.containsKey("styledComponentVisuals") ||
-            nativeWidget.attributes.containsKey("styledContainerVisuals")
+            nativeWidget.attributes.containsKey("styledContainerVisuals") ||
+            nativeWidget.attributes.containsKey("styledTextInputVisuals")
     }
 
     open fun acceptsTypographyStyles(): Boolean {
@@ -1687,46 +1705,57 @@ open class DesktopBaseNativeImpl<out W : DesktopNativeWidget>(
 
     override fun setOnClick(listener: (() -> Unit)?) {
         onClickListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnDoubleClick(listener: (() -> Unit)?) {
         onDoubleClickListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnContextMenu(listener: ((PointerEvent) -> Unit)?) {
         onContextMenuListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnPointerDown(listener: ((PointerEvent) -> Unit)?) {
         onPointerDownListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnPointerMove(listener: ((PointerEvent) -> Unit)?) {
         onPointerMoveListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnPointerUp(listener: ((PointerEvent) -> Unit)?) {
         onPointerUpListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnPointerEnter(listener: ((PointerEvent) -> Unit)?) {
         onPointerEnterListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnPointerLeave(listener: ((PointerEvent) -> Unit)?) {
         onPointerLeaveListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnWheel(listener: ((WheelEvent) -> Unit)?) {
         onWheelListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnKeyDown(listener: ((KeyEvent) -> Unit)?) {
         onKeyDownListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnKeyUp(listener: ((KeyEvent) -> Unit)?) {
         onKeyUpListener = listener
+        if (baseInitialized) onNativeInputListenersChanged()
     }
 
     override fun setOnBeforeTargetFramePresent(listener: ((frameSwapCount: Long, timestampMs: Double?) -> Unit)?) {

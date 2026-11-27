@@ -13,6 +13,10 @@ import com.nexustools.genericui.enums.bootstrap.BootstrapType
 import com.nexustools.genericui.enums.css.CssBorderStyle
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.image.ImageBuffer
+import com.nexustools.genericui.image.ImageDecodeOptions
+import com.nexustools.genericui.image.ImageLoader
+import com.nexustools.genericui.image.ImageSource
 import com.nexustools.genericui.macos.impl.MacosTabNativeImpl
 import com.nexustools.genericui.nativeimpl.tabs.TabNativeImpl
 import com.nexustools.genericui.style.bootstrap.ComponentBootstrap
@@ -25,6 +29,7 @@ import com.nexustools.genericui.style.css.CssTransform
 import com.nexustools.genericui.style.css.StyledVisualSpec
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.useContents
+import kotlinx.coroutines.Job
 import platform.AppKit.NSBezelStylePush
 import platform.AppKit.NSButton
 import platform.AppKit.NSCompositingOperation
@@ -32,12 +37,15 @@ import platform.AppKit.NSEvent
 import platform.AppKit.NSFont
 import platform.AppKit.NSFontWeightMedium
 import platform.AppKit.NSFontWeightRegular
+import platform.AppKit.NSImage
 import platform.AppKit.NSTextAlignmentCenter
 import platform.AppKit.NSView
 import platform.AppKit.drawInRect
 import platform.AppKit.size
+import platform.CoreGraphics.CGImageRelease
 import platform.CoreGraphics.CGPoint
 import platform.CoreGraphics.CGRectMake
+import platform.CoreGraphics.CGSizeMake
 import platform.Foundation.NSMakeRect
 import platform.Foundation.NSRect
 
@@ -56,6 +64,9 @@ internal class MacosTabHeaderCellView(
     private val surface = MacosSurfaceLayerSupport(this)
     private val foregroundView = MacosForegroundDrawView({ drawForeground() })
     private var closeButton: NSButton? = null
+    private var asyncIconLoadJob: Job? = null
+    private var asyncLoadingSpec: String? = null
+    private var asyncLoadedBuffer: ImageBuffer? = null
     private val closeTarget = MacosControlActionTarget {
         tabImpl?.onCloseClickedListener?.invoke() ?: onClose(index)
     }
@@ -63,7 +74,7 @@ internal class MacosTabHeaderCellView(
     init {
         setWantsLayer(true)
         addSubview(foregroundView)
-        if (tabImpl?.closableVal == true) {
+        if (tabImpl?.closableVal == true && !tabImpl.pinnedVal) {
             val cb = NSButton.buttonWithTitle("×", target = closeTarget, action = closeTarget.actionSelector).apply {
                 setBordered(false)
                 setBezelStyle(NSBezelStylePush)
@@ -176,26 +187,96 @@ internal class MacosTabHeaderCellView(
         )
         val iconSpec = tabImpl?.iconVal
         val iconPx = (tabImpl?.iconSizePxVal ?: 16).coerceIn(12, 20)
+        val effectiveTint = if (tabImpl?.tintImageToThemeVal != false) fg else null
         val iconImg = if (!iconSpec.isNullOrBlank()) {
-            MacosAppKitAppearance.resolveNsImage(iconSpec, iconPx, tintColor = fg)
+            MacosAppKitAppearance.resolveNsImage(iconSpec, iconPx, tintColor = effectiveTint)
+                ?: resolveAsyncTabIconNsImage(iconSpec, iconPx, effectiveTint)
         } else null
         val rightPad = if (closeButton != null) 24.0 else 8.0
         val usableW = (w - rightPad - 8.0).coerceAtLeast(16.0)
         val ts = attr.size().useContents { width to height }
-        val textStartX = if (iconImg != null && tabImpl?.iconPlacementVal == TabIconPlacement.START) 26.0 else 8.0
-        if (iconImg != null) {
+        val iconGap = if (iconImg != null) iconPx.toDouble() + 4.0 else 0.0
+        if (iconImg != null && tabImpl?.iconPlacementVal == TabIconPlacement.TOP) {
+            val topIconY = 3.0
+            val textY = (topIconY + iconPx + 2.0).coerceAtMost((h - ts.second).coerceAtLeast(topIconY))
             iconImg.drawInRect(
-                dstSpacePortionRect = CGRectMake(8.0, ((h - iconPx) * 0.5).coerceAtLeast(2.0), iconPx.toDouble(), iconPx.toDouble()),
+                dstSpacePortionRect = CGRectMake(((w - rightPad - iconPx) * 0.5).coerceAtLeast(8.0), topIconY, iconPx.toDouble(), iconPx.toDouble()),
                 fromRect = NSMakeRect(0.0, 0.0, 0.0, 0.0),
                 operation = NSCompositingOperation.NSCompositingOperationSourceOver,
                 fraction = 1.0,
                 respectFlipped = true,
                 hints = null
             )
+            attr.drawInRect(
+                CGRectMake(8.0, textY, usableW, ts.second + 2.0)
+            )
+        } else {
+            val textStartX = if (iconImg != null) 8.0 + iconGap else 8.0
+            val textDrawW = (usableW - iconGap).coerceAtLeast(0.0)
+            if (iconImg != null) {
+                iconImg.drawInRect(
+                    dstSpacePortionRect = CGRectMake(8.0, ((h - iconPx) * 0.5).coerceAtLeast(2.0), iconPx.toDouble(), iconPx.toDouble()),
+                    fromRect = NSMakeRect(0.0, 0.0, 0.0, 0.0),
+                    operation = NSCompositingOperation.NSCompositingOperationSourceOver,
+                    fraction = 1.0,
+                    respectFlipped = true,
+                    hints = null
+                )
+            }
+            attr.drawInRect(
+                CGRectMake(textStartX, ((h - ts.second) * 0.5).coerceAtLeast(2.0), textDrawW, ts.second + 2.0)
+            )
         }
-        attr.drawInRect(
-            CGRectMake(textStartX, ((h - ts.second) * 0.5).coerceAtLeast(2.0), (usableW - (textStartX - 8.0)).coerceAtLeast(0.0), ts.second + 2.0)
-        )
+    }
+
+    private fun resolveAsyncTabIconNsImage(
+        iconSpec: String,
+        iconPx: Int,
+        tintColor: RgbaColor?
+    ): NSImage? {
+        val trimmed = iconSpec.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) &&
+            !trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            return null
+        }
+        val cached = if (asyncLoadingSpec == trimmed) asyncLoadedBuffer else null
+        if (cached != null) {
+            val cg = MacosAppKitAppearance.createCgImageFromBuffer(cached, tintColor = tintColor) ?: return null
+            return try {
+                NSImage(cGImage = cg, size = CGSizeMake(iconPx.toDouble(), iconPx.toDouble()))
+            } finally {
+                CGImageRelease(cg)
+            }
+        }
+        if (asyncLoadingSpec != trimmed) {
+            asyncIconLoadJob?.cancel()
+            asyncLoadingSpec = trimmed
+            asyncLoadedBuffer = null
+            asyncIconLoadJob = ImageLoader.launchLoad(
+                source = ImageSource.fromUrl(trimmed),
+                options = ImageDecodeOptions(targetWidth = iconPx, targetHeight = iconPx, antialiasing = true),
+                onLoaded = { buf ->
+                    if (asyncLoadingSpec != trimmed) return@launchLoad
+                    asyncLoadedBuffer = buf
+                    MacosAppKitDispatch.onMainOrDefer {
+                        if (asyncLoadingSpec == trimmed) {
+                            foregroundView.syncToHost(this, forceRedraw = true)
+                            setNeedsDisplay(true)
+                        }
+                    }
+                },
+                onError = {}
+            )
+        }
+        return null
+    }
+
+    fun disposeIconLoad() {
+        asyncIconLoadJob?.cancel()
+        asyncIconLoadJob = null
+        asyncLoadedBuffer = null
+        asyncLoadingSpec = null
     }
 }
 
@@ -292,6 +373,9 @@ class MacosTabContainerNativeImpl(
         val darkTheme = MacosAppKitAppearance.isDarkTheme(nativeWidget)
         root.applyContainerBackdropSurface(darkTheme)
 
+        for (old in cellViews) {
+            old.disposeIconLoad()
+        }
         for (sub in root.stripView.subviews.filterIsInstance<NSView>()) {
             sub.removeFromSuperview()
         }

@@ -31,6 +31,7 @@ import com.nexustools.genericui.nativeimpl.feedback.SpinnerNativeImpl
 import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
 import com.nexustools.genericui.nativeimpl.form.RangeSliderNativeImpl
 import com.nexustools.genericui.nativeimpl.form.SelectNativeImpl
+import com.nexustools.genericui.nativeimpl.form.StyledTextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.form.TextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.io.FileSystemNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
@@ -235,6 +236,13 @@ class WindowsNativeFactory : NativeFactory {
 
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> =
         WindowsTextInputNativeImpl(Win32HwndHandle("Edit"), multiline)
+
+    override fun createStyledTextInput(multiline: Boolean, classPrefix: String): StyledTextInputNativeImpl<*> =
+        WindowsStyledTextInputNativeImpl(
+            widget = Win32HwndHandle("GenericUIStyledTextInputW"),
+            multiline = multiline,
+            classPrefix = classPrefix
+        )
 
     override fun createSelect(): SelectNativeImpl<*> = WindowsSelectNativeImpl()
 

@@ -56,6 +56,20 @@ class Win32SchannelTlsClient(
     private var encryptedBuffer = ByteArray(0)
     private var decryptedQueue = ByteArray(0)
 
+    var isPeerClosed: Boolean = false
+        private set
+
+    private enum class RawChunkStatus {
+        DATA,
+        TIMEOUT,
+        CLOSED
+    }
+
+    private data class RawChunkResult(
+        val status: RawChunkStatus,
+        val bytes: ByteArray? = null
+    )
+
     fun performHandshake(timeoutMs: Long): Boolean = memScoped {
         ensureSspiLoaded()
         val acquireCredFn = acquireCredentialsHandleAFn ?: return@memScoped false
@@ -247,6 +261,7 @@ class Win32SchannelTlsClient(
         if (handshakeLen > 0) {
             encryptedBuffer = handshakeBuf.copyOf(handshakeLen)
         }
+        isPeerClosed = false
 
         val sizesMem = allocArray<ByteVar>(20)
         memset(sizesMem, 0, 20u)
@@ -261,6 +276,7 @@ class Win32SchannelTlsClient(
     fun encryptAndSend(plainBytes: ByteArray, timeoutMs: Long = 10_000L): Boolean {
         val ctxt = ctxtHandlePtr ?: return false
         val encryptFn = encryptMessageFn ?: return false
+        if (isPeerClosed) return false
         if (plainBytes.isEmpty()) return true
 
         var offset = 0
@@ -318,79 +334,122 @@ class Win32SchannelTlsClient(
         return true
     }
 
-    fun receiveAndDecrypt(waitMs: Long): ByteArray? {
-        val ctxt = ctxtHandlePtr ?: return null
-        val decryptFn = decryptMessageFn ?: return null
+    /**
+     * Reads up to [length] decrypted plaintext bytes into [dest] starting at [offset].
+     *
+     * Returns:
+     * - `> 0`: number of plaintext bytes copied into [dest]
+     * - `0`: no plaintext arrived within [waitMs] (or [length] <= 0) while the TLS session remains open
+     * - `-1`: clean TLS `close_notify` (`SEC_I_CONTEXT_EXPIRED`), TCP EOF, or fatal TLS/socket close ([isPeerClosed] == true)
+     */
+    fun read(
+        dest: ByteArray,
+        offset: Int = 0,
+        length: Int = dest.size - offset,
+        waitMs: Long = 10_000L
+    ): Int {
+        if (offset < 0 || length < 0 || offset + length > dest.size) {
+            throw IndexOutOfBoundsException("Invalid TLS read slice offset=$offset length=$length size=${dest.size}")
+        }
+        if (length == 0) return 0
 
-        val incoming = recvRawChunk(waitMs)
-        if (incoming != null && incoming.isNotEmpty()) {
-            val combined = ByteArray(encryptedBuffer.size + incoming.size)
-            encryptedBuffer.copyInto(combined, 0)
-            incoming.copyInto(combined, encryptedBuffer.size)
-            encryptedBuffer = combined
+        if (decryptedQueue.isNotEmpty()) {
+            return drainDecryptedInto(dest, offset, length)
+        }
+        if (isPeerClosed) return -1
+
+        val ctxt = ctxtHandlePtr ?: run {
+            isPeerClosed = true
+            return -1
+        }
+        val decryptFn = decryptMessageFn ?: run {
+            isPeerClosed = true
+            return -1
         }
 
         if (encryptedBuffer.isNotEmpty()) {
-            memScoped {
-                while (encryptedBuffer.isNotEmpty()) {
-                    val secBuffers = allocArray<ByteVar>(64)
-                    memset(secBuffers, 0, 64u)
-                    val desc = allocArray<ByteVar>(16)
-                    writeUIntAt(desc, 0, SECBUFFER_VERSION)
-                    writeUIntAt(desc, 4, 4u)
-                    writePtrAt(desc, 8, secBuffers)
+            decryptBufferedRecords(ctxt, decryptFn, waitMs)
+            if (decryptedQueue.isNotEmpty()) {
+                return drainDecryptedInto(dest, offset, length)
+            }
+            if (isPeerClosed) return -1
+        }
 
-                    val workCopy = encryptedBuffer.copyOf()
-                    var shouldBreak = false
-
-                    workCopy.usePinned { pinnedWork ->
-                        writeUIntAt(secBuffers, 0, workCopy.size.toUInt())
-                        writeUIntAt(secBuffers, 4, SECBUFFER_DATA)
-                        writePtrAt(secBuffers, 8, pinnedWork.addressOf(0))
-
-                        for (b in 1..3) {
-                            writeUIntAt(secBuffers, b * 16, 0u)
-                            writeUIntAt(secBuffers, b * 16 + 4, SECBUFFER_EMPTY)
-                            writePtrAt(secBuffers, b * 16 + 8, null)
-                        }
-
-                        val rc = decryptFn(ctxt, desc, 0u, null)
-                        if (rc == SEC_E_INCOMPLETE_MESSAGE) {
-                            shouldBreak = true
-                            return@usePinned
-                        }
-                        if (rc != SEC_E_OK && rc != SEC_I_RENEGOTIATE && rc != SEC_I_CONTEXT_EXPIRED) {
-                            encryptedBuffer = ByteArray(0)
-                            shouldBreak = true
-                            return@usePinned
-                        }
-
-                        var extraBytes: ByteArray? = null
-                        for (b in 0..3) {
-                            val bLen = readUIntAt(secBuffers, b * 16).toInt()
-                            val bType = readUIntAt(secBuffers, b * 16 + 4)
-                            val bPtr = readPtrAt(secBuffers, b * 16 + 8)
-                            if (bType == SECBUFFER_DATA && bLen > 0 && bPtr != null) {
-                                val plainChunk = ByteArray(bLen)
-                                plainChunk.usePinned { pinnedPlain ->
-                                    memcpy(pinnedPlain.addressOf(0), bPtr, bLen.toULong())
-                                }
-                                appendDecrypted(plainChunk)
-                            } else if (bType == SECBUFFER_EXTRA && bLen > 0 && bPtr != null) {
-                                val extra = ByteArray(bLen)
-                                extra.usePinned { pinnedExtra ->
-                                    memcpy(pinnedExtra.addressOf(0), bPtr, bLen.toULong())
-                                }
-                                extraBytes = extra
-                            }
-                        }
-                        encryptedBuffer = extraBytes ?: ByteArray(0)
-                        if (rc == SEC_I_CONTEXT_EXPIRED) {
-                            shouldBreak = true
-                        }
+        val clampedWait = waitMs.coerceAtLeast(0L)
+        var attempts = 0
+        while (attempts < 16) {
+            attempts++
+            val sliceWait = if (attempts == 1) clampedWait else minOf(clampedWait, 1000L)
+            val raw = recvRawChunkWithStatus(sliceWait)
+            when (raw.status) {
+                RawChunkStatus.CLOSED -> {
+                    isPeerClosed = true
+                    encryptedBuffer = ByteArray(0)
+                    return if (decryptedQueue.isNotEmpty()) drainDecryptedInto(dest, offset, length) else -1
+                }
+                RawChunkStatus.TIMEOUT -> {
+                    return if (decryptedQueue.isNotEmpty()) drainDecryptedInto(dest, offset, length) else 0
+                }
+                RawChunkStatus.DATA -> {
+                    val incoming = raw.bytes ?: ByteArray(0)
+                    if (incoming.isNotEmpty()) {
+                        appendEncrypted(incoming)
+                        decryptBufferedRecords(ctxt, decryptFn, clampedWait.coerceAtLeast(1000L))
                     }
+                    if (decryptedQueue.isNotEmpty()) {
+                        return drainDecryptedInto(dest, offset, length)
+                    }
+                    if (isPeerClosed) {
+                        return -1
+                    }
+                    if (clampedWait == 0L) {
+                        return 0
+                    }
+                }
+            }
+        }
+        return if (decryptedQueue.isNotEmpty()) drainDecryptedInto(dest, offset, length) else if (isPeerClosed) -1 else 0
+    }
 
-                    if (shouldBreak) break
+    fun receiveAndDecrypt(waitMs: Long): ByteArray? {
+        if (decryptedQueue.isNotEmpty()) {
+            val ready = decryptedQueue
+            decryptedQueue = ByteArray(0)
+            return ready
+        }
+        if (isPeerClosed) return null
+        val ctxt = ctxtHandlePtr ?: run {
+            isPeerClosed = true
+            return null
+        }
+        val decryptFn = decryptMessageFn ?: run {
+            isPeerClosed = true
+            return null
+        }
+
+        if (encryptedBuffer.isNotEmpty()) {
+            decryptBufferedRecords(ctxt, decryptFn, waitMs)
+            if (decryptedQueue.isNotEmpty()) {
+                val out = decryptedQueue
+                decryptedQueue = ByteArray(0)
+                return out
+            }
+            if (isPeerClosed) return null
+        }
+
+        val raw = recvRawChunkWithStatus(waitMs)
+        when (raw.status) {
+            RawChunkStatus.CLOSED -> {
+                isPeerClosed = true
+                encryptedBuffer = ByteArray(0)
+                return null
+            }
+            RawChunkStatus.TIMEOUT -> return null
+            RawChunkStatus.DATA -> {
+                val incoming = raw.bytes
+                if (incoming != null && incoming.isNotEmpty()) {
+                    appendEncrypted(incoming)
+                    decryptBufferedRecords(ctxt, decryptFn, waitMs.coerceAtLeast(1000L))
                 }
             }
         }
@@ -401,7 +460,262 @@ class Win32SchannelTlsClient(
         return out
     }
 
+    internal fun processDecryptOutcomeForTest(
+        rc: Int,
+        plaintextChunk: ByteArray = ByteArray(0),
+        extraCiphertext: ByteArray = ByteArray(0)
+    ) {
+        if (plaintextChunk.isNotEmpty()) {
+            appendDecrypted(plaintextChunk)
+        }
+        when (rc) {
+            SEC_E_OK -> {
+                encryptedBuffer = extraCiphertext.copyOf()
+            }
+            SEC_I_CONTEXT_EXPIRED -> {
+                encryptedBuffer = ByteArray(0)
+                isPeerClosed = true
+            }
+            SEC_E_INCOMPLETE_MESSAGE -> {
+                // Keep buffered encrypted bytes awaiting additional ciphertext.
+            }
+            else -> {
+                encryptedBuffer = ByteArray(0)
+                isPeerClosed = true
+            }
+        }
+    }
+
+    private fun decryptBufferedRecords(
+        ctxt: CPointer<ByteVar>,
+        decryptFn: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, UInt, CPointer<UIntVar>?) -> Int>>,
+        renegotiateTimeoutMs: Long
+    ) {
+        if (encryptedBuffer.isEmpty() || isPeerClosed) return
+        memScoped {
+            val secBuffers = allocArray<ByteVar>(64)
+            val desc = allocArray<ByteVar>(16)
+            while (encryptedBuffer.isNotEmpty() && !isPeerClosed) {
+                memset(secBuffers, 0, 64u)
+                writeUIntAt(desc, 0, SECBUFFER_VERSION)
+                writeUIntAt(desc, 4, 4u)
+                writePtrAt(desc, 8, secBuffers)
+
+                val workCopy = encryptedBuffer.copyOf()
+                var shouldBreak = false
+                var renegotiateToken: ByteArray? = null
+
+                workCopy.usePinned { pinnedWork ->
+                    writeUIntAt(secBuffers, 0, workCopy.size.toUInt())
+                    writeUIntAt(secBuffers, 4, SECBUFFER_DATA)
+                    writePtrAt(secBuffers, 8, pinnedWork.addressOf(0))
+
+                    for (b in 1..3) {
+                        writeUIntAt(secBuffers, b * 16, 0u)
+                        writeUIntAt(secBuffers, b * 16 + 4, SECBUFFER_EMPTY)
+                        writePtrAt(secBuffers, b * 16 + 8, null)
+                    }
+
+                    val rc = decryptFn(ctxt, desc, 0u, null)
+                    if (rc == SEC_E_INCOMPLETE_MESSAGE) {
+                        shouldBreak = true
+                        return@usePinned
+                    }
+                    if (rc != SEC_E_OK && rc != SEC_I_RENEGOTIATE && rc != SEC_I_CONTEXT_EXPIRED) {
+                        encryptedBuffer = ByteArray(0)
+                        isPeerClosed = true
+                        shouldBreak = true
+                        return@usePinned
+                    }
+
+                    var extraBytes: ByteArray? = null
+                    for (b in 0..3) {
+                        val bLen = readUIntAt(secBuffers, b * 16).toInt()
+                        val bType = readUIntAt(secBuffers, b * 16 + 4)
+                        val bPtr = readPtrAt(secBuffers, b * 16 + 8)
+                        if (bType == SECBUFFER_DATA && bLen > 0 && bPtr != null) {
+                            val plainChunk = ByteArray(bLen)
+                            plainChunk.usePinned { pinnedPlain ->
+                                memcpy(pinnedPlain.addressOf(0), bPtr, bLen.toULong())
+                            }
+                            appendDecrypted(plainChunk)
+                        } else if (bType == SECBUFFER_EXTRA && bLen > 0 && bPtr != null) {
+                            val extra = ByteArray(bLen)
+                            extra.usePinned { pinnedExtra ->
+                                memcpy(pinnedExtra.addressOf(0), bPtr, bLen.toULong())
+                            }
+                            extraBytes = extra
+                        }
+                    }
+
+                    if (rc == SEC_I_RENEGOTIATE) {
+                        renegotiateToken = extraBytes ?: ByteArray(0)
+                        encryptedBuffer = ByteArray(0)
+                    } else if (rc == SEC_I_CONTEXT_EXPIRED) {
+                        encryptedBuffer = ByteArray(0)
+                        isPeerClosed = true
+                        shouldBreak = true
+                    } else {
+                        encryptedBuffer = extraBytes ?: ByteArray(0)
+                    }
+                }
+
+                val pendingReneg = renegotiateToken
+                if (pendingReneg != null) {
+                    if (!performRenegotiationStep(ctxt, pendingReneg, renegotiateTimeoutMs.coerceIn(1000L, 15_000L))) {
+                        isPeerClosed = true
+                        shouldBreak = true
+                    }
+                }
+
+                if (shouldBreak) break
+            }
+        }
+    }
+
+    private fun performRenegotiationStep(
+        ctxt: CPointer<ByteVar>,
+        initialToken: ByteArray,
+        timeoutMs: Long
+    ): Boolean = memScoped {
+        val cred = credHandlePtr ?: return@memScoped false
+        val initCtxFn = initializeSecurityContextAFn ?: return@memScoped false
+        val queryAttrFn = queryContextAttributesAFn
+        val freeBufFn = freeContextBufferFn
+
+        val reqFlags = ISC_REQ_SEQUENCE_DETECT or
+            ISC_REQ_REPLAY_DETECT or
+            ISC_REQ_CONFIDENTIALITY or
+            ISC_REQ_EXTENDED_ERROR or
+            ISC_REQ_ALLOCATE_MEMORY or
+            ISC_REQ_STREAM or
+            ISC_REQ_MANUAL_CRED_VALIDATION
+
+        val targetName = host.cstr.ptr
+        val contextAttr = alloc<UIntVar>().apply { value = 0u }
+        val expiry = allocArray<ByteVar>(16)
+        var handshakeBuf = if (initialToken.isNotEmpty()) initialToken.copyOf(maxOf(initialToken.size, 16384)) else ByteArray(16384)
+        var handshakeLen = initialToken.size
+        var status = SEC_I_CONTINUE_NEEDED
+
+        val inBuffers = allocArray<ByteVar>(32)
+        val inDesc = allocArray<ByteVar>(16)
+        val outBuf = allocArray<ByteVar>(16)
+        val outDesc = allocArray<ByteVar>(16)
+
+        while (status == SEC_I_CONTINUE_NEEDED || status == SEC_E_INCOMPLETE_MESSAGE) {
+            if (status == SEC_E_INCOMPLETE_MESSAGE) {
+                val raw = recvRawChunkWithStatus(timeoutMs)
+                if (raw.status != RawChunkStatus.DATA || raw.bytes == null || raw.bytes.isEmpty()) {
+                    return@memScoped false
+                }
+                if (handshakeLen + raw.bytes.size > handshakeBuf.size) {
+                    handshakeBuf = handshakeBuf.copyOf((handshakeLen + raw.bytes.size) * 2)
+                }
+                raw.bytes.copyInto(handshakeBuf, destinationOffset = handshakeLen)
+                handshakeLen += raw.bytes.size
+            }
+
+            memset(inBuffers, 0, 32u)
+            writeUIntAt(inDesc, 0, SECBUFFER_VERSION)
+            writeUIntAt(inDesc, 4, 2u)
+            writePtrAt(inDesc, 8, inBuffers)
+
+            memset(outBuf, 0, 16u)
+            writeUIntAt(outBuf, 4, SECBUFFER_TOKEN)
+            writeUIntAt(outDesc, 0, SECBUFFER_VERSION)
+            writeUIntAt(outDesc, 4, 1u)
+            writePtrAt(outDesc, 8, outBuf)
+
+            status = handshakeBuf.usePinned { pinnedIn ->
+                writeUIntAt(inBuffers, 0, handshakeLen.toUInt())
+                writeUIntAt(inBuffers, 4, SECBUFFER_TOKEN)
+                writePtrAt(inBuffers, 8, if (handshakeLen > 0) pinnedIn.addressOf(0) else null)
+
+                writeUIntAt(inBuffers, 16, 0u)
+                writeUIntAt(inBuffers, 20, SECBUFFER_EMPTY)
+                writePtrAt(inBuffers, 24, null)
+
+                initCtxFn(
+                    cred,
+                    ctxt,
+                    targetName,
+                    reqFlags,
+                    0u,
+                    0u,
+                    inDesc,
+                    0u,
+                    ctxt,
+                    outDesc,
+                    contextAttr.ptr,
+                    expiry
+                )
+            }
+
+            if (status == SEC_E_INCOMPLETE_MESSAGE) continue
+
+            val outLen = readUIntAt(outBuf, 0).toInt()
+            val outPtr = readPtrAt(outBuf, 8)
+            if (outLen > 0 && outPtr != null) {
+                val sentOk = sendRawPtr(outPtr, outLen, timeoutMs)
+                freeBufFn?.invoke(outPtr)
+                if (!sentOk) return@memScoped false
+            }
+
+            if (status != SEC_E_OK && status != SEC_I_CONTINUE_NEEDED) {
+                return@memScoped false
+            }
+
+            val extraType = readUIntAt(inBuffers, 20)
+            val extraLen = readUIntAt(inBuffers, 16).toInt()
+            if (extraType == SECBUFFER_EXTRA && extraLen in 1..handshakeLen) {
+                handshakeBuf.copyInto(
+                    handshakeBuf,
+                    destinationOffset = 0,
+                    startIndex = handshakeLen - extraLen,
+                    endIndex = handshakeLen
+                )
+                handshakeLen = extraLen
+            } else {
+                handshakeLen = 0
+            }
+        }
+
+        if (handshakeLen > 0) {
+            appendEncrypted(handshakeBuf.copyOf(handshakeLen))
+        }
+        val sizesMem = allocArray<ByteVar>(20)
+        memset(sizesMem, 0, 20u)
+        if (queryAttrFn != null && queryAttrFn(ctxt, SECPKG_ATTR_STREAM_SIZES, sizesMem) == SEC_E_OK) {
+            cbHeader = readUIntAt(sizesMem, 0).toInt().coerceAtLeast(1)
+            cbTrailer = readUIntAt(sizesMem, 4).toInt().coerceAtLeast(1)
+            cbMaximumMessage = readUIntAt(sizesMem, 8).toInt().coerceIn(512, 65536)
+        }
+        true
+    }
+
+    private fun drainDecryptedInto(dest: ByteArray, offset: Int, length: Int): Int {
+        val count = minOf(length, decryptedQueue.size)
+        if (count <= 0) return 0
+        decryptedQueue.copyInto(dest, destinationOffset = offset, startIndex = 0, endIndex = count)
+        decryptedQueue = if (count >= decryptedQueue.size) {
+            ByteArray(0)
+        } else {
+            decryptedQueue.copyOfRange(count, decryptedQueue.size)
+        }
+        return count
+    }
+
+    private fun appendEncrypted(chunk: ByteArray) {
+        if (chunk.isEmpty()) return
+        val next = ByteArray(encryptedBuffer.size + chunk.size)
+        encryptedBuffer.copyInto(next, 0)
+        chunk.copyInto(next, encryptedBuffer.size)
+        encryptedBuffer = next
+    }
+
     fun dispose() {
+        isPeerClosed = true
         val ctxt = ctxtHandlePtr
         ctxtHandlePtr = null
         if (ctxt != null) {
@@ -461,7 +775,12 @@ class Win32SchannelTlsClient(
         true
     }
 
-    private fun recvRawChunk(waitMs: Long): ByteArray? = memScoped {
+    private fun recvRawChunk(waitMs: Long): ByteArray? {
+        val res = recvRawChunkWithStatus(waitMs)
+        return if (res.status == RawChunkStatus.DATA) res.bytes else null
+    }
+
+    private fun recvRawChunkWithStatus(waitMs: Long): RawChunkResult = memScoped {
         val readSet = alloc<fd_set>()
         posix_FD_ZERO(readSet.ptr)
         readSet.fd_count = 1u
@@ -473,18 +792,27 @@ class Win32SchannelTlsClient(
         tv.tv_usec = ((clamped % 1000L) * 1000L).toInt()
 
         val ready = platform.windows.select(0, readSet.ptr, null, null, tv.ptr)
-        if (ready <= 0) return@memScoped null
+        if (ready == 0) return@memScoped RawChunkResult(RawChunkStatus.TIMEOUT)
+        if (ready < 0) return@memScoped RawChunkResult(RawChunkStatus.CLOSED)
 
         val cap = 32768
         val buf = allocArray<ByteVar>(cap)
         val n = recv(sock, buf, cap, 0)
-        if (n <= 0) return@memScoped null
+        if (n == 0) return@memScoped RawChunkResult(RawChunkStatus.CLOSED)
+        if (n < 0) {
+            val wsaErr = platform.posix.WSAGetLastError()
+            return@memScoped if (wsaErr == 10035 || wsaErr == 10004) {
+                RawChunkResult(RawChunkStatus.TIMEOUT)
+            } else {
+                RawChunkResult(RawChunkStatus.CLOSED)
+            }
+        }
 
         val out = ByteArray(n)
         out.usePinned { pinned ->
             memcpy(pinned.addressOf(0), buf, n.toULong())
         }
-        out
+        RawChunkResult(RawChunkStatus.DATA, out)
     }
 
     private fun writeUIntAt(base: CPointer<ByteVar>, byteOffset: Int, value: UInt) {
@@ -526,11 +854,11 @@ class Win32SchannelTlsClient(
 
         private const val SECPKG_ATTR_STREAM_SIZES: UInt = 4u
 
-        private const val SEC_E_OK: Int = 0
+        internal const val SEC_E_OK: Int = 0
         private const val SEC_I_CONTINUE_NEEDED: Int = 0x00090312
-        private const val SEC_I_CONTEXT_EXPIRED: Int = 0x00090317
+        internal const val SEC_I_CONTEXT_EXPIRED: Int = 0x00090317
         private const val SEC_I_RENEGOTIATE: Int = 0x00090321
-        private val SEC_E_INCOMPLETE_MESSAGE: Int = 0x80090318u.toInt()
+        internal val SEC_E_INCOMPLETE_MESSAGE: Int = 0x80090318u.toInt()
 
         private var sspiResolved: Boolean = false
 

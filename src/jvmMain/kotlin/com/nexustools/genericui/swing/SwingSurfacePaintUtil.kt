@@ -403,12 +403,14 @@ internal object SwingSurfacePaintUtil {
             if (op < 0.999f) {
                 g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, op)
             }
-            val arc = ((spec.borderRadiusPx ?: 0f) * 2f).coerceAtLeast(0f)
+            val shapeW = (width - 1).coerceAtLeast(1).toFloat()
+            val shapeH = (height - 1).coerceAtLeast(1).toFloat()
+            val arc = ((spec.borderRadiusPx ?: 0f) * 2f).coerceIn(0f, minOf(shapeW, shapeH))
             val shape = RoundRectangle2D.Float(
                 0.5f,
                 0.5f,
-                (width - 1).coerceAtLeast(1).toFloat(),
-                (height - 1).coerceAtLeast(1).toFloat(),
+                shapeW,
+                shapeH,
                 arc,
                 arc
             )
@@ -457,13 +459,16 @@ internal object SwingSurfacePaintUtil {
                 val ringW = (spec.focusRingWidthPx ?: 2f).coerceAtLeast(1f)
                 g2.color = toAwtColor(ringCol)
                 g2.stroke = BasicStroke(ringW)
+                val ringBoxW = (width - 3).coerceAtLeast(1).toFloat()
+                val ringBoxH = (height - 3).coerceAtLeast(1).toFloat()
+                val ringArc = minOf(arc, ringBoxW, ringBoxH)
                 val ringShape = RoundRectangle2D.Float(
                     1.5f,
                     1.5f,
-                    (width - 3).coerceAtLeast(1).toFloat(),
-                    (height - 3).coerceAtLeast(1).toFloat(),
-                    arc,
-                    arc
+                    ringBoxW,
+                    ringBoxH,
+                    ringArc,
+                    ringArc
                 )
                 g2.draw(ringShape)
             }

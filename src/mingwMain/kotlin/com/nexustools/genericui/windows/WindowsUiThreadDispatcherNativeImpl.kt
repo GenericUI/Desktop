@@ -5,6 +5,7 @@ package com.nexustools.genericui.windows
 import com.nexustools.genericui.desktop.threading.DesktopNativeUiThreadDispatcherImpl
 import com.nexustools.genericui.threading.GenericUiThreading
 import platform.windows.GetCurrentThreadId
+import platform.windows.IsWindow
 import platform.windows.PostMessageW
 import platform.windows.PostThreadMessageW
 import kotlin.concurrent.AtomicInt
@@ -31,10 +32,11 @@ class WindowsUiThreadDispatcherNativeImpl : DesktopNativeUiThreadDispatcherImpl(
 
     override fun onUiTaskQueuedFromLogic() {
         if (!WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) return
-        val hwnd = Win32NativeWindowHost.activeHwnd
-        if (hwnd != null) {
-            PostMessageW(hwnd, Win32NativeWindowHost.WM_APP_UI_DISPATCH, 0uL, 0L)
-            return
+        val targetHwnd = Win32NativeWindowHost.resolveTimerHostHwnd()
+        if (targetHwnd != null && IsWindow(targetHwnd) != 0) {
+            if (PostMessageW(targetHwnd, Win32NativeWindowHost.WM_APP_UI_DISPATCH, 0uL, 0L) != 0) {
+                return
+            }
         }
         val threadId = registeredUiThreadId.value
         if (threadId != 0 && GetCurrentThreadId().toInt() != threadId) {
@@ -46,21 +48,27 @@ class WindowsUiThreadDispatcherNativeImpl : DesktopNativeUiThreadDispatcherImpl(
         private val registeredUiThreadId = AtomicInt(0)
         internal var activeDispatcher: WindowsUiThreadDispatcherNativeImpl? = null
 
-        internal fun attachCurrentThreadAsUiThread() {
+        fun getRegisteredUiThreadId(): Int = registeredUiThreadId.value
+
+        fun attachCurrentThreadAsUiThread() {
             registeredUiThreadId.value = GetCurrentThreadId().toInt()
+        }
+
+        fun attachCurrentThreadAsUiThreadIfUnset() {
+            registeredUiThreadId.compareAndSet(0, GetCurrentThreadId().toInt())
         }
 
         internal fun clearUiThreadBinding() {
             registeredUiThreadId.value = 0
         }
 
-        internal fun drainPendingUiQueue() {
+        fun drainPendingUiQueue(): Int {
             val dispatcher = activeDispatcher
             if (dispatcher != null) {
-                dispatcher.drainUiQueue()
-            } else {
-                GenericUiThreading.flushAllQueues()
+                return dispatcher.drainUiQueue()
             }
+            GenericUiThreading.flushAllQueues()
+            return 0
         }
     }
 }

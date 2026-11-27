@@ -2,7 +2,7 @@ package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.animation.AnimationSpec
 import com.nexustools.genericui.animation.Animator
-import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.shell.Window
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.enums.window.WindowState

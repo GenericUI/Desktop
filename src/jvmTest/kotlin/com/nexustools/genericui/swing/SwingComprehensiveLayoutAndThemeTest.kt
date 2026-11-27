@@ -299,7 +299,12 @@ class SwingComprehensiveLayoutAndThemeTest {
             assertTrue(card.nativeWidget.width > 400 && card.nativeWidget.height > 60)
             assertTrue(alert.nativeWidget.height >= 30)
             assertTrue(heading.nativeWidget.font.size2D > bodyParagraph.nativeWidget.font.size2D)
-            assertTrue(bodyParagraph.nativeWidget.height > 28, "Long wrapped paragraph should expand across multiple lines, got h=${bodyParagraph.nativeWidget.height}")
+            val singleLineParagraphH = SwingTextImpl("p", "").apply { setText("Short") }
+                .measureWrappedSize(card.nativeWidget.width.coerceAtLeast(120)).height.coerceAtLeast(14)
+            assertTrue(
+                bodyParagraph.nativeWidget.height >= singleLineParagraphH * 2,
+                "Long wrapped paragraph should expand across multiple lines, got h=${bodyParagraph.nativeWidget.height} vs singleLineH=$singleLineParagraphH"
+            )
             val markdownHtml = markdown.nativeWidget.getClientProperty("renderedHtml") as? String ?: markdown.nativeWidget.text
             assertTrue(markdownHtml.contains("<h1>Notes</h1>") && markdownHtml.contains("<b>bold</b>"))
 

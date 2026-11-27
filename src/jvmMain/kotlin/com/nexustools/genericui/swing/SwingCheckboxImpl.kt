@@ -1,6 +1,8 @@
 package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
 import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JRadioButton
@@ -19,6 +21,7 @@ class SwingCheckboxImpl(
     override val nativeWidget: JToggleButton get() = super.nativeWidget as JToggleButton
 
     private var onCheckedChangedListener: ((Boolean) -> Unit)? = null
+    private var focusedStateVal: Boolean = false
 
     init {
         nativeWidget.isOpaque = false
@@ -26,6 +29,19 @@ class SwingCheckboxImpl(
         nativeWidget.addActionListener {
             onCheckedChangedListener?.invoke(nativeWidget.isSelected)
         }
+        nativeWidget.addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent?) {
+                val effective = isEnabled() && isEffectivelyFocusableInSwing()
+                focusedStateVal = effective
+                if (!effective) {
+                    clearAwtFocusOnEdtIfOwner(nativeWidget)
+                }
+            }
+
+            override fun focusLost(e: FocusEvent?) {
+                focusedStateVal = false
+            }
+        })
         syncSwingAppearance()
     }
 
@@ -56,4 +72,16 @@ class SwingCheckboxImpl(
     override fun setOnCheckedChanged(listener: ((Boolean) -> Unit)?) {
         onCheckedChangedListener = listener
     }
+
+    override fun setFocusedState(focused: Boolean) {
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        focusedStateVal = effective
+        if (effective) {
+            requestAwtFocusOnEdt(nativeWidget)
+        } else {
+            clearAwtFocusOnEdtIfOwner(nativeWidget)
+        }
+    }
+
+    override fun isFocusedState(): Boolean = focusedStateVal || nativeWidget.isFocusOwner
 }

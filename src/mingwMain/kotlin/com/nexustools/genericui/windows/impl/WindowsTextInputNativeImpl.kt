@@ -343,6 +343,11 @@ class WindowsTextInputNativeImpl(
         }
     }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        Win32RetainedControlSupport.syncOsFocusIfNeeded(this, nativeWidget.hwnd, focused)
+    }
+
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size =
         when (resolveVariantKind()) {
             "textarea" -> Size(260, 88)

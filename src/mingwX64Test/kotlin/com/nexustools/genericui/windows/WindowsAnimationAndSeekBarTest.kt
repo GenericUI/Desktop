@@ -4,14 +4,18 @@ package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.animation.AnimationSpec
 import com.nexustools.genericui.component.form.RangeSlider
-import com.nexustools.genericui.component.form.StyledSlider
-import com.nexustools.genericui.component.surface.StyledComponent
+import com.nexustools.genericui.component.form.styled.StyledSlider
+import com.nexustools.genericui.component.layout.Container
+import com.nexustools.genericui.component.shell.Application
+import com.nexustools.genericui.component.shell.Window
+import com.nexustools.genericui.component.surface.styled.StyledComponent
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopStyledComponentNativeImpl
 import com.nexustools.genericui.enums.css.CssCursor
 import com.nexustools.genericui.enums.css.CssPointerEvents
 import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.CssLength
@@ -133,6 +137,13 @@ class WindowsAnimationAndSeekBarTest {
 
     @Test
     fun testWin32StyledSliderStyledComponentZIndexPointerEventsWhileRangeSliderUsesTrackBar() = memScoped {
+        val prevVisual = Win32NativeWindowHost.visualTestMode
+        val prevInteractive = WindowsApplicationNativeImpl.interactiveWin32GuiEnabled
+        val prevFactory = GenericUI.activeFactory
+        val prevApp = Application.current
+        Win32NativeWindowHost.visualTestMode = true
+        WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = true
+        Application.current = null
         val factory = WindowsNativeFactory()
         GenericUI.initialize(factory)
 
@@ -141,15 +152,8 @@ class WindowsAnimationAndSeekBarTest {
         assertTrue(styledCompImpl is WindowsStyledComponentNativeImpl)
         assertTrue(styledCompImpl is DesktopStyledComponentNativeImpl<*>)
 
-        // 2. StyledSlider composes retained StyledContainer + StyledComponent + StyledButton children
+        // 2. Host StyledSlider, StyledComponent, and RangeSlider in a shown Window so Components realize native impls
         val sliderComp = StyledSlider(min = 0.0, max = 100.0, value = 40.0, step = 1.0)
-        val sliderRootImpl = sliderComp.ensureNativeImpl()
-        assertTrue(sliderRootImpl is WindowsStyledContainerNativeImpl)
-        val sliderWidget = (sliderRootImpl as DesktopBaseNativeImpl<*>).nativeWidget
-        assertTrue(sliderWidget.children.mapNotNull { it.attributes["nativeImpl"] }.any { it is WindowsStyledComponentNativeImpl })
-
-        val hostContainer = WindowsContainerNativeImpl()
-        val trackImpl = WindowsStyledButtonNativeImpl()
         val progressLeaf = StyledComponent().apply {
             style.apply {
                 setWidthPx(200)
@@ -160,18 +164,37 @@ class WindowsAnimationAndSeekBarTest {
                 setBackgroundColor(RgbaColor(240, 30, 30, 255))
             }
         }
-        val progressImpl = progressLeaf.ensureNativeImpl() as WindowsStyledComponentNativeImpl
+        val rangeSliderComp = RangeSlider(minValue = 50.0, maxValue = 100.0, min = 0.0, max = 100.0)
+        val hostRootComp = Container("div").apply {
+            addChild(sliderComp)
+            addChild(progressLeaf)
+            addChild(rangeSliderComp)
+        }
+        val hostWindow = Window(title = "Slider & SeekBar Test Host", initialSize = Size(640, 240)).apply {
+            setContent(hostRootComp)
+        }
+
+        val trackImpl = WindowsStyledButtonNativeImpl()
         val knobImpl = WindowsStyledButtonNativeImpl()
-        val nativeRangeSlider = RangeSlider(minValue = 50.0, maxValue = 100.0, min = 0.0, max = 100.0).ensureNativeImpl() as WindowsRangeSliderNativeImpl
 
         try {
+            hostWindow.show(factory)
+            Win32NativeWindowHost.pumpVisualWindowEvents(16L)
+
+            val sliderRootImpl = sliderComp.ensureNativeImpl()
+            assertTrue(sliderRootImpl is WindowsStyledContainerNativeImpl)
+            val sliderWidget = (sliderRootImpl as DesktopBaseNativeImpl<*>).nativeWidget
+            assertTrue(sliderWidget.children.mapNotNull { it.attributes["nativeImpl"] }.any { it is WindowsStyledComponentNativeImpl })
+
+            val hostContainer = hostRootComp.ensureNativeImpl() as WindowsContainerNativeImpl
+            val progressImpl = progressLeaf.ensureNativeImpl() as WindowsStyledComponentNativeImpl
+            val nativeRangeSlider = rangeSliderComp.ensureNativeImpl() as WindowsRangeSliderNativeImpl
+
             trackImpl.setAttribute("zIndex", "1")
             knobImpl.setAttribute("zIndex", "4")
 
             hostContainer.addChildNative(trackImpl)
-            hostContainer.addChildNative(progressImpl)
             hostContainer.addChildNative(knobImpl)
-            hostContainer.addChildNative(nativeRangeSlider)
 
             val hostHwnd = assertNotNull(hostContainer.nativeWidget.hwnd)
             val trackHwnd = assertNotNull(trackImpl.nativeWidget.hwnd)
@@ -179,11 +202,15 @@ class WindowsAnimationAndSeekBarTest {
             val knobHwnd = assertNotNull(knobImpl.nativeWidget.hwnd)
             val rangeHwnd = assertNotNull(nativeRangeSlider.nativeWidget.hwnd)
 
+            (sliderRootImpl as DesktopBaseNativeImpl<*>).setBounds(Rect(10, 100, 300, 28))
             trackImpl.setBounds(Rect(40, 48, 400, 4))
             progressImpl.setBounds(Rect(40, 48, 200, 4))
             knobImpl.setBounds(Rect(233, 43, 14, 14))
             nativeRangeSlider.setBounds(Rect(10, 8, 400, 28))
-            Win32ControlMessageRouter.layoutChildrenBatch(hostHwnd, listOf(trackImpl, progressImpl, knobImpl, nativeRangeSlider))
+            Win32ControlMessageRouter.layoutChildrenBatch(
+                hostHwnd,
+                listOf(sliderRootImpl, trackImpl, progressImpl, knobImpl, nativeRangeSlider)
+            )
 
             // 3. Direct StyledComponent keeps exact 4px CSS height, cursor: none, and HTTRANSPARENT WM_NCHITTEST
             val pr = alloc<RECT>()
@@ -204,11 +231,14 @@ class WindowsAnimationAndSeekBarTest {
             assertEquals("msctls_trackbar32", readWin32ClassName(rangeHwnd))
             assertNull(nativeRangeSlider.nativeWidget.attributes["seekBarLastRenderedMode"])
         } finally {
-            nativeRangeSlider.dispose()
             knobImpl.dispose()
-            progressImpl.dispose()
             trackImpl.dispose()
-            hostContainer.dispose()
+            hostWindow.close()
+            Win32NativeWindowHost.closeAllVisualWindows()
+            Win32NativeWindowHost.visualTestMode = prevVisual
+            WindowsApplicationNativeImpl.interactiveWin32GuiEnabled = prevInteractive
+            Application.current = prevApp
+            GenericUI.activeFactory = prevFactory
         }
     }
 

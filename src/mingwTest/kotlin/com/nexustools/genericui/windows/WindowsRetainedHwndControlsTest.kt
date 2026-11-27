@@ -96,8 +96,11 @@ class WindowsRetainedHwndControlsTest {
             val hwnd = assertNotNull(select.nativeWidget.hwnd)
             assertEquals("ComboBox", readWin32ClassName(hwnd))
             val r = alloc<RECT>()
-            assertTrue(GetWindowRect(hwnd, r.ptr) != 0)
-            assertTrue((r.bottom - r.top) >= 260, "ComboBox SetWindowPos height must accommodate dropdown list")
+            assertTrue(
+                SendMessageW(hwnd, 0x0152u /* CB_GETDROPPEDCONTROLRECT */, 0uL, r.ptr.toLong()) != 0L,
+                "CB_GETDROPPEDCONTROLRECT should succeed on ComboBox HWND"
+            )
+            assertTrue((r.bottom - r.top) >= 260, "ComboBox dropdown rect height must accommodate dropdown list (got ${r.bottom - r.top})")
 
             val itemH = SendMessageW(hwnd, CB_GETITEMHEIGHT.toUInt(), (-1L).toULong(), 0L).toInt()
             assertEquals(26, itemH)
@@ -144,6 +147,10 @@ class WindowsRetainedHwndControlsTest {
             assertEquals(rootHwnd, GetParent(btnHwnd))
             assertEquals(rootHwnd, GetParent(overlayHwnd))
 
+            val topOffset = Win32NativeWindowHost.getMainWindowTitleBarHeight(win)
+            root.setBounds(Rect(0, topOffset, 400, (300 - topOffset).coerceAtLeast(100)))
+            Win32ControlMessageRouter.applyBounds(root.nativeWidget, root.getBounds())
+
             val btnRect = Rect(20, 20, 120, 36)
             btn.setBounds(btnRect)
             passThroughOverlay.setBounds(Rect(0, 0, 400, 300))
@@ -152,7 +159,6 @@ class WindowsRetainedHwndControlsTest {
             val hitOverlay = SendMessageW(overlayHwnd, WM_NCHITTEST.toUInt(), 0uL, 0L)
             assertEquals(HTTRANSPARENT.toLong(), hitOverlay)
 
-            val topOffset = Win32NativeWindowHost.getMainWindowTitleBarHeight(win)
             Win32NativeWindowHost.simulateMouseClick(
                 x = 60,
                 y = topOffset + 38,

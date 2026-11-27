@@ -69,6 +69,7 @@ class MacosWindowNativeImpl : DesktopWindowNativeImpl<MacosViewHandle>(
         }
         nativeWidget.attributes["titlebarAppearsTransparent"] = custom
         nativeWidget.attributes["titleVisibility"] = if (custom) "NSWindowTitleHidden" else "NSWindowTitleVisible"
+        nativeWidget.attributes["showWindowIcon"] = titleBar?.showWindowIcon ?: true
         titleBar?.onInstructionsChanged = {
             if (MacosApplicationNativeImpl.interactiveMacosGuiEnabled) {
                 MacosNativeWindowHost.syncWindowProperties(this)

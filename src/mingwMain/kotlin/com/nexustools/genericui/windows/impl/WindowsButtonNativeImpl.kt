@@ -8,6 +8,7 @@ import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.windows.Win32ControlMessageRouter
 import com.nexustools.genericui.windows.Win32HwndHandle
+import com.nexustools.genericui.windows.Win32RetainedControlPaintCache
 import com.nexustools.genericui.windows.Win32RetainedControlSupport
 import platform.windows.BN_CLICKED
 import platform.windows.BS_PUSHBUTTON
@@ -88,6 +89,12 @@ class WindowsButtonNativeImpl(
         super.setIcon(icon)
         Win32RetainedControlSupport.setWindowTextIfChanged(nativeWidget.hwnd, computeDisplayLabel())
         nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        Win32RetainedControlSupport.syncOsFocusIfNeeded(this, nativeWidget.hwnd, focused)
+        nativeWidget.hwnd?.let { Win32RetainedControlPaintCache.invalidate(it) }
     }
 
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size =

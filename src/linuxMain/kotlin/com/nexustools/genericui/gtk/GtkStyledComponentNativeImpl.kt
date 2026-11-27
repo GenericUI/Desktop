@@ -14,7 +14,7 @@ import com.nexustools.genericui.style.css.CssTransform
 import kotlinx.cinterop.COpaquePointer
 
 /**
- * Retained GTK4 custom-painted `GtkDrawingArea` backing [com.nexustools.genericui.component.layout.StyledComponent]
+ * Retained GTK4 custom-painted `GtkDrawingArea` backing [com.nexustools.genericui.component.surface.styled.StyledComponent]
  * with rounded backgrounds, borders, shadows, 10-op `backdrop-filter`, and foreground `CssFilter`.
  */
 open class GtkStyledComponentNativeImpl(
@@ -93,4 +93,9 @@ open class GtkStyledComponentNativeImpl(
     override fun onNativeZIndexChanged(zIndex: Int) = GtkWidgetLifecycleBridge.onZIndexChanged(this, zIndex)
     override fun onNativeTransformChanged(transform: CssTransform?) = GtkWidgetLifecycleBridge.onTransformChanged(this, transform)
     override fun onNativeStyleSynced() = GtkWidgetLifecycleBridge.onStyleSynced(this)
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        GtkWidgetLifecycleBridge.syncNativeFocus(this, isFocusedState())
+    }
 }

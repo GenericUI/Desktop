@@ -16,7 +16,7 @@ import com.nexustools.genericui.component.layout.HStack
 import com.nexustools.genericui.component.layout.ScrollView
 import com.nexustools.genericui.component.layout.Spacer
 import com.nexustools.genericui.component.layout.StackConstraint
-import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.layout.VStack
 import com.nexustools.genericui.component.lazy.LazyGridTree
 import com.nexustools.genericui.component.lazy.LazyGridTreeNode
@@ -647,7 +647,7 @@ class Win32GeneralLayoutAndLazyListRenderingTest {
         itemBox.addChild(itemRow)
         root.addChild(itemBox)
 
-        val window = Window(title = "HStack Single Row & Padding Test", initialSize = Size(760, 360))
+        val window = Window(title = "HStack Single Row & Padding Test", initialSize = Size(1520, 360))
         window.setContent(root)
         window.show(factory)
         Win32NativeWindowHost.pumpVisualWindowEvents(16L)
@@ -657,10 +657,10 @@ class Win32GeneralLayoutAndLazyListRenderingTest {
         val (pixels, _) = captureClientArgb(window)
         assertTrue(pixels.toSet().size > 2, "Expected rendered header row and buttons to produce distinct pixels")
 
-        val boxBounds = (headerBox.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
-        val headingBounds = (heading.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
-        val runBounds = (runBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
-        val clearBounds = (clearBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
+        val boxBounds = (headerBox.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
+        val headingBounds = (heading.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
+        val runBounds = (runBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
+        val clearBounds = (clearBtn.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
 
         assertTrue(boxBounds.height < 96, "Single-row HStack with 32px vertical padding should not wrap onto extra rows (got height=${boxBounds.height})")
         assertTrue(headingBounds.x >= boxBounds.x + 20, "Heading left ${headingBounds.x} must respect 20px left padding of container ${boxBounds.x}")
@@ -671,10 +671,10 @@ class Win32GeneralLayoutAndLazyListRenderingTest {
             "Heading and action buttons must align on the same horizontal band"
         )
 
-        val itemBoxBounds = (itemBox.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
-        val badge1Bounds = (indexBadge.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
-        val pathBounds = (longPathText.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
-        val badge2Bounds = (durationBadge.ensureNativeImpl() as DesktopBaseNativeImpl<*>).nativeWidget.bounds
+        val itemBoxBounds = (itemBox.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
+        val badge1Bounds = (indexBadge.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
+        val pathBounds = (longPathText.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
+        val badge2Bounds = (durationBadge.ensureNativeImpl() as DesktopBaseNativeImpl<*>).getBounds()
 
         assertTrue(badge1Bounds.x >= itemBoxBounds.x + 12, "Left badge ${badge1Bounds.x} must respect 12px padding ${itemBoxBounds.x}")
         assertTrue(pathBounds.x >= badge1Bounds.right, "Weighted path ${pathBounds.x} must follow left badge ${badge1Bounds.right}")

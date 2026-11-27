@@ -319,7 +319,7 @@ object Win32DwmUxThemeBridge {
     private var cachedHasInactiveAccentRegistry: Boolean? = null
     private val cachedCaptionButtonBoundsWidthByHwnd = HashMap<Long, Int>()
     private val cachedTitleBarPaletteByKey = HashMap<String, Win32TitleBarThemePalette>()
-    private val lastBackdropAppliedByHwnd = HashMap<Long, Int>()
+    private val lastBackdropAppliedByHwnd = HashMap<Long, Long>()
     private val cachedThemeHandles = HashMap<String, COpaquePointer>()
 
     private class UxThemeControlSprite(
@@ -424,6 +424,9 @@ object Win32DwmUxThemeBridge {
     /**
      * Resolves the active [Win32VisualStyleGeneration] for the current OS version and DWM/UxTheme state.
      */
+    fun detectVisualStyleGeneration(): Win32VisualStyleGeneration =
+        cachedVisualStyleGeneration ?: detectVisualStyleGeneration(forceMajor = null)
+
     fun detectVisualStyleGeneration(
         forceMajor: Int? = null,
         forceMinor: Int? = null,
@@ -578,6 +581,24 @@ object Win32DwmUxThemeBridge {
     }
 
     /**
+     * Resolves the effective top frame margin to pass to `DwmExtendFrameIntoClientArea`.
+     * Solid Win10/11 custom titlebars (where [Win32TitleBarThemePalette.useTransparentDwmBackdrop] and
+     * [Win32TitleBarThemePalette.dwmDrawsCaptionButtons] are both false) only extend by 1px to keep the
+     * DWM top border/shadow while avoiding a deep DWM glass band where GDI child HWNDs (`alpha=0`)
+     * double-expose (`#747474`) or reveal ghost native caption glyphs.
+     */
+    fun resolveEffectiveExtendTopMarginPx(
+        requestedExtendTopPx: Int,
+        palette: Win32TitleBarThemePalette
+    ): Int {
+        if (requestedExtendTopPx <= 0) return 0
+        if (!palette.useTransparentDwmBackdrop && !palette.dwmDrawsCaptionButtons) {
+            return 1
+        }
+        return requestedExtendTopPx
+    }
+
+    /**
      * Applies DWM dark mode, Windows 11 corner preference, Windows 11 Mica/Acrylic backdrop,
      * and `DwmExtendFrameIntoClientArea` for [hwnd].
      */
@@ -589,12 +610,26 @@ object Win32DwmUxThemeBridge {
         kind: Win32TitleBarKind = if (isToolWindow) Win32TitleBarKind.TOOL_WINDOW else Win32TitleBarKind.STANDARD_WINDOW
     ) {
         val colorPrevalence = isDwmColorPrevalenceEnabled()
+        val pal = resolveTitleBarPalette(
+            hwnd = hwnd,
+            isToolWindow = isToolWindow,
+            kind = kind,
+            isDark = isDark
+        )
+        val gen = pal.generation
+        val effectiveTopPx = resolveEffectiveExtendTopMarginPx(extendTopPx, pal)
         val hwndKey = hwnd.toLong()
-        val newState = (extendTopPx and 0xFFFF) or
-            (if (isDark) (1 shl 16) else 0) or
-            (if (isToolWindow) (1 shl 17) else 0) or
-            (kind.ordinal shl 18) or
-            (if (colorPrevalence) (1 shl 22) else 0)
+        val newState: Long = (effectiveTopPx and 0xFFFF).toLong() or
+            (if (isDark) (1L shl 16) else 0L) or
+            (if (isToolWindow) (1L shl 17) else 0L) or
+            ((kind.ordinal and 0x7).toLong() shl 18) or
+            (if (colorPrevalence) (1L shl 21) else 0L) or
+            (if (pal.useTransparentDwmBackdrop) (1L shl 22) else 0L) or
+            (if (pal.dwmDrawsCaptionButtons) (1L shl 23) else 0L) or
+            (if (pal.hasAccentColorOnTitleBar) (1L shl 24) else 0L) or
+            ((gen.ordinal and 0x7).toLong() shl 25) or
+            ((pal.captionBgColor.toLong() and 0xFFFFFFL) shl 28) or
+            ((max(0, extendTopPx) and 0x7FF).toLong() shl 52)
         if (lastBackdropAppliedByHwnd[hwndKey] == newState) {
             return
         }
@@ -609,20 +644,19 @@ object Win32DwmUxThemeBridge {
                 setAttr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, darkFlag.ptr, sizeOf<IntVar>().toUInt())
                 setAttr(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, darkFlag.ptr, sizeOf<IntVar>().toUInt())
 
-                val gen = detectVisualStyleGeneration()
                 if (gen == Win32VisualStyleGeneration.WIN11_MICA_FLUENT) {
                     val cornerPref = alloc<IntVar>()
                     cornerPref.value = kind.win11CornerPreference
                     setAttr(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, cornerPref.ptr, sizeOf<IntVar>().toUInt())
 
-                    val useBackdrop = extendTopPx > 0 && !colorPrevalence
+                    val useBackdrop = pal.useTransparentDwmBackdrop && extendTopPx > 0 && !colorPrevalence
                     val backdrop = alloc<IntVar>()
                     backdrop.value = if (useBackdrop) kind.win11BackdropType else DWMSBT_AUTO
                     setAttr(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, backdrop.ptr, sizeOf<IntVar>().toUInt())
                 }
             }
         }
-        extendFrameIntoClientArea(hwnd, left = 0, right = 0, top = max(0, extendTopPx), bottom = 0)
+        extendFrameIntoClientArea(hwnd, left = 0, right = 0, top = effectiveTopPx, bottom = 0)
     }
 
     fun applyWindowCornerPreference(hwnd: HWND, doNotRound: Boolean) = memScoped {
@@ -820,7 +854,7 @@ object Win32DwmUxThemeBridge {
         kind: Win32TitleBarKind = if (isToolWindow) Win32TitleBarKind.TOOL_WINDOW else Win32TitleBarKind.STANDARD_WINDOW,
         generation: Win32VisualStyleGeneration = detectVisualStyleGeneration(),
         isDark: Boolean = isSystemDarkTheme(),
-        colorPrevalence: Boolean = isDwmColorPrevalenceEnabled(),
+        colorPrevalence: Boolean = isDwmColorPrevalenceEnabled() && (isDark == isSystemDarkTheme()),
         accentColorRef: UInt? = queryDwmAccentColor(isWindowActive)
     ): Win32TitleBarThemePalette {
         val nativeBtnClusterW = queryDwmCaptionButtonBoundsWidth(hwnd, isToolWindow, kind)
@@ -1160,7 +1194,16 @@ object Win32DwmUxThemeBridge {
         ensureModulesLoaded()
         Win32WinMain.allowDarkModeForWindow(hwnd, isDark)
         val setWindowTheme = setWindowThemeFn ?: return@memScoped false
-        val subAppName = subAppOverride ?: if (isDark) "DarkMode_Explorer" else "Explorer"
+        val subAppName = subAppOverride ?: run {
+            val classBuf = allocArray<WCHARVar>(64)
+            val len = GetClassNameW(hwnd, classBuf, 64)
+            val className = if (len > 0) classBuf.toKString() else ""
+            if (className.equals("ComboBox", ignoreCase = true)) {
+                if (isDark) "DarkMode_CFD" else "CFD"
+            } else {
+                if (isDark) "DarkMode_Explorer" else "Explorer"
+            }
+        }
         setWindowTheme(hwnd, subAppName.wcstr.ptr, null) >= 0
     }
 

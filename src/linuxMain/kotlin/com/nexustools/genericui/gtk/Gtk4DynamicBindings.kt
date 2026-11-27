@@ -183,6 +183,8 @@ internal object Gtk4DynamicBindings {
     private var fnGtkCssProviderNew: CPointer<CFunction<() -> COpaquePointer?>>? = null
     private var fnGtkCssProviderLoadFromData: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?, Long) -> Unit>>? = null
     private var fnGtkStyleContextAddProviderForDisplay: CPointer<CFunction<(COpaquePointer?, COpaquePointer?, UInt) -> Unit>>? = null
+    private var fnGtkStyleContextRemoveProviderForDisplay: CPointer<CFunction<(COpaquePointer?, COpaquePointer?) -> Unit>>? = null
+    private var fnGtkEntrySetHasFrame: CPointer<CFunction<(COpaquePointer?, Int) -> Unit>>? = null
     private var fnGtkWidgetAddCssClass: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?) -> Unit>>? = null
     private var fnGtkWidgetRemoveCssClass: CPointer<CFunction<(COpaquePointer?, CPointer<ByteVar>?) -> Unit>>? = null
     private var undecoratedCssInstalled = false
@@ -694,6 +696,8 @@ internal object Gtk4DynamicBindings {
             fnGtkCssProviderNew = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_css_provider_new")?.reinterpret()
             fnGtkCssProviderLoadFromData = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_css_provider_load_from_data")?.reinterpret()
             fnGtkStyleContextAddProviderForDisplay = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_style_context_add_provider_for_display")?.reinterpret()
+            fnGtkStyleContextRemoveProviderForDisplay = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_style_context_remove_provider_for_display")?.reinterpret()
+            fnGtkEntrySetHasFrame = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_entry_set_has_frame")?.reinterpret()
             fnGtkWidgetAddCssClass = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_widget_add_css_class")?.reinterpret()
             fnGtkWidgetRemoveCssClass = LinuxDynamicLibraryLoader.symbol(gtk, "gtk_widget_remove_css_class")?.reinterpret()
             fnGdkDisplayGetDefaultSeat = LinuxDynamicLibraryLoader.symbol(gtk, "gdk_display_get_default_seat")?.reinterpret()
@@ -2036,6 +2040,8 @@ internal object Gtk4DynamicBindings {
 
     fun gtkWidgetGetFocusOnClick(widget: COpaquePointer): Boolean = (fnGtkWidgetGetFocusOnClick?.invoke(widget) ?: 1) != 0
 
+    fun gtkWidgetGetRoot(widget: COpaquePointer): COpaquePointer? = fnGtkWidgetGetRoot?.invoke(widget)
+
     fun gtkWidgetClearWindowFocus(widget: COpaquePointer) {
         val root = fnGtkWidgetGetRoot?.invoke(widget) ?: return
         fnGtkWindowSetFocus?.invoke(root, null)
@@ -2110,6 +2116,14 @@ internal object Gtk4DynamicBindings {
 
     fun gtkStyleContextAddProviderForDisplay(display: COpaquePointer, provider: COpaquePointer, priority: UInt = GTK_STYLE_PROVIDER_PRIORITY_USER) {
         fnGtkStyleContextAddProviderForDisplay?.invoke(display, provider, priority)
+    }
+
+    fun gtkStyleContextRemoveProviderForDisplay(display: COpaquePointer, provider: COpaquePointer) {
+        fnGtkStyleContextRemoveProviderForDisplay?.invoke(display, provider)
+    }
+
+    fun gtkEntrySetHasFrame(entry: COpaquePointer, hasFrame: Boolean) {
+        fnGtkEntrySetHasFrame?.invoke(entry, if (hasFrame) 1 else 0)
     }
 
     fun gdkDisplayGetDefault(): COpaquePointer? = fnGdkDisplayGetDefault?.invoke()

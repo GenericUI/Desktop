@@ -86,6 +86,11 @@ open class KdeSelectNativeImpl(
     }
     override fun onNativeTransformChanged(transform: CssTransform?) { nativeWidget.requestRepaint() }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        KdePainterSupport.syncWidgetFocus(this, isFocusedState())
+    }
+
     override fun dispose() {
         menuCleanupAndDestroy()
         super.dispose()

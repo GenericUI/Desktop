@@ -71,10 +71,19 @@ open class DesktopWindowNativeImpl<out W : DesktopNativeWidget>(
     protected var onWindowMovedListener: ((Int, Int) -> Unit)? = null
     protected var onWindowFocusChangedListener: ((Boolean) -> Unit)? = null
     protected var onWindowCloseRequestedListener: ((() -> Boolean))? = null
+    protected var windowIconPathState: String? = null
 
     init {
         nativeWidget.attributes["windowIcon"] = defaultWindowIconPath
     }
+
+    override fun setWindowIcon(iconPathOrSvg: String?) {
+        val normalized = iconPathOrSvg?.takeIf { it.isNotBlank() }
+        windowIconPathState = normalized
+        nativeWidget.attributes["windowIcon"] = normalized ?: defaultWindowIconPath
+    }
+
+    fun getWindowIconPath(): String? = windowIconPathState
 
     fun getTitleBarInstructions(): TitleBar? = activeTitleBar
 

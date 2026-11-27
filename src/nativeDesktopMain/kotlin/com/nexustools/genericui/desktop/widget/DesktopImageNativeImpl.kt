@@ -117,16 +117,23 @@ open class DesktopImageNativeImpl<out W : DesktopNativeWidget>(
         nativeWidget.attributes["isLoading"] = loading
     }
 
-    fun notifyAsyncLoadSucceeded(buffer: ImageBuffer?) {
+    open fun notifyAsyncLoadSucceeded(buffer: ImageBuffer?) {
         loadingState = false
         loadedImageBuffer = buffer
         nativeWidget.attributes["isLoading"] = false
+        if (buffer != null) {
+            nativeWidget.attributes["imageBuffer"] = buffer
+        } else {
+            nativeWidget.attributes.remove("imageBuffer")
+        }
+        notifyTreeInvalidated()
         onLoadListener?.invoke()
     }
 
-    fun notifyAsyncLoadFailed() {
+    open fun notifyAsyncLoadFailed() {
         loadingState = false
         nativeWidget.attributes["isLoading"] = false
+        notifyTreeInvalidated()
         onErrorListener?.invoke()
     }
 

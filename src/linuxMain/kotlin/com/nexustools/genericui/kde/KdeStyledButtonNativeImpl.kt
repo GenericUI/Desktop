@@ -47,8 +47,8 @@ open class KdeStyledButtonNativeImpl(
             onPressedChanged = { p -> pressed = p; nativeWidget.requestRepaint() }
         )
         KdeVTableBridge.attachWidgetHooks(ptr, KdeVTableBridge.HOOK_INPUT) {
-            onFocusIn = { _ -> focused = true; nativeWidget.requestRepaint() }
-            onFocusOut = { _ -> focused = false; nativeWidget.requestRepaint() }
+            onFocusIn = { _ -> setFocusedState(true) }
+            onFocusOut = { _ -> setFocusedState(false) }
         }
     }
 
@@ -123,6 +123,13 @@ open class KdeStyledButtonNativeImpl(
     override fun onNativeZIndexChanged(zIndex: Int) { KdePainterSupport.restackParentByZOrder(nativeWidget) }
     override fun onNativeStyleSynced() { nativeWidget.requestRepaint() }
     override fun requestRepaintNative() { nativeWidget.requestRepaint() }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        this.focused = isFocusedState()
+        KdePainterSupport.syncWidgetFocus(this, this.focused)
+        nativeWidget.requestRepaint()
+    }
 
     override fun dispose() {
         nativeWidget.destroyQWidget()

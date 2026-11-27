@@ -70,7 +70,8 @@ object LinuxMdiTitleBarHelper {
             showClose = showClose,
             leadingWidthPx = resolvedLeadingW,
             centerWidthPx = resolvedCenterW,
-            trailingWidthPx = resolvedTrailingW
+            trailingWidthPx = resolvedTrailingW,
+            showWindowIcon = tb?.showWindowIcon ?: true
         )
     }
 

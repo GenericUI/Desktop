@@ -5,6 +5,8 @@ import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.enums.ui.Orientation
 import com.nexustools.genericui.nativeimpl.lazy.LazyListNativeImpl
+import com.nexustools.genericui.threading.PlatformReentrantLock
+import com.nexustools.genericui.threading.withLock
 import kotlin.math.roundToInt
 
 /**
@@ -18,22 +20,14 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
     protected var orientationState: Orientation = Orientation.VERTICAL
     protected var itemFactoryFn: ((Int) -> NativeImpl<*>)? = null
     protected val materializedItems: MutableMap<Int, NativeImpl<*>> = linkedMapOf()
-    private val materializedLock = kotlin.concurrent.AtomicInt(0)
+    private val materializedLock: PlatformReentrantLock = PlatformReentrantLock()
     protected var onViewportScrollChangedListener: ((Float, Float) -> Unit)? = null
     protected var explicitViewportWindowProvided: Boolean = false
     private var viewportScrollScopeDepth: Int = 0
     var viewportVersion: Long = 0L
         private set
 
-    private inline fun <T> withMaterializedLock(block: () -> T): T {
-        while (!materializedLock.compareAndSet(0, 1)) {
-        }
-        try {
-            return block()
-        } finally {
-            materializedLock.value = 0
-        }
-    }
+    private inline fun <T> withMaterializedLock(block: () -> T): T = materializedLock.withLock(block)
 
     var firstActiveIndex: Int = 0
         private set
@@ -130,7 +124,7 @@ open class DesktopLazyListNativeImpl<out W : DesktopNativeWidget>(
     protected fun dispatchLayoutViewportExtent(viewportExtentPx: Float) {
         val clampedExtent = viewportExtentPx.coerceAtLeast(1f)
         if (kotlin.math.abs(viewportEngine.viewportExtentPx - clampedExtent) <= 0.5f &&
-            !(viewportEngine.itemCount > 0 && materializedItems.isEmpty())
+            !(viewportEngine.itemCount > 0 && materializedItems.isEmpty() && childImpls.isEmpty() && !explicitViewportWindowProvided)
         ) {
             return
         }

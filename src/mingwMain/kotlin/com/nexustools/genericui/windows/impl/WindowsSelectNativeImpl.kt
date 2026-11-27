@@ -7,7 +7,9 @@ import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.windows.Win32ControlMessageRouter
+import com.nexustools.genericui.windows.Win32DwmUxThemeBridge
 import com.nexustools.genericui.windows.Win32HwndHandle
+import com.nexustools.genericui.windows.Win32NativeWindowHost
 import com.nexustools.genericui.windows.Win32RetainedControlSupport
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toLong
@@ -22,6 +24,8 @@ import platform.windows.CB_GETCURSEL
 import platform.windows.CB_RESETCONTENT
 import platform.windows.CB_SETITEMHEIGHT
 import platform.windows.CB_SETCURSEL
+import platform.windows.HWND
+import platform.windows.IsWindow
 import platform.windows.SendMessageW
 import platform.windows.SetWindowPos
 import platform.windows.SWP_NOACTIVATE
@@ -61,10 +65,62 @@ class WindowsSelectNativeImpl(
         wireCommands()
         syncOptionsToComboBox()
         Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = false)
+        syncComboBoxThemeAndDropdownWidth()
+    }
+
+    override fun acceptsBootstrapSemanticColors(): Boolean = false
+
+    private fun measureMaxOptionWidthPx(extraW: Int): Int {
+        var maxW = 96
+        for ((_, label) in optionsList) {
+            val measured = Win32RetainedControlSupport.measureTextSize(
+                text = label,
+                fontHandle = nativeWidget.fontHandle,
+                extraW = extraW,
+                extraH = 12,
+                minW = 96,
+                minH = 30
+            )
+            maxW = max(maxW, measured.width)
+        }
+        return maxW
+    }
+
+    private fun syncDroppedWidth(hwnd: HWND, minWidth: Int = nativeWidget.bounds.width) {
+        if (IsWindow(hwnd) == 0) return
+        val desiredDropW = maxOf(minWidth, measureMaxOptionWidthPx(extraW = 56))
+        SendMessageW(hwnd, CB_SETDROPPEDWIDTH_MSG, desiredDropW.toULong(), 0L)
+        val activeH = nativeWidget.bounds.height.takeIf { it > 6 } ?: nativeWidget.lastAppliedH.takeIf { it > 6 }
+        if (activeH != null) {
+            val layoutH = activeH.coerceAtLeast(24)
+            val w = nativeWidget.bounds.width.takeIf { it > 0 } ?: nativeWidget.lastAppliedW.coerceAtLeast(1)
+            SetWindowPos(
+                hwnd,
+                null,
+                0,
+                0,
+                w.coerceAtLeast(1),
+                maxOf(layoutH, 260),
+                (SWP_NOMOVE or SWP_NOZORDER or SWP_NOACTIVATE).toUInt()
+            )
+            SendMessageW(hwnd, CB_SETITEMHEIGHT.toUInt(), (-1L).toULong(), (layoutH - 6).coerceAtLeast(16).toLong())
+        }
+    }
+
+    private fun syncComboBoxThemeAndDropdownWidth() {
+        val hwnd = nativeWidget.hwnd ?: return
+        if (IsWindow(hwnd) == 0) return
+        val dark = Win32NativeWindowHost.isEffectivelyDarkTheme()
+        Win32DwmUxThemeBridge.setControlWindowTheme(
+            hwnd = hwnd,
+            isDark = dark,
+            subAppOverride = if (dark) "DarkMode_CFD" else "Explorer"
+        )
+        syncDroppedWidth(hwnd)
     }
 
     private fun resolveComboStyle(): Int {
-        val base = WS_CHILD or WS_VISIBLE or WS_TABSTOP or WS_VSCROLL or WS_CLIPSIBLINGS
+        val base = WS_CHILD or WS_VISIBLE or WS_TABSTOP or WS_VSCROLL or WS_CLIPSIBLINGS or CBS_NOINTEGRALHEIGHT_STYLE
         return if (isComboBoxVariant()) {
             base or CBS_DROPDOWN or CBS_AUTOHSCROLL
         } else {
@@ -102,6 +158,7 @@ class WindowsSelectNativeImpl(
                 }
             }
             syncSelectionToComboBox()
+            syncDroppedWidth(hwnd)
         } finally {
             updatingControl = false
         }
@@ -136,6 +193,8 @@ class WindowsSelectNativeImpl(
         )
         wireCommands()
         syncOptionsToComboBox()
+        Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = false)
+        syncComboBoxThemeAndDropdownWidth()
     }
 
     override fun setOptions(options: List<Pair<String, String>>) {
@@ -148,36 +207,18 @@ class WindowsSelectNativeImpl(
         syncSelectionToComboBox()
     }
 
-    override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {
-        var maxW = 96
-        for ((_, label) in optionsList) {
-            val measured = Win32RetainedControlSupport.measureTextSize(
-                text = label,
-                fontHandle = nativeWidget.fontHandle,
-                extraW = 38,
-                extraH = 12,
-                minW = 96,
-                minH = 30
-            )
-            maxW = max(maxW, measured.width)
-        }
-        return Size(maxW, 32)
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        Win32RetainedControlSupport.syncOsFocusIfNeeded(this, nativeWidget.hwnd, focused)
     }
+
+    override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size =
+        Size(measureMaxOptionWidthPx(extraW = 48), 32)
 
     override fun onNativeBoundsChanged(rect: Rect) {
         Win32RetainedControlSupport.onLeafBoundsChanged(nativeWidget, rect)
         val hwnd = nativeWidget.hwnd ?: return
-        val layoutH = rect.height.coerceAtLeast(24)
-        SetWindowPos(
-            hwnd,
-            null,
-            0,
-            0,
-            rect.width.coerceAtLeast(1),
-            maxOf(layoutH, 260),
-            (SWP_NOMOVE or SWP_NOZORDER or SWP_NOACTIVATE).toUInt()
-        )
-        SendMessageW(hwnd, CB_SETITEMHEIGHT.toUInt(), (-1L).toULong(), (layoutH - 6).coerceAtLeast(16).toLong())
+        syncDroppedWidth(hwnd, rect.width)
     }
 
     override fun onNativeVisibilityChanged(visible: Boolean) {
@@ -210,10 +251,16 @@ class WindowsSelectNativeImpl(
 
     override fun onNativeStyleSynced() {
         Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = false)
+        syncComboBoxThemeAndDropdownWidth()
     }
 
     override fun dispose() {
         Win32RetainedControlSupport.onDispose(nativeWidget)
         super.dispose()
+    }
+
+    private companion object {
+        private const val CB_SETDROPPEDWIDTH_MSG: UInt = 0x0160u
+        private const val CBS_NOINTEGRALHEIGHT_STYLE: Int = 0x0400
     }
 }

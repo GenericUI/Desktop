@@ -298,46 +298,94 @@ object DesktopConfigDirectoryHelper {
     }
 
     /**
-     * Resolves a local file path or relative resource path (such as `"logo.png?2"` or `"res://drawable/logo.png"`)
-     * by checking the direct path and standard KMP resource directories (`src/commonMain/resources/<path>`, etc.).
+     * Normalizes a local file path or relative resource URI (`"logo.png?2"`, `"file:///..."`,
+     * `"res://drawable/logo.png"`, `"res://logo.png"`) and checks the direct path, relative
+     * executable directory (`<exeDir>/<path>`, `<exeDir>/resources/<path>`), and standard KMP
+     * resource directories (`src/commonMain/resources/<path>`, etc.), returning the first
+     * candidate path that exists on disk.
      */
-    fun readResourceOrLocalFile(uriOrPath: String): ByteArray? {
+    fun resolveLocalAssetFilePath(uriOrPath: String): String? {
         val raw = uriOrPath.trim()
         if (raw.isEmpty()) return null
+        if (raw.startsWith("http://", ignoreCase = true) ||
+            raw.startsWith("https://", ignoreCase = true) ||
+            raw.startsWith("data:", ignoreCase = true) ||
+            raw.startsWith("memory://", ignoreCase = true)
+        ) {
+            return null
+        }
+
         val withoutScheme = when {
-            raw.startsWith("file://") -> raw.removePrefix("file://").trimStart('/')
-            raw.startsWith("res://drawable/") -> raw.removePrefix("res://drawable/")
-            raw.startsWith("res://") -> raw.removePrefix("res://")
+            raw.startsWith("file:///", ignoreCase = true) -> {
+                val tail = raw.substring(8)
+                if (tail.length >= 2 && tail[0].isLetter() && tail[1] == ':') {
+                    tail
+                } else {
+                    "/" + tail.trimStart('/')
+                }
+            }
+            raw.startsWith("file://", ignoreCase = true) -> raw.substring(7)
+            raw.startsWith("res://drawable/", ignoreCase = true) -> raw.substring(15)
+            raw.startsWith("res://", ignoreCase = true) -> raw.substring(6)
             else -> raw
         }
         val cleanPath = withoutScheme.substringBefore('?').substringBefore('#').trim()
         if (cleanPath.isEmpty()) return null
 
         val winClean = cleanPath.replace('/', '\\')
-        val candidates = listOf(
-            cleanPath,
-            winClean,
-            "src/commonMain/resources/$cleanPath",
-            "src\\commonMain\\resources\\$winClean",
-            "resources/$cleanPath",
-            "resources\\$winClean",
-            "../src/commonMain/resources/$cleanPath",
-            "..\\src\\commonMain\\resources\\$winClean",
-            "../../src/commonMain/resources/$cleanPath",
-            "..\\..\\src\\commonMain\\resources\\$winClean",
-            "../../../src/commonMain/resources/$cleanPath",
-            "..\\..\\..\\src\\commonMain\\resources\\$winClean",
-            "../../../../src/commonMain/resources/$cleanPath",
-            "..\\..\\..\\..\\src\\commonMain\\resources\\$winClean"
-        )
+        val posixClean = cleanPath.replace('\\', '/')
+        val isAbsolute = posixClean.startsWith("/") ||
+            (cleanPath.length >= 2 && cleanPath[0].isLetter() && cleanPath[1] == ':')
+
+        val candidates = LinkedHashSet<String>()
+        candidates.add(cleanPath)
+        candidates.add(winClean)
+        if (!isAbsolute) {
+            resolveNativeExecutableDirectory()?.takeIf { it.isNotBlank() }?.let { exeDir ->
+                candidates.add(joinDirAndPath(exeDir, posixClean, '/'))
+                candidates.add(joinDirAndPath(exeDir, winClean, '\\'))
+                candidates.add(joinDirAndPath(exeDir, "resources/$posixClean", '/'))
+                candidates.add(joinDirAndPath(exeDir, "resources\\$winClean", '\\'))
+            }
+            candidates.add("src/commonMain/resources/$posixClean")
+            candidates.add("src\\commonMain\\resources\\$winClean")
+            candidates.add("resources/$posixClean")
+            candidates.add("resources\\$winClean")
+            var parentPrefixPosix = "../"
+            var parentPrefixWin = "..\\"
+            repeat(4) {
+                candidates.add("${parentPrefixPosix}src/commonMain/resources/$posixClean")
+                candidates.add("${parentPrefixWin}src\\commonMain\\resources\\$winClean")
+                parentPrefixPosix += "../"
+                parentPrefixWin += "..\\"
+            }
+        }
+
         for (candidate in candidates) {
-            val bytes = readBytesFromFile(candidate)
-            if (bytes != null && bytes.isNotEmpty()) {
-                return bytes
+            if (fileExists(candidate)) {
+                return candidate
             }
         }
         return null
     }
+
+    private fun joinDirAndPath(dir: String, relativePath: String, sep: Char): String {
+        val cleanRel = relativePath.trimStart('/', '\\')
+        return if (dir.endsWith('/') || dir.endsWith('\\')) {
+            "$dir$cleanRel"
+        } else {
+            "$dir$sep$cleanRel"
+        }
+    }
+
+    /**
+     * Resolves a local file path or relative resource path (such as `"logo.png?2"` or `"res://drawable/logo.png"`)
+     * by checking the direct path, executable directory, and standard KMP resource directories.
+     */
+    fun readResourceOrLocalFile(uriOrPath: String): ByteArray? =
+        resolveLocalAssetFilePath(uriOrPath)
+            ?.let { readBytesFromFile(it) }
+            ?.takeIf { it.isNotEmpty() }
 
     /**
      * Downloads remote `http://` or `https://` bytes using the OS `curl` utility into [tempFilePath]

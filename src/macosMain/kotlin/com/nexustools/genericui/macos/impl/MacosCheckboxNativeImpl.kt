@@ -7,6 +7,7 @@ import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.macos.MacosAppKitAppearance
 import com.nexustools.genericui.macos.MacosAppKitDispatch
+import com.nexustools.genericui.macos.MacosFocusSupport
 import com.nexustools.genericui.macos.MacosControlActionTarget
 import com.nexustools.genericui.macos.MacosViewHandle
 import com.nexustools.genericui.style.css.CssCursorValue
@@ -292,6 +293,16 @@ class MacosCheckboxNativeImpl(
 
     override fun onNativeStyleSynced() {
         syncViewState()
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        MacosFocusSupport.syncViewFirstResponder(
+            targetView = buttonControl ?: switchControl,
+            focused = isFocusedState(),
+            effectivelyFocusable = nativeWidget.isEffectivelyFocusable(),
+            enabled = nativeWidget.enabled
+        )
     }
 
     override fun dispose() {

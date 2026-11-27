@@ -79,6 +79,11 @@ class WindowsRangeSliderNativeImpl(
         syncTrackbarPosition()
     }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        Win32RetainedControlSupport.syncOsFocusIfNeeded(this, nativeWidget.hwnd, focused)
+    }
+
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size = Size(160, 28)
 
     override fun onNativeBoundsChanged(rect: Rect) {

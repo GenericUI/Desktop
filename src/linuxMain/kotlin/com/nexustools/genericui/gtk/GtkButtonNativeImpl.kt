@@ -231,6 +231,11 @@ open class GtkButtonNativeImpl(
         GtkWidgetLifecycleBridge.onStyleSynced(this)
     }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        GtkWidgetLifecycleBridge.syncNativeFocus(this, isFocusedState())
+    }
+
     override fun dispose() {
         clickRef?.dispose()
         clickRef = null

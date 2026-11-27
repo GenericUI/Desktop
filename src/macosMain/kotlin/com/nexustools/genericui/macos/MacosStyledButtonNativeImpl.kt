@@ -73,6 +73,25 @@ internal class MacosStyledButtonControl(
 
     override fun acceptsFirstMouse(event: NSEvent?): Boolean = true
 
+    override fun acceptsFirstResponder(): Boolean = owner.nativeWidget.isEffectivelyFocusable()
+
+    override fun becomeFirstResponder(): Boolean {
+        if (!owner.nativeWidget.isEffectivelyFocusable()) return false
+        val ok = super.becomeFirstResponder()
+        if (ok) {
+            owner.setFocusedState(true)
+        }
+        return ok
+    }
+
+    override fun resignFirstResponder(): Boolean {
+        val ok = super.resignFirstResponder()
+        if (ok) {
+            owner.setFocusedState(false)
+        }
+        return ok
+    }
+
     override fun hitTest(point: CValue<CGPoint>): NSView? {
         if (isHidden() || alphaValue <= 0.004 || owner.nativeWidget.isSelfPointerEventsNone()) {
             return null
@@ -399,6 +418,17 @@ class MacosStyledButtonNativeImpl(
 
     override fun onNativeStyleSynced() {
         cachedMeasureSize = null
+        syncMacosStyledButtonVisuals()
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        MacosFocusSupport.syncViewFirstResponder(
+            targetView = buttonControl,
+            focused = isFocusedState(),
+            effectivelyFocusable = nativeWidget.isEffectivelyFocusable(),
+            enabled = nativeWidget.enabled
+        )
         syncMacosStyledButtonVisuals()
     }
 

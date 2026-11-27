@@ -167,6 +167,13 @@ internal class MacosWindowSession(
                 rootView.unifiedHeaderHeightPx = 0.0
             }
             titleBarView?.let { tb ->
+                val win = windowImpl
+                if (win != null) {
+                    val tbInstructions = win.getTitleBarInstructions()
+                    val barH = (tbInstructions?.heightPx ?: 28).coerceAtLeast(28)
+                    tb.setFrame(platform.Foundation.NSMakeRect(0.0, 0.0, w.toDouble(), barH.toDouble()))
+                    tb.syncAndLayout(win, nsWindow, w, barH, activeFullscreen || win.isFullscreen())
+                }
                 orderedViews.add(tb)
             }
             if (needsRootHierarchySync(orderedViews, pinnedBack)) {

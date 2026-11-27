@@ -84,12 +84,16 @@ class SwingStyledButtonImpl(
         }
 
         override fun getPreferredSize(): Dimension {
-            val base = super.getPreferredSize() ?: Dimension(0, 0)
             @Suppress("UNCHECKED_CAST")
             val provider = getClientProperty("styledButtonVisualsProvider") as? (() -> StyledVisualSpec)
             val spec = provider?.invoke() ?: (getClientProperty("styledButtonVisuals") as? StyledVisualSpec)
-            val w = spec?.widthPx ?: base.width
-            val h = spec?.heightPx ?: base.height
+            if (spec?.widthPx != null && spec.heightPx != null) {
+                return Dimension(spec.widthPx, spec.heightPx)
+            }
+            val intrinsic = ui?.getPreferredSize(this) ?: super.getPreferredSize() ?: Dimension(0, 0)
+            val hidpiWidthCushion = if (text.orEmpty().length >= 2) 10 else 0
+            val w = spec?.widthPx ?: (intrinsic.width + hidpiWidthCushion)
+            val h = spec?.heightPx ?: intrinsic.height
             return Dimension(w, h)
         }
     }
@@ -191,11 +195,10 @@ class SwingStyledButtonImpl(
         current.padding?.let { pad ->
             nativeWidget.border = BorderFactory.createEmptyBorder(pad.top, pad.left, pad.bottom, pad.right)
         }
-        if (current.widthPx != null || current.heightPx != null) {
-            val currentPref = if (nativeWidget.isPreferredSizeSet) nativeWidget.preferredSize else null
-            val w = current.widthPx ?: currentPref?.width ?: nativeWidget.width.takeIf { it > 0 } ?: 0
-            val h = current.heightPx ?: currentPref?.height ?: nativeWidget.height.takeIf { it > 0 } ?: 0
-            nativeWidget.preferredSize = Dimension(w, h)
+        if (current.widthPx != null && current.heightPx != null) {
+            nativeWidget.preferredSize = Dimension(current.widthPx, current.heightPx)
+        } else if (nativeWidget.isPreferredSizeSet) {
+            nativeWidget.preferredSize = null
         }
         nativeWidget.revalidate()
         nativeWidget.repaint()
@@ -246,11 +249,17 @@ class SwingStyledButtonImpl(
     override fun isHoveredState(): Boolean = hovered
 
     override fun setFocusedState(focused: Boolean) {
-        this.focused = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        this.focused = effective
+        if (effective) {
+            requestAwtFocusOnEdt(nativeWidget)
+        } else {
+            clearAwtFocusOnEdtIfOwner(nativeWidget)
+        }
         syncCurrentVisuals()
     }
 
-    override fun isFocusedState(): Boolean = focused
+    override fun isFocusedState(): Boolean = focused || nativeWidget.isFocusOwner
 
     override fun setActivePressedState(active: Boolean) {
         this.activePressed = active && isEnabled()

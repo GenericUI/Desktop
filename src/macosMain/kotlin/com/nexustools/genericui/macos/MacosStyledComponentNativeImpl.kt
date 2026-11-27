@@ -38,6 +38,21 @@ internal class MacosStyledComponentView(
 
     override fun acceptsFirstMouse(event: NSEvent?): Boolean = true
 
+    override fun acceptsFirstResponder(): Boolean = owner.nativeWidget.isEffectivelyFocusable()
+
+    override fun becomeFirstResponder(): Boolean {
+        if (!owner.nativeWidget.isEffectivelyFocusable()) return false
+        val ok = super.becomeFirstResponder()
+        if (ok) owner.setFocusedState(true)
+        return ok
+    }
+
+    override fun resignFirstResponder(): Boolean {
+        val ok = super.resignFirstResponder()
+        if (ok) owner.setFocusedState(false)
+        return ok
+    }
+
     override fun viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         surfaceSupport.refreshBackdropUnderlayIfNeeded(force = true)
@@ -262,6 +277,17 @@ class MacosStyledComponentNativeImpl(
     }
 
     override fun onNativeStyleSynced() {
+        syncMacosStyledComponentVisuals()
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        MacosFocusSupport.syncViewFirstResponder(
+            targetView = componentView,
+            focused = isFocusedState(),
+            effectivelyFocusable = nativeWidget.isEffectivelyFocusable(),
+            enabled = nativeWidget.enabled
+        )
         syncMacosStyledComponentVisuals()
     }
 

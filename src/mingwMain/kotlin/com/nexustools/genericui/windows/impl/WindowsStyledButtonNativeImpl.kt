@@ -10,6 +10,7 @@ import com.nexustools.genericui.windows.Win32ControlMessageRouter
 import com.nexustools.genericui.windows.Win32HwndHandle
 import com.nexustools.genericui.windows.Win32RetainedControlSupport
 import platform.windows.InvalidateRect
+import platform.windows.IsWindow
 import platform.windows.WS_CHILD
 import platform.windows.WS_CLIPSIBLINGS
 import platform.windows.WS_TABSTOP
@@ -58,6 +59,12 @@ class WindowsStyledButtonNativeImpl(
         super.setIcon(icon)
         Win32RetainedControlSupport.setWindowTextIfChanged(nativeWidget.hwnd, computeDisplayLabel())
         nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        Win32RetainedControlSupport.syncOsFocusIfNeeded(this, nativeWidget.hwnd, focused)
+        nativeWidget.hwnd?.let { if (IsWindow(it) != 0) InvalidateRect(it, null, 0) }
     }
 
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size =

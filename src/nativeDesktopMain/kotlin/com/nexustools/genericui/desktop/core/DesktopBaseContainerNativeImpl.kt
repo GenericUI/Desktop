@@ -38,6 +38,10 @@ open class DesktopBaseContainerNativeImpl<out W : DesktopNativeWidget>(
 
     protected open fun onChildrenClearedNative() {}
 
+    protected open fun onChildrenClearedNative(clearedChildren: List<NativeImpl<*>>) {
+        onChildrenClearedNative()
+    }
+
     internal fun rawChildImplsSnapshot(): List<NativeImpl<*>> = childImpls
 
     internal fun hasLayoutController(): Boolean = layoutController != null
@@ -104,12 +108,14 @@ open class DesktopBaseContainerNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun clearChildrenNative() {
-        withChildImplsLock {
+        val cleared = withChildImplsLock {
+            val prev = childImpls.toList()
             childImpls = emptyList()
+            prev
         }
         nativeWidget.clearChildWidgets()
         layoutController?.clearLogicalChildren()
-        onChildrenClearedNative()
+        onChildrenClearedNative(cleared)
     }
 
     override fun enableHardwareLayerCache(enabled: Boolean) {

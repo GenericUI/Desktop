@@ -7,7 +7,10 @@ import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.layout.DesktopContainerLayoutController
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
+import com.nexustools.genericui.enums.bootstrap.FlexDirection
+import com.nexustools.genericui.enums.css.CssDisplay
 import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.windows.Win32ControlMessageRouter
 import com.nexustools.genericui.windows.Win32HwndHandle
@@ -30,9 +33,15 @@ class WindowsDialogWindowNativeImpl(
     )
 ) : DesktopDialogWindowNativeImpl<Win32HwndHandle>(widget) {
 
+    private var syncingDialogHostSize: Boolean = false
+
     init {
         nativeWidget.attributes["nativeImpl"] = this
-        layoutController = DesktopContainerLayoutController(this).apply {
+        layoutController = DesktopContainerLayoutController(
+            host = this,
+            defaultDisplay = CssDisplay.FLEX,
+            defaultFlexDirection = FlexDirection.COLUMN
+        ).apply {
             onZOrderUpdated = { sorted ->
                 val hostHwnd = nativeWidget.hwnd
                 if (hostHwnd != null && IsWindow(hostHwnd) != 0) {
@@ -43,6 +52,30 @@ class WindowsDialogWindowNativeImpl(
         if (WindowsApplicationNativeImpl.interactiveWin32GuiEnabled) {
             Win32NativeWindowHost.ensureOverlayInvalidationListenerInstalled()
         }
+    }
+
+    private fun syncLiveDialogHostBounds() {
+        if (syncingDialogHostSize) return
+        val hwnd = nativeWidget.hwnd
+        if (hwnd != null && IsWindow(hwnd) != 0) {
+            syncingDialogHostSize = true
+            try {
+                Win32NativeWindowHost.resizeAndCenterDialogWindow(this)
+                Win32NativeWindowHost.requestCoalescedNonOverlayLayoutSync()
+            } finally {
+                syncingDialogHostSize = false
+            }
+        }
+    }
+
+    override fun setBounds(x: Int, y: Int, width: Int, height: Int) {
+        super.setBounds(x, y, width, height)
+        syncLiveDialogHostBounds()
+    }
+
+    override fun setPreferredSize(size: Size?) {
+        super.setPreferredSize(size)
+        syncLiveDialogHostBounds()
     }
 
     override fun setTitle(title: String) {
@@ -92,10 +125,15 @@ class WindowsDialogWindowNativeImpl(
         }
     }
 
-    override fun onChildrenClearedNative() {
-        for (child in childImpls.toList()) {
+    override fun onChildrenClearedNative(clearedChildren: List<NativeImpl<*>>) {
+        for (child in clearedChildren) {
             val childHandle = child.nativeWidget as? Win32HwndHandle ?: continue
             Win32ControlMessageRouter.detachChildHwnd(childHandle)
+        }
+        val hostHwnd = nativeWidget.hwnd
+        if (hostHwnd != null && IsWindow(hostHwnd) != 0) {
+            Win32NativeWindowHost.layoutAndSyncWindowChildren(hostHwnd)
+            InvalidateRect(hostHwnd, null, 0)
         }
     }
 

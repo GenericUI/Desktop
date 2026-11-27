@@ -6,7 +6,7 @@ import com.nexustools.genericui.component.action.Button
 import com.nexustools.genericui.component.dialog.DialogWindow
 import com.nexustools.genericui.component.layout.Container
 import com.nexustools.genericui.component.layout.HStack
-import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.component.shell.Window
 import com.nexustools.genericui.component.typography.Badge

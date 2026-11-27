@@ -95,6 +95,38 @@ object Win32NativeTitleBarRenderer {
     fun getPressedNcButton(hwnd: HWND?): Int =
         if (hwnd != null) pressedNcButtonByHwnd[hwnd.toLong()] ?: 0 else 0
 
+    fun doesDwmDrawCaptionButtons(hwnd: HWND?): Boolean {
+        if (hwnd != null) {
+            hitMapsByHwnd[hwnd.toLong()]?.let { return it.dwmDrawsCaptionButtons }
+        }
+        val winImpl = Win32NativeWindowHost.resolveWindowForHwnd(hwnd)
+        val kind = winImpl?.titleBarKind ?: Win32TitleBarKind.STANDARD_WINDOW
+        val effectiveTool = kind.usesSmallCaptionMetrics || (winImpl?.isToolModalWindow == true)
+        return Win32DwmUxThemeBridge.resolveTitleBarPalette(
+            hwnd = hwnd,
+            isToolWindow = effectiveTool,
+            kind = kind,
+            isDark = Win32NativeWindowHost.isEffectivelyDarkTheme()
+        ).dwmDrawsCaptionButtons
+    }
+
+    fun isPointInCaptionButtonOrIcon(hwnd: HWND?, cx: Int, cy: Int): Boolean {
+        if (hwnd == null) return false
+        val hitMap = hitMapsByHwnd[hwnd.toLong()] ?: return false
+        return hitMap.closeButtonRect?.contains(cx, cy) == true ||
+            hitMap.maximizeButtonRect?.contains(cx, cy) == true ||
+            hitMap.minimizeButtonRect?.contains(cx, cy) == true ||
+            hitMap.iconRect?.contains(cx, cy) == true
+    }
+
+    fun clearPressedNcButton(hwnd: HWND?) {
+        if (hwnd == null) return
+        val prev = pressedNcButtonByHwnd.remove(hwnd.toLong()) ?: 0
+        if (prev != 0) {
+            InvalidateRect(hwnd, null, 0)
+        }
+    }
+
     fun clearWindowState(hwnd: HWND?) {
         clearCachedHwndState(hwnd)
         if (hwnd == null) {
@@ -370,10 +402,25 @@ object Win32NativeTitleBarRenderer {
 
     /**
      * Handles `WM_NCMOUSEMOVE` to highlight hovered caption buttons (`HTMINBUTTON`, `HTMAXBUTTON`, `HTCLOSE`).
+     * Arms non-client leave tracking (`TME_NONCLIENT or TME_LEAVE`) while over a caption button so hover
+     * highlights always clear promptly when moving away, and returns `true` if a custom caption button is
+     * hovered or hover state changed.
      */
     fun handleNcMouseMove(hwnd: HWND, hitCode: Int): Boolean {
+        val prevHover = getHoveredNcButton(hwnd)
         updateHoveredNcButton(hwnd, hitCode)
-        return hitCode == HTMINBUTTON || hitCode == HTMAXBUTTON || hitCode == HTCLOSE
+        val isCaptionBtn = hitCode == HTMINBUTTON || hitCode == HTMAXBUTTON || hitCode == HTCLOSE
+        if (isCaptionBtn) {
+            memScoped {
+                val tme = alloc<tagTRACKMOUSEEVENT>()
+                tme.cbSize = sizeOf<tagTRACKMOUSEEVENT>().toUInt()
+                tme.dwFlags = (0x00000010 /* TME_NONCLIENT */ or TME_LEAVE).toUInt()
+                tme.hwndTrack = hwnd
+                tme.dwHoverTime = 0u
+                TrackMouseEvent(tme.ptr)
+            }
+        }
+        return isCaptionBtn || getHoveredNcButton(hwnd) != prevHover
     }
 
     /**
@@ -411,8 +458,9 @@ object Win32NativeTitleBarRenderer {
 
     /**
      * Handles `WM_NCLBUTTONUP`:
-     * Executes `SC_MINIMIZE`, `SC_MAXIMIZE` / `SC_RESTORE`, or `SC_CLOSE` when releasing over the
-     * pressed caption button.
+     * Executes `SC_MINIMIZE`, `SC_MAXIMIZE` / `SC_RESTORE`, or `SC_CLOSE` ONLY when releasing over the
+     * same pressed caption button. Dragging off cancels without acting while still returning `true` so
+     * `DefWindowProcW` never acts on or repaints legacy non-client caption buttons.
      */
     fun handleNcLButtonUp(hwnd: HWND, hitCode: Int, isMainWindow: Boolean): Boolean {
         val key = hwnd.toLong()
@@ -420,31 +468,31 @@ object Win32NativeTitleBarRenderer {
         if (pressed != 0) {
             InvalidateRect(hwnd, null, 0)
         }
-        val effectiveHit = if (hitCode == HTMINBUTTON || hitCode == HTMAXBUTTON || hitCode == HTCLOSE) {
-            hitCode
-        } else {
-            pressed
+        if (pressed != 0 && hitCode != pressed) {
+            return true
         }
-        when (effectiveHit) {
-            HTMINBUTTON -> {
-                PostMessageW(hwnd, WM_SYSCOMMAND.toUInt(), SC_MINIMIZE.toULong(), 0L)
-                return true
-            }
-            HTMAXBUTTON -> {
-                val cmd = if (IsZoomed(hwnd) != 0) SC_RESTORE else SC_MAXIMIZE
-                PostMessageW(hwnd, WM_SYSCOMMAND.toUInt(), cmd.toULong(), 0L)
-                return true
-            }
-            HTCLOSE -> {
-                if (isMainWindow) {
-                    PostMessageW(hwnd, WM_CLOSE.toUInt(), 0u, 0L)
-                } else {
-                    ShowWindow(hwnd, SW_HIDE)
+        if (pressed != 0 && hitCode == pressed) {
+            when (pressed) {
+                HTMINBUTTON -> {
+                    PostMessageW(hwnd, WM_SYSCOMMAND.toUInt(), SC_MINIMIZE.toULong(), 0L)
+                    return true
                 }
-                return true
+                HTMAXBUTTON -> {
+                    val cmd = if (IsZoomed(hwnd) != 0) SC_RESTORE else SC_MAXIMIZE
+                    PostMessageW(hwnd, WM_SYSCOMMAND.toUInt(), cmd.toULong(), 0L)
+                    return true
+                }
+                HTCLOSE -> {
+                    if (isMainWindow) {
+                        PostMessageW(hwnd, WM_CLOSE.toUInt(), 0u, 0L)
+                    } else {
+                        ShowWindow(hwnd, SW_HIDE)
+                    }
+                    return true
+                }
             }
         }
-        return false
+        return hitCode == HTMINBUTTON || hitCode == HTMAXBUTTON || hitCode == HTCLOSE
     }
 
     /**
@@ -569,24 +617,9 @@ object Win32NativeTitleBarRenderer {
             hwnd = if (isTopLevelFrame) hwnd else null,
             isWindowActive = windowActive,
             isToolWindow = effectiveTool,
-            kind = kind
+            kind = kind,
+            isDark = Win32NativeWindowHost.isEffectivelyDarkTheme()
         )
-
-        if (isTopLevelFrame) {
-            syncWindowCaptionStyleFlags(
-                hwnd = hwnd,
-                titleBar = titleBar,
-                isToolWindow = effectiveTool,
-                kind = kind
-            )
-            Win32DwmUxThemeBridge.applyWindowDwmAttributes(
-                hwnd = hwnd,
-                isToolWindow = effectiveTool,
-                extendTopPx = if (top == 0) height else 0,
-                isDark = palette.isDark,
-                kind = kind
-            )
-        }
 
         // Reuse or allocate a 32-bit top-down ARGB DIB section for `[0..width, 0..height]`
         if (cachedTitleBarDc == null || cachedTitleBarBmp == null || cachedTitleBarPixels == null ||
@@ -948,7 +981,7 @@ object Win32NativeTitleBarRenderer {
                 titleBarHeight = height,
                 kind = kind,
                 dwmDrawsCaptionButtons = dwmButtons,
-                iconRect = iconBox,
+                iconRect = if (showIcon) iconBox else null,
                 minimizeButtonRect = minBox,
                 maximizeButtonRect = maxBox,
                 closeButtonRect = closeBox

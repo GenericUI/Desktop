@@ -39,6 +39,8 @@ import platform.windows.WNDCLASSEXW
 import platform.windows.WPARAM
 import platform.windows.WS_EX_TOOLWINDOW
 import platform.windows.WS_POPUP
+import kotlin.concurrent.AtomicInt
+import kotlin.concurrent.Volatile
 
 private const val HEADLESS_TRAY_CLASS_NAME = "GenericUiHeadlessTrayWindow"
 
@@ -48,6 +50,11 @@ private fun win32HeadlessTrayWndProc(
     wParam: WPARAM,
     lParam: LPARAM
 ): LRESULT {
+    val tbMsg = Win32NativeWindowHost.WM_TASKBARCREATED
+    if (tbMsg != 0u && msg == tbMsg) {
+        WindowsSystemTrayNativeImpl.reRegisterAfterTaskbarCreated(hwnd)
+        return 0L
+    }
     when (msg.toInt()) {
         Win32NativeWindowHost.WM_APP_TRAY_ICON.toInt() -> {
             if (hwnd != null) {
@@ -60,6 +67,9 @@ private fun win32HeadlessTrayWndProc(
             return 0L
         }
         WM_TIMER -> {
+            if (WindowsSystemTrayNativeImpl.handleRetryTimer(hwnd, wParam.toInt())) {
+                return 0L
+            }
             if (WindowsUiTimerNativeImpl.dispatchWin32Timer(wParam.toInt())) {
                 return 0L
             }
@@ -86,9 +96,13 @@ private fun win32HeadlessTrayWndProc(
 object WindowsHeadlessTrayLoop {
     private var classRegistered: Boolean = false
     private var trayHwnd: HWND? = null
+
+    @Volatile
     private var activeLoopThreadId: UInt = 0u
 
-    @kotlin.concurrent.Volatile
+    private val requestQuitInFlight = AtomicInt(0)
+
+    @Volatile
     internal var isQuitRequested: Boolean = false
         private set
 
@@ -96,12 +110,33 @@ object WindowsHeadlessTrayLoop {
         isQuitRequested = false
     }
 
+    internal fun currentTrayHwnd(): HWND? =
+        trayHwnd?.takeIf { IsWindow(it) != 0 }
+
+    internal fun attachActiveLoopThread(threadId: UInt) {
+        activeLoopThreadId = threadId
+    }
+
+    internal fun detachActiveLoopThread() {
+        activeLoopThreadId = 0u
+    }
+
+    internal fun isTrayActive(): Boolean =
+        !isQuitRequested && (WindowsSystemTrayNativeImpl.hasActiveTray() || currentTrayHwnd() != null)
+
     internal fun isTrayMessageHwnd(hwnd: HWND?): Boolean =
         hwnd != null && hwnd == trayHwnd
 
     internal fun onTrayHwndDestroyed(hwnd: HWND?) {
         if (hwnd == null || hwnd == trayHwnd) {
             trayHwnd = null
+        }
+        if (hwnd != null) {
+            WindowsUiTimerNativeImpl.rehomeTimersFromDestroyedHwnd(hwnd)
+        }
+        if (isQuitRequested || (!Win32NativeWindowHost.visualTestMode && Win32NativeWindowHost.resolveTimerHostHwnd() == null)) {
+            PostQuitMessage(0)
+            Win32NativeWindowHost.requestQuitMessageLoop()
         }
     }
 
@@ -139,6 +174,9 @@ object WindowsHeadlessTrayLoop {
             lpParam = null
         )
         trayHwnd = created
+        if (created != null && IsWindow(created) != 0) {
+            WindowsUiTimerNativeImpl.attachPendingTimersToHwnd(created)
+        }
         return created
     }
 
@@ -152,16 +190,22 @@ object WindowsHeadlessTrayLoop {
 
     fun requestQuit() {
         isQuitRequested = true
-        val hwnd = trayHwnd
-        if (hwnd != null && IsWindow(hwnd) != 0) {
-            PostMessageW(hwnd, WM_CLOSE.toUInt(), 0uL, 0L)
-        }
-        val targetThreadId = activeLoopThreadId
-        val currentThreadId = GetCurrentThreadId()
-        if (targetThreadId != 0u && targetThreadId != currentThreadId) {
-            PostThreadMessageW(targetThreadId, WM_QUIT.toUInt(), 0uL, 0L)
-        } else if (targetThreadId == currentThreadId) {
-            PostQuitMessage(0)
+        if (!requestQuitInFlight.compareAndSet(0, 1)) return
+        try {
+            val hwnd = trayHwnd
+            if (hwnd != null && IsWindow(hwnd) != 0) {
+                PostMessageW(hwnd, WM_CLOSE.toUInt(), 0uL, 0L)
+            }
+            val targetThreadId = activeLoopThreadId
+            val currentThreadId = GetCurrentThreadId()
+            if (targetThreadId != 0u && targetThreadId != currentThreadId) {
+                PostThreadMessageW(targetThreadId, WM_QUIT.toUInt(), 0uL, 0L)
+            } else if (targetThreadId == currentThreadId) {
+                PostQuitMessage(0)
+            }
+            Win32NativeWindowHost.requestQuitMessageLoop()
+        } finally {
+            requestQuitInFlight.value = 0
         }
     }
 
@@ -181,6 +225,7 @@ object WindowsHeadlessTrayLoop {
         ensureTrayMessageHwnd() ?: return@memScoped false
         WindowsSystemTrayNativeImpl.syncActiveTrayIcon()
         WindowsUiThreadDispatcherNativeImpl.attachCurrentThreadAsUiThread()
+        val previousLoopThreadId = activeLoopThreadId
         activeLoopThreadId = GetCurrentThreadId()
         val msg = alloc<MSG>()
         var receivedQuit = false
@@ -217,12 +262,12 @@ object WindowsHeadlessTrayLoop {
                 }
             }
         } finally {
-            activeLoopThreadId = 0u
+            activeLoopThreadId = previousLoopThreadId
             if (receivedQuit || isQuitRequested || !WindowsSystemTrayNativeImpl.hasActiveTray()) {
-                if (Win32NativeWindowHost.activeHwnd == null) {
+                destroyTrayMessageHwnd()
+                if (Win32NativeWindowHost.resolveTimerHostHwnd() == null) {
                     WindowsUiThreadDispatcherNativeImpl.clearUiThreadBinding()
                 }
-                destroyTrayMessageHwnd()
             }
         }
         receivedQuit || isQuitRequested

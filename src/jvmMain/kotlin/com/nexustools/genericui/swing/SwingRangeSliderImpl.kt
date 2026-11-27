@@ -1,6 +1,8 @@
 package com.nexustools.genericui.swing
 
 import com.nexustools.genericui.nativeimpl.form.RangeSliderNativeImpl
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
 import javax.swing.JComponent
 import javax.swing.JSlider
 import kotlin.math.abs
@@ -24,9 +26,23 @@ class SwingRangeSliderImpl : SwingBaseNativeImpl(JSlider(0, 100, 0), "form-range
     private var effectiveTickStep: Double = 1.0
     private var suppressChangeEvents: Boolean = false
     private var onValueChangedListener: ((Double) -> Unit)? = null
+    private var focusedStateVal: Boolean = false
 
     init {
         configureSliderBounds()
+        nativeWidget.addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent?) {
+                val effective = isEnabled() && isEffectivelyFocusableInSwing()
+                focusedStateVal = effective
+                if (!effective) {
+                    clearAwtFocusOnEdtIfOwner(nativeWidget)
+                }
+            }
+
+            override fun focusLost(e: FocusEvent?) {
+                focusedStateVal = false
+            }
+        })
         nativeWidget.addChangeListener {
             if (suppressChangeEvents) return@addChangeListener
             val mapped = sliderUnitsToDouble(nativeWidget.value)
@@ -134,4 +150,16 @@ class SwingRangeSliderImpl : SwingBaseNativeImpl(JSlider(0, 100, 0), "form-range
         }
         return raw.coerceIn(minVal, maxVal)
     }
+
+    override fun setFocusedState(focused: Boolean) {
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        focusedStateVal = effective
+        if (effective) {
+            requestAwtFocusOnEdt(nativeWidget)
+        } else {
+            clearAwtFocusOnEdtIfOwner(nativeWidget)
+        }
+    }
+
+    override fun isFocusedState(): Boolean = focusedStateVal || nativeWidget.isFocusOwner
 }

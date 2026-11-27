@@ -5,6 +5,8 @@ import com.nexustools.genericui.nativeimpl.action.DropdownNativeImpl
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import java.awt.Dialog
 import java.awt.GraphicsEnvironment
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -28,8 +30,22 @@ class SwingDropdownImpl : SwingBaseContainerNativeImpl(
     private var onPrimaryActionListener: (() -> Unit)? = null
     private var lastMousePressX: Int = -1
     private var lastPressWasMouse: Boolean = false
+    private var focusedStateVal: Boolean = false
 
     init {
+        nativeWidget.addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent?) {
+                val effective = isEnabled() && isEffectivelyFocusableInSwing()
+                focusedStateVal = effective
+                if (!effective) {
+                    clearAwtFocusOnEdtIfOwner(nativeWidget)
+                }
+            }
+
+            override fun focusLost(e: FocusEvent?) {
+                focusedStateVal = false
+            }
+        })
         nativeWidget.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) {
                 lastMousePressX = e.x
@@ -124,4 +140,16 @@ class SwingDropdownImpl : SwingBaseContainerNativeImpl(
         nativeWidget.putClientProperty("splitDropdown", listener != null)
         nativeWidget.repaint()
     }
+
+    override fun setFocusedState(focused: Boolean) {
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        focusedStateVal = effective
+        if (effective) {
+            requestAwtFocusOnEdt(nativeWidget)
+        } else {
+            clearAwtFocusOnEdtIfOwner(nativeWidget)
+        }
+    }
+
+    override fun isFocusedState(): Boolean = focusedStateVal || nativeWidget.isFocusOwner
 }

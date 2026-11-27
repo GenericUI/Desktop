@@ -4,6 +4,7 @@ package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopInteractiveSurfaceSpec
+import com.nexustools.genericui.enums.ui.ObjectFit
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.COpaquePointerVar
 import kotlinx.cinterop.CPointer
@@ -23,15 +24,22 @@ import kotlinx.cinterop.value
 import platform.windows.BITMAPINFO
 import platform.windows.BITMAPINFOHEADER
 import platform.windows.BI_RGB
+import platform.windows.BLACK_BRUSH
 import platform.windows.BitBlt
+import platform.windows.COLORONCOLOR
 import platform.windows.CreateCompatibleDC
 import platform.windows.CreateDIBSection
 import platform.windows.DIB_RGB_COLORS
 import platform.windows.DeleteDC
 import platform.windows.DeleteObject
+import platform.windows.FillRect
+import platform.windows.GA_ROOT
+import platform.windows.GetAncestor
 import platform.windows.GetClientRect
+import platform.windows.GetStockObject
 import platform.windows.GdiFlush
 import platform.windows.HBITMAP
+import platform.windows.HBRUSH
 import platform.windows.HDC
 import platform.windows.HGDIOBJ
 import platform.windows.HWND
@@ -42,12 +50,15 @@ import platform.windows.POINT
 import platform.windows.RECT
 import platform.windows.SRCCOPY
 import platform.windows.SelectObject
+import platform.windows.SetDIBitsToDevice
 import platform.windows.SetStretchBltMode
 import platform.windows.StretchDIBits
 import platform.windows.STRETCH_HALFTONE
 import platform.windows.WS_CHILD
 import platform.windows.WS_CLIPSIBLINGS
 import platform.windows.WS_VISIBLE
+import platform.posix.memcpy
+import platform.posix.memset
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -107,11 +118,21 @@ object Win32InteractiveSurfaceHwnd {
 
         val existing = handle.hwnd
         if (existing != null && IsWindow(existing) != 0) {
+            if (handle.actualWin32ClassName != "GenericUIInteractiveSurfaceW") {
+                surfaceCachesByHwnd.remove(existing.toLong())?.release()
+                Win32ControlMessageRouter.replaceChildHwndInPlace(
+                    handle = handle,
+                    owner = owner,
+                    newWin32ClassName = "GenericUIInteractiveSurfaceW",
+                    newDwStyle = WS_CHILD or WS_VISIBLE or WS_CLIPSIBLINGS,
+                    installSubclass = false
+                )
+            }
             trackedSurfaceHandles.add(handle)
             handle.customPaintCallback = { hwnd, hdc, w, h ->
                 paintSurfaceToHdc(handle, owner, hwnd, hdc, w, h)
             }
-            return existing
+            return handle.hwnd
         }
 
         val created = Win32ControlMessageRouter.createChildHwnd(
@@ -139,6 +160,64 @@ object Win32InteractiveSurfaceHwnd {
     }
 
     /**
+     * Computes the aspect-correct presentation rectangle for [handle] mapped into [hostHwnd] client
+     * coordinates and syncs it with [Win32NativeWindowHost.updateVideoStageRect].
+     */
+    internal fun syncSurfaceStageRectForHost(handle: Win32HwndHandle, hostHwnd: HWND): Boolean {
+        val surfaceHwnd = handle.hwnd ?: return false
+        if (IsWindow(surfaceHwnd) == 0 || IsWindow(hostHwnd) == 0) return false
+        val spec = resolveSpec(handle) ?: return false
+        if (!spec.isActiveStream() && !spec.shouldPaintBlackBackdrop()) return false
+
+        val (cw, ch) = memScoped {
+            val rc = alloc<RECT>()
+            if (GetClientRect(surfaceHwnd, rc.ptr) == 0) return false
+            (rc.right - rc.left).coerceAtLeast(0) to (rc.bottom - rc.top).coerceAtLeast(0)
+        }
+        if (cw <= 0 || ch <= 0) return false
+
+        val relX: Int
+        val relY: Int
+        val relW: Int
+        val relH: Int
+        if (fillsContainerDirectly(handle, spec)) {
+            relX = 0
+            relY = 0
+            relW = cw
+            relH = ch
+        } else {
+            val srcW = spec.surfaceWidth().coerceAtLeast(1)
+            val srcH = spec.surfaceHeight().coerceAtLeast(1)
+            val rect = DesktopInteractiveSurfaceSpec.computePresentationRect(
+                cw.toDouble(),
+                ch.toDouble(),
+                srcW,
+                srcH,
+                spec
+            )
+            if (rect.clippedDstW <= 0 || rect.clippedDstH <= 0) return false
+            relX = rect.clippedDstX
+            relY = rect.clippedDstY
+            relW = rect.clippedDstW
+            relH = rect.clippedDstH
+        }
+
+        val (mappedX, mappedY) = if (surfaceHwnd == hostHwnd) {
+            relX to relY
+        } else {
+            memScoped {
+                val pt = alloc<POINT>()
+                pt.x = relX
+                pt.y = relY
+                MapWindowPoints(surfaceHwnd, hostHwnd, pt.ptr, 1u)
+                pt.x to pt.y
+            }
+        }
+        Win32NativeWindowHost.updateVideoStageRect(mappedX, mappedY, relW, relH)
+        return true
+    }
+
+    /**
      * Paints a surface child `HWND`'s latest frame cleanly into [hdc], respecting
      * [DesktopInteractiveSurfaceSpec] presentation geometry and updating VBlank video swap metrics.
      */
@@ -153,6 +232,51 @@ object Win32InteractiveSurfaceHwnd {
         if (width <= 0 || height <= 0) return
         val spec = resolveSpec(handle)
         val targetCache = surfaceCachesByHwnd.getOrPut(hwnd.toLong()) { SurfaceDibCache() }
+
+        // Direct 1:1 / fast stretch blit path for full-container interactive surfaces (e.g. embedded WebView
+        // with ObjectFit.FILL) that avoids allocating/clearing/alpha-fixing an intermediate 8MB DIB on every paint.
+        if (spec != null && fillsContainerDirectly(handle, spec) && !spec.isActiveStream()) {
+            spec.resizeSurface?.invoke(width, height)
+            val sc = spec.swapCount()
+            spec.dispatchBeforePresentFrame(sc, null)
+            val actualSrcW = spec.surfaceWidth().coerceAtLeast(0)
+            val actualSrcH = spec.surfaceHeight().coerceAtLeast(0)
+            targetCache.lastSwapCount = sc
+            if (actualSrcW > 0 && actualSrcH > 0) {
+                blitSpecPixelsIntoHdc(
+                    spec = spec,
+                    srcW = actualSrcW,
+                    srcH = actualSrcH,
+                    srcX = 0,
+                    srcY = 0,
+                    srcCropW = actualSrcW,
+                    srcCropH = actualSrcH,
+                    dstDc = hdc,
+                    dstX = 0,
+                    dstY = 0,
+                    dstW = width,
+                    dstH = height,
+                    fastScale = true
+                )
+            } else {
+                memScoped {
+                    val rc = alloc<RECT>()
+                    rc.left = 0
+                    rc.top = 0
+                    rc.right = width
+                    rc.bottom = height
+                    val blackBrush = GetStockObject(BLACK_BRUSH)?.reinterpret<platform.windows.HBRUSH__>()
+                    if (blackBrush != null) {
+                        FillRect(hdc, rc.ptr, blackBrush)
+                    }
+                }
+            }
+            if (spec.shouldPaintBlackBackdrop()) {
+                recordStagePlacementForHwnd(hwnd, sc, 0, 0, width, height)
+            }
+            return
+        }
+
         val dibPixels = ensureDibForCache(hdc, targetCache, width, height) ?: return
         val dibDc = targetCache.dc ?: return
 
@@ -181,28 +305,13 @@ object Win32InteractiveSurfaceHwnd {
                 }
                 targetCache.lastSwapCount = presented.swapCount
                 if (spec.isActiveStream() || spec.shouldPaintBlackBackdrop()) {
-                    val vx = actualRect.clippedDstX
-                    val vy = actualRect.clippedDstY
-                    val vw = actualRect.clippedDstW
-                    val vh = actualRect.clippedDstH
-                    val topWindow = Win32NativeWindowHost.activeHwnd
-                    val mapped = if (topWindow != null && IsWindow(topWindow) != 0) {
-                        memScoped {
-                            val pt = alloc<POINT>()
-                            pt.x = vx
-                            pt.y = vy
-                            MapWindowPoints(hwnd, topWindow, pt.ptr, 1u)
-                            intArrayOf(pt.x, pt.y, pt.x + vw, pt.y + vh)
-                        }
-                    } else {
-                        intArrayOf(vx, vy, vx + vw, vy + vh)
-                    }
-                    Win32NativeWindowHost.recordVideoStageSwap(
-                        presented.swapCount,
-                        mapped[0],
-                        mapped[1],
-                        mapped[2],
-                        mapped[3]
+                    recordStagePlacementForHwnd(
+                        hwnd = hwnd,
+                        swapCount = presented.swapCount,
+                        vx = actualRect.clippedDstX,
+                        vy = actualRect.clippedDstY,
+                        vw = actualRect.clippedDstW,
+                        vh = actualRect.clippedDstH
                     )
                 }
             }
@@ -210,6 +319,40 @@ object Win32InteractiveSurfaceHwnd {
 
         GdiFlush()
         BitBlt(hdc, 0, 0, width, height, dibDc, 0, 0, SRCCOPY)
+    }
+
+    private fun recordStagePlacementForHwnd(
+        hwnd: HWND,
+        swapCount: Long,
+        vx: Int,
+        vy: Int,
+        vw: Int,
+        vh: Int
+    ) {
+        val rootAncestor = GetAncestor(hwnd, GA_ROOT.toUInt())
+            ?.takeIf { IsWindow(it) != 0 && it != Win32ControlMessageRouter.getOrCreateParkingHwnd() }
+        val topWindow = rootAncestor ?: Win32NativeWindowHost.activeHwnd
+        val mapped = if (topWindow != null && IsWindow(topWindow) != 0) {
+            memScoped {
+                val pt = alloc<POINT>()
+                pt.x = vx
+                pt.y = vy
+                MapWindowPoints(hwnd, topWindow, pt.ptr, 1u)
+                intArrayOf(pt.x, pt.y, pt.x + vw, pt.y + vh)
+            }
+        } else {
+            intArrayOf(vx, vy, vx + vw, vy + vh)
+        }
+        Win32NativeWindowHost.recordVideoStageSwap(
+            swapCount,
+            mapped[0],
+            mapped[1],
+            mapped[2],
+            mapped[3]
+        )
+        if (vw > 0 && vh > 0) {
+            Win32NativeWindowHost.updateVideoStageRect(mapped[0], mapped[1], vw, vh)
+        }
     }
 
     /**
@@ -225,20 +368,24 @@ object Win32InteractiveSurfaceHwnd {
         refDc: HDC? = null
     ) {
         if (dstW <= 0 || dstH <= 0 || dstArgb.size < dstW * dstH) return
-        val cache = surfaceCachesByHwnd.getOrPut(handle.nativePointer) { SurfaceDibCache() }
+        val cacheKey = handle.hwnd?.toLong() ?: handle.nativePointer
+        val cache = surfaceCachesByHwnd.getOrPut(cacheKey) { SurfaceDibCache() }
         val dib = ensureDibForCache(refDc, cache, dstW, dstH) ?: return
         val dibDc = cache.dc ?: return
 
-        for (i in 0 until dstW * dstH) {
-            dib[i] = 0xFF000000u
-        }
+        val pixelCount = dstW * dstH
+        val byteCount = (pixelCount * 4).toULong()
+        memset(dib, 0, byteCount)
         val presented = presentSpecToDibDc(handle, spec, dibDc, dstW, dstH)
         if (presented != null) {
             cache.lastSwapCount = presented.swapCount
         }
         GdiFlush()
-        for (i in 0 until dstW * dstH) {
-            dstArgb[i] = dib[i].toInt() or 0xFF000000.toInt()
+        dstArgb.usePinned { pinned ->
+            memcpy(pinned.addressOf(0), dib, byteCount)
+        }
+        for (i in 0 until pixelCount) {
+            dstArgb[i] = dstArgb[i] or 0xFF000000.toInt()
         }
     }
 
@@ -248,6 +395,19 @@ object Win32InteractiveSurfaceHwnd {
         val blitted: Boolean
     )
 
+    private fun fillsContainerDirectly(handle: Win32HwndHandle, spec: DesktopInteractiveSurfaceSpec): Boolean {
+        if (spec.resolveContentFitMode() == ObjectFit.FILL) return true
+        val role = handle.attributes["interactiveSurfaceRole"]?.toString().orEmpty()
+        val isCanvasOrWebView = handle.nativeClassName.contains("Canvas", ignoreCase = true) ||
+            handle.nativeClassName.contains("WebView", ignoreCase = true) ||
+            role.contains("Canvas", ignoreCase = true) ||
+            role.contains("WebView", ignoreCase = true)
+        return isCanvasOrWebView &&
+            spec.defaultAspectRatio == null &&
+            spec.contentAspectRatio == null &&
+            spec.contentFitMode == null
+    }
+
     private fun presentSpecToDibDc(
         handle: Win32HwndHandle,
         spec: DesktopInteractiveSurfaceSpec,
@@ -255,13 +415,10 @@ object Win32InteractiveSurfaceHwnd {
         containerW: Int,
         containerH: Int
     ): PresentedFrame? {
-        val isUnconfiguredCanvas = handle.nativeClassName.contains("Canvas", ignoreCase = true) &&
-            spec.defaultAspectRatio == null &&
-            spec.contentAspectRatio == null &&
-            spec.contentFitMode == null
+        val fillsContainerDirectly = fillsContainerDirectly(handle, spec)
         val srcW = spec.surfaceWidth().coerceAtLeast(1)
         val srcH = spec.surfaceHeight().coerceAtLeast(1)
-        val initialRect = if (isUnconfiguredCanvas) {
+        val initialRect = if (fillsContainerDirectly) {
             null
         } else {
             DesktopInteractiveSurfaceSpec.computePresentationRect(
@@ -285,7 +442,22 @@ object Win32InteractiveSurfaceHwnd {
 
         val actualSrcW = spec.surfaceWidth().coerceAtLeast(0)
         val actualSrcH = spec.surfaceHeight().coerceAtLeast(0)
-        val actualRect = if (initialRect != null && (actualSrcW <= 0 || actualSrcH <= 0 || (actualSrcW == srcW && actualSrcH == srcH))) {
+        val actualRect = if (fillsContainerDirectly) {
+            DesktopInteractiveSurfaceSpec.PresentationRect(
+                dstX = 0.0,
+                dstY = 0.0,
+                dstW = containerW.toDouble(),
+                dstH = containerH.toDouble(),
+                srcX = 0,
+                srcY = 0,
+                srcW = actualSrcW.coerceAtLeast(1),
+                srcH = actualSrcH.coerceAtLeast(1),
+                clippedDstX = 0,
+                clippedDstY = 0,
+                clippedDstW = containerW,
+                clippedDstH = containerH
+            )
+        } else if (initialRect != null && (actualSrcW <= 0 || actualSrcH <= 0 || (actualSrcW == srcW && actualSrcH == srcH))) {
             initialRect
         } else {
             DesktopInteractiveSurfaceSpec.computePresentationRect(
@@ -367,7 +539,8 @@ object Win32InteractiveSurfaceHwnd {
         dstX: Int,
         dstY: Int,
         dstW: Int,
-        dstH: Int
+        dstH: Int,
+        fastScale: Boolean = false
     ) {
         if (srcCropW <= 0 || srcCropH <= 0 || dstW <= 0 || dstH <= 0) return
         val ptrPair = spec.acquireBgraPtr?.invoke()
@@ -380,14 +553,14 @@ object Win32InteractiveSurfaceHwnd {
         }
 
         if (bytePtr != null && strideBytes >= srcW * 4) {
-            drawRawBgraPtrToDc(bytePtr, strideBytes, srcW, srcH, srcX, srcY, srcCropW, srcCropH, dstDc, dstX, dstY, dstW, dstH)
+            drawRawBgraPtrToDc(bytePtr, strideBytes, srcW, srcH, srcX, srcY, srcCropW, srcCropH, dstDc, dstX, dstY, dstW, dstH, fastScale)
             return
         }
 
         val bgraBytes = spec.captureBgra?.invoke()
         if (bgraBytes != null && bgraBytes.size >= srcW * srcH * 4) {
             bgraBytes.usePinned { pinned ->
-                drawRawBgraPtrToDc(pinned.addressOf(0), srcW * 4, srcW, srcH, srcX, srcY, srcCropW, srcCropH, dstDc, dstX, dstY, dstW, dstH)
+                drawRawBgraPtrToDc(pinned.addressOf(0), srcW * 4, srcW, srcH, srcX, srcY, srcCropW, srcCropH, dstDc, dstX, dstY, dstW, dstH, fastScale)
             }
             return
         }
@@ -405,7 +578,7 @@ object Win32InteractiveSurfaceHwnd {
                 idx += 4
             }
             converted.usePinned { pinned ->
-                drawRawBgraPtrToDc(pinned.addressOf(0), srcW * 4, srcW, srcH, srcX, srcY, srcCropW, srcCropH, dstDc, dstX, dstY, dstW, dstH)
+                drawRawBgraPtrToDc(pinned.addressOf(0), srcW * 4, srcW, srcH, srcX, srcY, srcCropW, srcCropH, dstDc, dstX, dstY, dstW, dstH, fastScale)
             }
         }
     }
@@ -423,10 +596,12 @@ object Win32InteractiveSurfaceHwnd {
         dstX: Int,
         dstY: Int,
         dstW: Int,
-        dstH: Int
+        dstH: Int,
+        fastScale: Boolean = false
     ) {
         if (fullSrcW <= 0 || fullSrcH <= 0 || srcCropW <= 0 || srcCropH <= 0 || dstW <= 0 || dstH <= 0) return
-        SetStretchBltMode(dstDc, STRETCH_HALFTONE)
+        val isDirectOneToOne = srcX == 0 && srcY == 0 && srcCropW == fullSrcW && srcCropH == fullSrcH &&
+            dstW == srcCropW && dstH == srcCropH
         memScoped {
             val bmi = alloc<BITMAPINFO>()
             bmi.bmiHeader.biSize = sizeOf<BITMAPINFOHEADER>().toUInt()
@@ -435,21 +610,39 @@ object Win32InteractiveSurfaceHwnd {
             bmi.bmiHeader.biPlanes = 1u
             bmi.bmiHeader.biBitCount = 32u
             bmi.bmiHeader.biCompression = BI_RGB.toUInt()
-            StretchDIBits(
-                dstDc,
-                dstX,
-                dstY,
-                dstW,
-                dstH,
-                srcX,
-                srcY,
-                srcCropW,
-                srcCropH,
-                srcBytes,
-                bmi.ptr,
-                DIB_RGB_COLORS.toUInt(),
-                SRCCOPY
-            )
+            if (isDirectOneToOne) {
+                SetDIBitsToDevice(
+                    dstDc,
+                    dstX,
+                    dstY,
+                    dstW.toUInt(),
+                    dstH.toUInt(),
+                    0,
+                    0,
+                    0u,
+                    fullSrcH.toUInt(),
+                    srcBytes,
+                    bmi.ptr,
+                    DIB_RGB_COLORS.toUInt()
+                )
+            } else {
+                SetStretchBltMode(dstDc, if (fastScale) COLORONCOLOR else STRETCH_HALFTONE)
+                StretchDIBits(
+                    dstDc,
+                    dstX,
+                    dstY,
+                    dstW,
+                    dstH,
+                    srcX,
+                    srcY,
+                    srcCropW,
+                    srcCropH,
+                    srcBytes,
+                    bmi.ptr,
+                    DIB_RGB_COLORS.toUInt(),
+                    SRCCOPY
+                )
+            }
         }
     }
 

@@ -23,16 +23,24 @@ import platform.windows.DT_NOPREFIX
 import platform.windows.DT_SINGLELINE
 import platform.windows.DT_WORDBREAK
 import platform.windows.DrawTextW
+import platform.windows.GA_ROOT
+import platform.windows.GetActiveWindow
+import platform.windows.GetAncestor
 import platform.windows.GetDC
+import platform.windows.GetFocus
 import platform.windows.GetWindowTextLengthW
 import platform.windows.GetWindowTextW
 import platform.windows.HFONT
 import platform.windows.HWND
 import platform.windows.InvalidateRect
 import platform.windows.IsWindow
+import platform.windows.IsWindowEnabled
+import platform.windows.IsWindowVisible
 import platform.windows.RECT
 import platform.windows.ReleaseDC
 import platform.windows.SelectObject
+import platform.windows.SetActiveWindow
+import platform.windows.SetFocus
 import platform.windows.SetWindowTextW
 import platform.windows.WS_CHILD
 import platform.windows.WS_CLIPCHILDREN
@@ -112,6 +120,7 @@ object Win32RetainedControlSupport {
             container.layoutChildrenInBounds(handle.lastAppliedW.toFloat(), handle.lastAppliedH.toFloat())
         }
         InvalidateRect(currentHostHwnd, null, 0)
+        Win32NativeWindowHost.requestCoalescedNonOverlayLayoutSync()
     }
 
     fun onContainerChildRemoved(
@@ -127,6 +136,7 @@ object Win32RetainedControlSupport {
             container.layoutChildrenInBounds(handle.lastAppliedW.toFloat(), handle.lastAppliedH.toFloat())
         }
         handle.hwnd?.let { InvalidateRect(it, null, 0) }
+        Win32NativeWindowHost.requestCoalescedNonOverlayLayoutSync()
     }
 
     fun onContainerChildrenCleared(
@@ -138,6 +148,7 @@ object Win32RetainedControlSupport {
             Win32ControlMessageRouter.detachChildHwnd(childHandle)
         }
         handle.hwnd?.let { InvalidateRect(it, null, 0) }
+        Win32NativeWindowHost.requestCoalescedNonOverlayLayoutSync()
     }
 
     fun onContainerBoundsChanged(
@@ -145,6 +156,7 @@ object Win32RetainedControlSupport {
         handle: Win32HwndHandle,
         rect: Rect
     ) {
+        if (Win32ControlMessageRouter.batchingHostLayoutDepth > 0) return
         Win32ControlMessageRouter.applyBounds(handle, rect)
         if (rect.width > 0 && rect.height > 0) {
             container.layoutChildrenInBounds(rect.width.toFloat(), rect.height.toFloat())
@@ -152,6 +164,7 @@ object Win32RetainedControlSupport {
     }
 
     fun onLeafBoundsChanged(handle: Win32HwndHandle, rect: Rect) {
+        if (Win32ControlMessageRouter.batchingHostLayoutDepth > 0) return
         Win32ControlMessageRouter.applyBounds(handle, rect)
     }
 
@@ -177,6 +190,30 @@ object Win32RetainedControlSupport {
 
     fun onPointerEventsChanged(handle: Win32HwndHandle, pointerEventsNone: Boolean) {
         Win32ControlMessageRouter.applyPointerEventsNone(handle, pointerEventsNone)
+    }
+
+    /**
+     * Transfers real Win32 OS keyboard focus (`SetFocus`) onto [targetHwnd] when [owner] transitions
+     * to focused (for example via `Label.target` click or `AbstractComponent.isFocused = true`),
+     * activating its owning top-level host window within the UI thread if needed and skipping parked HWNDs.
+     */
+    fun syncOsFocusIfNeeded(
+        owner: DesktopBaseNativeImpl<*>,
+        targetHwnd: HWND?,
+        focusedRequested: Boolean
+    ) {
+        if (!focusedRequested || !owner.isFocusedState() || !owner.isEnabled() || !owner.isFocusable()) return
+        val hwnd = targetHwnd ?: return
+        if (IsWindow(hwnd) == 0 || IsWindowEnabled(hwnd) == 0 || IsWindowVisible(hwnd) == 0) return
+        if (GetFocus() == hwnd) return
+        val rootHwnd = GetAncestor(hwnd, GA_ROOT.toUInt())
+        val parking = Win32ControlMessageRouter.getOrCreateParkingHwnd()
+        if (rootHwnd != null && rootHwnd != parking && IsWindow(rootHwnd) != 0 && IsWindowVisible(rootHwnd) != 0) {
+            if (GetActiveWindow() != rootHwnd) {
+                SetActiveWindow(rootHwnd)
+            }
+        }
+        SetFocus(hwnd)
     }
 
     fun onZIndexChanged(handle: Win32HwndHandle, zIndex: Int) {

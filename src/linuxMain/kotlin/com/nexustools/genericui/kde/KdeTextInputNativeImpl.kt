@@ -305,6 +305,15 @@ open class KdeTextInputNativeImpl(
     override fun onNativeTransformChanged(transform: CssTransform?) { nativeWidget.requestRepaint() }
     override fun onNativeStyleSynced() { syncValueAndPlaceholderToLiveWidget() }
 
+    override fun setFocusedState(focused: Boolean) {
+        super.setFocusedState(focused)
+        KdePainterSupport.syncWidgetFocus(
+            impl = this,
+            focused = isFocusedState(),
+            targetPtr = innerPasswordLineEditPtr ?: nativeWidget.qWidgetPtr
+        )
+    }
+
     override fun dispose() {
         nativeWidget.destroyQWidget()
         super.dispose()

@@ -4,6 +4,7 @@ import com.nexustools.genericui.core.NativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
+import com.nexustools.genericui.desktop.core.DesktopStageOverlaySpec
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockWindowNativeImpl
 import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
@@ -73,6 +74,7 @@ class DesktopContainerLayoutController(
         val isLayoutRoot: Boolean,
         val indefiniteCol: Boolean,
         val layeredHost: Boolean,
+        val singleContainerFill: Boolean,
         val measureMode: Boolean,
         val attrVer: Long,
         val compStyle: ComponentStyle?,
@@ -99,6 +101,7 @@ class DesktopContainerLayoutController(
     private var cachedHostLayeredVer: Long = -1L
 
     var onZOrderUpdated: ((List<DesktopBaseNativeImpl<*>>) -> Unit)? = null
+    var onLayoutCompleted: ((List<DesktopBaseNativeImpl<*>>) -> Unit)? = null
 
     private inline fun <T> withLogicalChildrenLock(block: () -> T): T {
         while (!logicalChildrenLock.compareAndSet(0, 1)) {
@@ -497,6 +500,7 @@ class DesktopContainerLayoutController(
             lastLayoutH = safeH
             lastLayoutSubtreeVer = subVer
             lastLayoutSubtreeAttrVer = subAttrVer
+            onLayoutCompleted?.invoke(emptyList())
             return false
         }
 
@@ -576,6 +580,7 @@ class DesktopContainerLayoutController(
             if (orderChanged) {
                 onZOrderUpdated?.invoke(nextSorted)
             }
+            onLayoutCompleted?.invoke(nextSorted)
             if (host.nativeWidget.subtreeMutationVersion == subVer &&
                 host.nativeWidget.subtreeAttrMutationVersion == subAttrVer
             ) {
@@ -871,7 +876,7 @@ class DesktopContainerLayoutController(
         measureMode: Boolean = false
     ): LayoutStyleSnapshot {
         val widget = impl.nativeWidget
-        if (!impl.isVisible() || !widget.visible || widget.attributes["mountedInTitleBar"] == true) {
+        if (!impl.isVisible() || !widget.visible || (!isLayoutRoot && widget.attributes["mountedInTitleBar"] == true)) {
             return LayoutStyleSnapshot(display = CssDisplay.NONE)
         }
         val nodeAttrVer = widget.selfAttrMutationVersion
@@ -902,7 +907,21 @@ class DesktopContainerLayoutController(
         }
         val flagIndefiniteCol = measureMode && !isLayoutRoot && measureIndefiniteColumnHeight
         val flagLayeredHost = !isLayoutRoot && isEffectivelyLayered(host.nativeWidget)
-        val cacheMeasureMode = measureMode && (isLayoutRoot || flagIndefiniteCol || viewportH <= 1 || isLikelyFragmentWidget(impl, widget))
+        val isStyledHost = !isLayoutRoot && isStyledContainerHost()
+        val singleContainerFill = !isLayoutRoot &&
+            !measureMode &&
+            impl is DesktopBaseContainerNativeImpl<*> &&
+            isStyledHost &&
+            logicalDesktopChildrenOf(host).size == 1 &&
+            !hasExplicitHostAlignment(host)
+        val cacheMeasureMode = measureMode && (
+            isLayoutRoot ||
+                flagIndefiniteCol ||
+                viewportH <= 1 ||
+                isLikelyFragmentWidget(impl, widget) ||
+                isLikelyAppWidget(impl, widget) ||
+                (isStyledHost && impl is DesktopBaseContainerNativeImpl<*>)
+            )
         val slots = snapshotCache[impl]
         if (slots != null) {
             for (entry in slots) {
@@ -912,6 +931,7 @@ class DesktopContainerLayoutController(
                     entry.isLayoutRoot == isLayoutRoot &&
                     entry.indefiniteCol == flagIndefiniteCol &&
                     entry.layeredHost == flagLayeredHost &&
+                    entry.singleContainerFill == singleContainerFill &&
                     entry.measureMode == cacheMeasureMode &&
                     entry.attrVer == nodeAttrVer &&
                     entry.compStyle === compStyle &&
@@ -1064,6 +1084,7 @@ class DesktopContainerLayoutController(
             }
         }
 
+        val dataGenericUiTag = attrs["data-genericui-tag"]?.trim()?.lowercase()?.removePrefix("genericui:")
         if (normalizedTag == "card" || "card" in classes) {
             if ("display" !in styleProps && classes.none { it.startsWith("d-") }) {
                 styleProps["display"] = "flex"
@@ -1096,6 +1117,38 @@ class DesktopContainerLayoutController(
                     styleProps.putIfMissing("height", "100%")
                 }
             }
+        } else if (normalizedTag == "app" || dataGenericUiTag == "app") {
+            if (!isLayoutRoot) {
+                if (!hasWidthUtilityClass(classes) && resolveExplicitWidthPx(impl) == null) {
+                    styleProps.putIfMissing("width", "100%")
+                }
+                styleProps.putIfMissing("flex-grow", "1")
+                styleProps.putIfMissing("min-height", "0px")
+                if (!measureMode &&
+                    "max-height" !in styleProps &&
+                    "aspect-ratio" !in styleProps &&
+                    !hasHeightUtilityClass(classes) &&
+                    resolveExplicitHeightPx(impl) == null
+                ) {
+                    styleProps.putIfMissing("height", "100%")
+                }
+            }
+        }
+        if (singleContainerFill &&
+            "height" !in styleProps &&
+            "max-height" !in styleProps &&
+            "aspect-ratio" !in styleProps &&
+            !hasHeightUtilityClass(classes) &&
+            resolveExplicitHeightPx(impl) == null
+        ) {
+            styleProps.putIfMissing("min-height", "0px")
+            styleProps.putIfMissing("height", "100%")
+        }
+
+        val overlayRole = attrs[DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE]?.trim()?.lowercase()
+        if (overlayRole == DesktopStageOverlaySpec.ROLE_CENTER_ZONE) {
+            styleProps.putIfMissing("justify-content", "center")
+            styleProps.putIfMissing("align-items", "center")
         }
 
         val spacerFill = attrs["spacerFill"]?.equals("true", ignoreCase = true) == true
@@ -1239,6 +1292,7 @@ class DesktopContainerLayoutController(
                 isLayoutRoot = isLayoutRoot,
                 indefiniteCol = flagIndefiniteCol,
                 layeredHost = flagLayeredHost,
+                singleContainerFill = singleContainerFill,
                 measureMode = cacheMeasureMode,
                 attrVer = nodeAttrVer,
                 compStyle = compStyle,
@@ -1469,8 +1523,51 @@ class DesktopContainerLayoutController(
         if (impl.componentClassPrefix.contains("fragment", ignoreCase = true)) return true
         val rawTag = (widget.attributes["tagName"] as? String)
             ?: (widget.attributes["htmlTag"] as? String)
+            ?: (widget.attributes["data-genericui-tag"] as? String)
             ?: widget.nativeClassName
         return rawTag.contains("fragment", ignoreCase = true)
+    }
+
+    private fun isLikelyAppWidget(impl: DesktopBaseNativeImpl<*>, widget: DesktopNativeWidget): Boolean {
+        val rawTagAttr = (widget.attributes["data-genericui-tag"] as? String)
+            ?.trim()
+            ?.lowercase()
+            ?.removePrefix("genericui:")
+        return rawTagAttr == "app" || resolveNormalizedTag(impl, widget) == "app"
+    }
+
+    private fun isStyledContainerHost(): Boolean {
+        val hostTag = resolveNormalizedTag(host, host.nativeWidget)
+        return hostTag == "styled-container" ||
+            hostTag == "styledcontainer" ||
+            host is com.nexustools.genericui.desktop.widget.DesktopStyledContainerNativeImpl<*>
+    }
+
+    private fun hasExplicitHostAlignment(hostImpl: DesktopBaseNativeImpl<*>): Boolean {
+        val cs = hostImpl.getComponentStyle()
+        val jc = cs?.justifyContent
+        val ai = cs?.alignItems
+        if (jc != null && jc != JustifyContent.START) return true
+        if (ai != null && ai != AlignItems.STRETCH) return true
+        val comp = hostImpl.resolveEffectiveStyle()
+        val compJc = comp?.justifyContent
+        val compAi = comp?.alignItems
+        if (compJc != null && compJc != JustifyContent.START) return true
+        if (compAi != null && compAi != AlignItems.STRETCH) return true
+        val attrs = hostImpl.nativeWidget.attributes
+        val attrJc = (attrs["justifyContent"] as? String)?.trim()?.lowercase()
+        if (!attrJc.isNullOrBlank() && attrJc != "flex-start" && attrJc != "start" && attrJc != "normal") return true
+        val attrAi = (attrs["alignItems"] as? String)?.trim()?.lowercase()
+        if (!attrAi.isNullOrBlank() && attrAi != "stretch" && attrAi != "normal") return true
+        for (cls in hostImpl.nativeWidget.cachedAllClassTokens) {
+            val lower = cls.lowercase()
+            if ((lower.startsWith("justify-content-") && lower != "justify-content-start") ||
+                (lower.startsWith("align-items-") && lower != "align-items-stretch")
+            ) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun addSpaceSeparatedTokens(raw: String, out: MutableSet<String>) {

@@ -121,6 +121,7 @@ class DesktopInteractiveSurfaceSpec(
         if (contentAspectRatio != null) {
             widget.attributes["contentAspectRatio"] = contentAspectRatio
         }
+        widget.notifyTreeInvalidated()
     }
 
     companion object {

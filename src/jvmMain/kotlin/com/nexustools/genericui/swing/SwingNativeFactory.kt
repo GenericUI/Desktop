@@ -23,6 +23,7 @@ import com.nexustools.genericui.nativeimpl.feedback.SpinnerNativeImpl
 import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
 import com.nexustools.genericui.nativeimpl.form.RangeSliderNativeImpl
 import com.nexustools.genericui.nativeimpl.form.SelectNativeImpl
+import com.nexustools.genericui.nativeimpl.form.StyledTextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.form.TextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.io.FileSystemNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
@@ -144,6 +145,8 @@ class SwingNativeFactory : NativeFactory {
     override fun createStyledButton(classPrefix: String): StyledButtonNativeImpl<*> = SwingStyledButtonImpl(classPrefix)
     override fun createDropdown(): DropdownNativeImpl<*> = SwingDropdownImpl()
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> = SwingTextInputImpl(multiline)
+    override fun createStyledTextInput(multiline: Boolean, classPrefix: String): StyledTextInputNativeImpl<*> =
+        SwingStyledTextInputImpl(multiline, classPrefix)
     override fun createSelect(): SelectNativeImpl<*> = SwingSelectImpl()
     override fun createCheckbox(switchStyle: Boolean, radioStyle: Boolean): CheckboxNativeImpl<*> = SwingCheckboxImpl(switchStyle, radioStyle)
     override fun createRangeSlider(): RangeSliderNativeImpl<*> = SwingRangeSliderImpl()

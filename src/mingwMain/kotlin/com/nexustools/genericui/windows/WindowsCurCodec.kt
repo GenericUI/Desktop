@@ -227,22 +227,40 @@ object WindowsCurCodec {
         ReleaseDC(null, screenDc)
         if (hbmColor == null) return@memScoped null
 
+        val strideBytes = ((w + 15) / 16) * 2
+        val maskBytes = ByteArray(strideBytes * h)
         val bitsPtr = bitsPtrVar.value
         if (bitsPtr != null) {
             for (y in 0 until h) {
                 val rowBase = y * w * 4
+                val maskRowBase = y * strideBytes
                 for (x in 0 until w) {
                     val c = image.getPixel(x, y)
+                    val a = c.a.coerceIn(0, 255)
                     val idx = rowBase + x * 4
-                    bitsPtr[idx] = c.b.coerceIn(0, 255).toByte()
-                    bitsPtr[idx + 1] = c.g.coerceIn(0, 255).toByte()
-                    bitsPtr[idx + 2] = c.r.coerceIn(0, 255).toByte()
-                    bitsPtr[idx + 3] = c.a.coerceIn(0, 255).toByte()
+                    if (a == 0) {
+                        bitsPtr[idx] = 0
+                        bitsPtr[idx + 1] = 0
+                        bitsPtr[idx + 2] = 0
+                        bitsPtr[idx + 3] = 0
+                    } else {
+                        bitsPtr[idx] = c.b.coerceIn(0, 255).toByte()
+                        bitsPtr[idx + 1] = c.g.coerceIn(0, 255).toByte()
+                        bitsPtr[idx + 2] = c.r.coerceIn(0, 255).toByte()
+                        bitsPtr[idx + 3] = a.toByte()
+                    }
+                    if (a < 16) {
+                        val byteIdx = maskRowBase + (x ushr 3)
+                        val bitMask = 0x80 ushr (x and 7)
+                        maskBytes[byteIdx] = (maskBytes[byteIdx].toInt() or bitMask).toByte()
+                    }
                 }
             }
         }
 
-        val hbmMask = CreateBitmap(w, h, 1u, 1u, null)
+        val hbmMask = maskBytes.usePinned { pinned ->
+            CreateBitmap(w, h, 1u, 1u, pinned.addressOf(0))
+        }
         if (hbmMask == null) {
             DeleteObject(hbmColor)
             return@memScoped null

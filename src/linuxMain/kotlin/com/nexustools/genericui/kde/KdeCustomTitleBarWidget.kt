@@ -3,9 +3,11 @@
 package com.nexustools.genericui.kde
 
 import com.nexustools.genericui.core.AbstractComponent
+import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.enums.window.TitleBarControlsPlacement
 import com.nexustools.genericui.geometry.Rect
+import com.nexustools.genericui.linux.titlebar.LinuxOverlayTitleBarResolver
 import com.nexustools.genericui.linux.titlebar.LinuxTitleBarButtonHit
 import com.nexustools.genericui.linux.titlebar.LinuxTitleBarLayoutEngine
 import com.nexustools.genericui.linux.titlebar.LinuxTitleBarLayoutResult
@@ -189,6 +191,10 @@ open class KdeCustomTitleBarWidget(
         val leadW = measureSlotWidth(leadingComps, barH)
         val centerW = measureSlotWidth(centerComps, barH)
         val trailW = measureSlotWidth(trailingComps, barH)
+        val expandLeading = leadingComps.any { comp ->
+            val impl = comp.nativeImpl as? DesktopBaseNativeImpl<*> ?: return@any false
+            LinuxOverlayTitleBarResolver.isExpandingTitleBarComponent(impl.nativeWidget, comp)
+        }
 
         val layout = LinuxTitleBarLayoutEngine.computeLayout(
             profile = profile,
@@ -199,14 +205,16 @@ open class KdeCustomTitleBarWidget(
             showClose = tb?.showCloseButton ?: true,
             leadingWidthPx = leadW,
             centerWidthPx = centerW,
-            trailingWidthPx = trailW
+            trailingWidthPx = trailW,
+            expandLeadingToFill = expandLeading,
+            showWindowIcon = tb?.showWindowIcon ?: true
         )
         lastLayout = layout
 
         val nextMounted = LinkedHashSet<DesktopBaseNativeImpl<*>>()
-        layoutEmbeddedGroup(leadingComps, layout.leadingSlotBounds, nextMounted)
-        layoutEmbeddedGroup(centerComps, layout.centerSlotBounds, nextMounted)
-        layoutEmbeddedGroup(trailingComps, layout.trailingSlotBounds, nextMounted)
+        layoutEmbeddedGroup(leadingComps, layout.leadingSlotBounds, nextMounted, allowExpand = true)
+        layoutEmbeddedGroup(centerComps, layout.centerSlotBounds, nextMounted, allowExpand = false)
+        layoutEmbeddedGroup(trailingComps, layout.trailingSlotBounds, nextMounted, allowExpand = false)
         unmountRemovedEmbeddedChildren(nextMounted)
         KdeDynamicBindings.updateWidget(ptr)
         return barH
@@ -227,25 +235,73 @@ open class KdeCustomTitleBarWidget(
     private fun layoutEmbeddedGroup(
         components: List<AbstractComponent>,
         slotBounds: Rect,
-        mountedOut: MutableSet<DesktopBaseNativeImpl<*>>
+        mountedOut: MutableSet<DesktopBaseNativeImpl<*>>,
+        allowExpand: Boolean = false
     ) {
-        if (components.isEmpty()) return
+        if (components.isEmpty() || slotBounds.width <= 0 || slotBounds.height <= 0) return
+        val resolved = ArrayList<Triple<AbstractComponent, DesktopBaseNativeImpl<*>, Boolean>>(components.size)
+        for (comp in components) {
+            if (!comp.isVisible) continue
+            val impl = comp.nativeImpl as? DesktopBaseNativeImpl<*> ?: continue
+            val expanding = allowExpand && LinuxOverlayTitleBarResolver.isExpandingTitleBarComponent(impl.nativeWidget, comp)
+            resolved.add(Triple(comp, impl, expanding))
+        }
+        if (resolved.isEmpty()) return
+
+        val slotH = slotBounds.height.coerceAtLeast(18)
+        val fixedWidths = IntArray(resolved.size)
+        val prefHeights = IntArray(resolved.size)
+        var fixedSum = 0
+        var expandingCount = 0
+        for ((idx, triple) in resolved.withIndex()) {
+            val impl = triple.second
+            val pref = impl.measureIntrinsicSize(slotBounds.width.toFloat(), slotH.toFloat())
+            prefHeights[idx] = pref.height
+            if (triple.third) {
+                expandingCount++
+            } else {
+                val fw = pref.width.coerceIn(16, slotBounds.width.coerceAtLeast(16))
+                fixedWidths[idx] = fw
+                fixedSum += fw
+            }
+        }
+        val gapTotal = (resolved.size - 1).coerceAtLeast(0) * 6
+        val expandBudget = (slotBounds.width - fixedSum - gapTotal).coerceAtLeast(0)
+        var remainingExpand = expandBudget
+        var expandIdx = 0
+
         var cursorX = slotBounds.x
         val maxRight = slotBounds.x + slotBounds.width
-        val slotH = slotBounds.height.coerceAtLeast(18)
-        for (comp in components) {
-            val impl = comp.nativeImpl as? DesktopBaseNativeImpl<*> ?: continue
+        for ((idx, triple) in resolved.withIndex()) {
+            val impl = triple.second
             mountedOut.add(impl)
             mountedEmbeddedChildren.add(impl)
             val kh = impl.nativeWidget as? KdeWidgetHandle
             if (kh != null && kh.desiredParentPtr !== handle.qWidgetPtr) {
                 kh.syncChildParentAndVisibility(handle)
             }
-            val pref = impl.measureIntrinsicSize((maxRight - cursorX).coerceAtLeast(0).toFloat(), slotH.toFloat())
-            val cw = pref.width.coerceIn(16, (maxRight - cursorX).coerceAtLeast(16))
-            val ch = pref.height.coerceIn(16, slotH)
+            val availRight = (maxRight - cursorX).coerceAtLeast(16)
+            val cw = if (triple.third) {
+                expandIdx++
+                val share = if (expandIdx == expandingCount) {
+                    remainingExpand
+                } else {
+                    (expandBudget / expandingCount.coerceAtLeast(1)).also { remainingExpand -= it }
+                }
+                share.coerceIn(16.coerceAtMost(availRight), availRight)
+            } else {
+                fixedWidths[idx].coerceIn(16.coerceAtMost(availRight), availRight)
+            }
+            val ch = if (impl is DesktopBaseContainerNativeImpl<*>) {
+                (slotH - 4).coerceAtLeast(24).coerceAtMost(slotH)
+            } else {
+                prefHeights[idx].coerceIn(16.coerceAtMost(slotH), slotH)
+            }
             val cy = slotBounds.y + (slotH - ch) / 2
             impl.setBounds(Rect(cursorX, cy, cw, ch))
+            if (impl is DesktopBaseContainerNativeImpl<*>) {
+                impl.layoutChildrenInBounds(cw.toFloat(), ch.toFloat())
+            }
             cursorX += cw + 6
         }
     }
@@ -278,7 +334,8 @@ open class KdeCustomTitleBarWidget(
             barBounds = Rect(0f, 0f, widthPx.toFloat(), heightPx.toFloat()),
             showMinimize = tb?.showMinimizeButton ?: true,
             showMaximize = tb?.showMaximizeButton ?: true,
-            showClose = tb?.showCloseButton ?: true
+            showClose = tb?.showCloseButton ?: true,
+            showWindowIcon = tb?.showWindowIcon ?: true
         )
         val titleText = if (tb?.showWindowTitle != false) windowImpl.getTitle() else ""
         val activeStates = linkedSetOf<LinuxTitleButtonKind>()

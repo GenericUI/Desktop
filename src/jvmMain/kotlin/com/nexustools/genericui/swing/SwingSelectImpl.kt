@@ -6,6 +6,8 @@ import com.nexustools.genericui.style.color.RgbaColor
 import java.awt.Color
 import java.awt.Component
 import java.awt.Dialog
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
 import javax.swing.BorderFactory
 import javax.swing.DefaultComboBoxModel
 import javax.swing.DefaultListCellRenderer
@@ -28,8 +30,22 @@ class SwingSelectImpl : SwingBaseNativeImpl(JComboBox<String>(), "form-select"),
     private var selectedVal: String? = null
     private var onSelectionChangedListener: ((String) -> Unit)? = null
     private var isProgrammaticUpdate: Boolean = false
+    private var focusedStateVal: Boolean = false
 
     init {
+        nativeWidget.addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent?) {
+                val effective = isEnabled() && isEffectivelyFocusableInSwing()
+                focusedStateVal = effective
+                if (!effective) {
+                    clearAwtFocusOnEdtIfOwner(nativeWidget)
+                }
+            }
+
+            override fun focusLost(e: FocusEvent?) {
+                focusedStateVal = false
+            }
+        })
         nativeWidget.maximumRowCount = 10
         nativeWidget.renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
@@ -112,4 +128,16 @@ class SwingSelectImpl : SwingBaseNativeImpl(JComboBox<String>(), "form-select"),
     override fun setOnSelectionChanged(listener: ((String) -> Unit)?) {
         onSelectionChangedListener = listener
     }
+
+    override fun setFocusedState(focused: Boolean) {
+        val effective = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        focusedStateVal = effective
+        if (effective) {
+            requestAwtFocusOnEdt(nativeWidget)
+        } else {
+            clearAwtFocusOnEdtIfOwner(nativeWidget)
+        }
+    }
+
+    override fun isFocusedState(): Boolean = focusedStateVal || nativeWidget.isFocusOwner
 }

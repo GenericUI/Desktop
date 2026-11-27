@@ -44,6 +44,7 @@ import com.nexustools.genericui.macos.impl.MacosRangeSliderNativeImpl
 import com.nexustools.genericui.macos.impl.MacosScrollViewNativeImpl
 import com.nexustools.genericui.macos.impl.MacosSelectNativeImpl
 import com.nexustools.genericui.macos.impl.MacosSpinnerNativeImpl
+import com.nexustools.genericui.macos.impl.MacosStyledTextInputNativeImpl
 import com.nexustools.genericui.macos.impl.MacosTabNativeImpl
 import com.nexustools.genericui.macos.impl.MacosTableNativeImpl
 import com.nexustools.genericui.macos.impl.MacosTextInputNativeImpl
@@ -70,6 +71,7 @@ import com.nexustools.genericui.nativeimpl.feedback.SpinnerNativeImpl
 import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
 import com.nexustools.genericui.nativeimpl.form.RangeSliderNativeImpl
 import com.nexustools.genericui.nativeimpl.form.SelectNativeImpl
+import com.nexustools.genericui.nativeimpl.form.StyledTextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.form.TextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.io.FileSystemNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
@@ -229,6 +231,13 @@ class MacosNativeFactory : NativeFactory {
 
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> =
         MacosTextInputNativeImpl(MacosViewHandle(if (multiline) "NSTextView" else "NSTextField"), multiline)
+
+    override fun createStyledTextInput(multiline: Boolean, classPrefix: String): StyledTextInputNativeImpl<*> =
+        MacosStyledTextInputNativeImpl(
+            nativeWidget = MacosViewHandle(if (multiline) "MacosStyledTextView" else "MacosStyledTextField"),
+            multiline = multiline,
+            classPrefix = classPrefix
+        )
 
     override fun createSelect(): SelectNativeImpl<*> =
         MacosSelectNativeImpl(MacosViewHandle("NSPopUpButton"))

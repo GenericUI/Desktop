@@ -1237,7 +1237,19 @@ object MacosNativeWindowHost {
         ) {
             syncWindowProperties(win)
         }
-        val topInset = if (stackedNav != null && !undecorated && !session.activeFullscreen && fsElement == null) {
+        val explicitTitleBar = win.getTitleBarInstructions()
+        val hasEmbeddedExplicitBar = chromeMode == CHROME_MODE_EXPLICIT_CUSTOM_TITLEBAR &&
+            explicitTitleBar?.customTitleBar == true &&
+            !undecorated &&
+            !session.activeFullscreen &&
+            fsElement == null &&
+            (explicitTitleBar.heightPx != null ||
+                explicitTitleBar.leadingComponents.isNotEmpty() ||
+                explicitTitleBar.centerComponents.isNotEmpty() ||
+                explicitTitleBar.trailingComponents.isNotEmpty())
+        val topInset = if (hasEmbeddedExplicitBar && explicitTitleBar != null) {
+            (explicitTitleBar.heightPx ?: CUSTOM_TITLEBAR_INSET_PX).coerceAtLeast(CUSTOM_TITLEBAR_INSET_PX)
+        } else if (stackedNav != null && !undecorated && !session.activeFullscreen && fsElement == null) {
             val contentH = nsWin.contentRectForFrameRect(nsWin.frame).useContents { size.height }
             val layoutH = nsWin.contentLayoutRect.useContents { size.height }
             val measured = (contentH - layoutH).toInt()
@@ -1315,6 +1327,7 @@ object MacosNativeWindowHost {
                 !isTransitioningFs &&
                 !windowImpl.isToolModalWindow
             hostWin?.syncSquareWindowCorners(enabled = wantsSquareCorners, forceRefresh = maskChanged)
+            val showWindowIcon = windowImpl.getTitleBarInstructions()?.showWindowIcon != false
             if (isNativeOverlayBar && !session.activeFullscreen) {
                 nsWin.setOpaque(true)
                 syncNativeOverlayTitleBarForSession(session)
@@ -1325,7 +1338,7 @@ object MacosNativeWindowHost {
                 }
                 hostWin?.hideStandardWindowButtons()
             } else if (session.activeFullscreen && (undecorated || preserveNativeOverlayDuringFs)) {
-                hostWin?.applyFullscreenMenuBarHoverChrome(windowImpl.getTitle())
+                hostWin?.applyFullscreenMenuBarHoverChrome(windowImpl.getTitle(), showWindowIcon = showWindowIcon)
             } else {
                 nsWin.setOpaque(true)
                 val showMinimize = windowImpl.minimizable
@@ -1335,19 +1348,19 @@ object MacosNativeWindowHost {
                         nsWin.setTitlebarAppearsTransparent(false)
                         nsWin.setTitleVisibility(NSWindowTitleVisible)
                         nsWin.setTitlebarSeparatorStyle(platform.AppKit.NSTitlebarSeparatorStyle.NSTitlebarSeparatorStyleAutomatic)
-                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize)
+                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize, showWindowIcon = showWindowIcon)
                     }
                     CHROME_MODE_SEAMLESS_STACKED_NAVBAR -> {
                         nsWin.setTitlebarAppearsTransparent(true)
                         nsWin.setTitleVisibility(NSWindowTitleVisible)
                         nsWin.setTitlebarSeparatorStyle(platform.AppKit.NSTitlebarSeparatorStyle.NSTitlebarSeparatorStyleNone)
-                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize)
+                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize, showWindowIcon = showWindowIcon)
                     }
                     else -> {
                         nsWin.setTitlebarAppearsTransparent(true)
                         nsWin.setTitleVisibility(NSWindowTitleHidden)
                         nsWin.setTitlebarSeparatorStyle(platform.AppKit.NSTitlebarSeparatorStyle.NSTitlebarSeparatorStyleNone)
-                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize)
+                        hostWin?.showStandardWindowButtons(showMinimize = showMinimize, enableMinimize = enableMinimize, showWindowIcon = showWindowIcon)
                     }
                 }
             }
@@ -1437,6 +1450,8 @@ object MacosNativeWindowHost {
             winImpl.minimizable
         val showMaximize = barHandle.attributes["data-titlebar-show-maximize"]?.toString()?.equals("false", ignoreCase = true) != true
         val showTitle = barHandle.attributes["data-titlebar-show-title"]?.toString()?.equals("false", ignoreCase = true) != true
+        val showWindowIcon = (barHandle.attributes["data-titlebar-show-window-icon"]?.toString()?.equals("false", ignoreCase = true) != true) &&
+            (winImpl.getTitleBarInstructions()?.showWindowIcon != false)
         val rawTitle = (barHandle.attributes["data-titlebar-title"] as? String)?.takeIf { it.isNotEmpty() }
             ?: winImpl.getTitle()
         val effectiveTitle = formatEffectiveWindowTitle(rawTitle)
@@ -1448,7 +1463,8 @@ object MacosNativeWindowHost {
             showMinimize = showMinimize,
             showMaximize = showMaximize,
             showTitle = showTitle,
-            titleText = effectiveTitle
+            titleText = effectiveTitle,
+            showWindowIcon = showWindowIcon
         )
         session.lastSyncedNativeTitleBarVisible = finalVisible
         session.lastSyncedNativeTitleBarAlpha = effectiveAlpha
@@ -1474,6 +1490,8 @@ object MacosNativeWindowHost {
             is MacosStyledContainerView -> view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
             is MacosStyledComponentView -> view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
             is MacosStyledButtonControl -> view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
+            is com.nexustools.genericui.macos.impl.MacosStyledTextInputHostView ->
+                view.surfaceSupport.refreshDeferredBackdropUnderlayIfNeeded()
         }
         for (sub in view.subviews) {
             val child = sub as? NSView ?: continue
@@ -1558,15 +1576,24 @@ object MacosNativeWindowHost {
             return
         }
         val (w, _) = session.currentClientSize()
+        val tbInstructions = windowImpl.getTitleBarInstructions()
+        val barH = (tbInstructions?.heightPx ?: CUSTOM_TITLEBAR_INSET_PX).coerceAtLeast(CUSTOM_TITLEBAR_INSET_PX)
         val tb = session.titleBarView ?: MacosTitleBarView(
             owner = null,
-            frameRect = NSMakeRect(0.0, 0.0, w.toDouble(), CUSTOM_TITLEBAR_INSET_PX.toDouble())
+            frameRect = NSMakeRect(0.0, 0.0, w.toDouble(), barH.toDouble())
         ).also { created ->
             session.titleBarView = created
             session.rootView.titleBarOverlayView = created
             session.rootView.addSubview(created)
         }
-        tb.setFrame(NSMakeRect(0.0, 0.0, w.toDouble(), CUSTOM_TITLEBAR_INSET_PX.toDouble()))
+        tb.setFrame(NSMakeRect(0.0, 0.0, w.toDouble(), barH.toDouble()))
+        tb.syncAndLayout(
+            windowImpl = windowImpl,
+            nsWindow = session.nsWindow,
+            barWidthPx = w,
+            barHeightPx = barH,
+            inFullscreen = session.activeFullscreen || windowImpl.isFullscreen()
+        )
     }
 
     fun syncWindowAlwaysOnTop(windowImpl: MacosWindowNativeImpl) = MacosAppKitDispatch.onMainOrDefer {
@@ -3122,6 +3149,7 @@ object MacosNativeWindowHost {
         is MacosStyledContainerView -> view.surfaceSupport
         is MacosStyledComponentView -> view.surfaceSupport
         is MacosStyledButtonControl -> view.surfaceSupport
+        is com.nexustools.genericui.macos.impl.MacosStyledTextInputHostView -> view.surfaceSupport
         is com.nexustools.genericui.macos.impl.MacosNavbarView -> view.surfaceSupport
         else -> null
     }

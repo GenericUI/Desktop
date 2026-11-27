@@ -62,7 +62,9 @@ import javax.swing.JTabbedPane
 import javax.swing.JTable
 import javax.swing.JToolBar
 import javax.swing.JTree
+import javax.swing.SwingUtilities
 import javax.swing.text.JTextComponent
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -146,19 +148,46 @@ open class SwingBaseNativeImpl(
     private var wheelListenerAttached: Boolean = false
 
     private val swingMouseAdapter = object : MouseAdapter() {
+        private var primaryPressActive: Boolean = false
+        private var pressStartX: Int = 0
+        private var pressStartY: Int = 0
+        private var pressMovedBeyondTolerance: Boolean = false
+        private var releaseDispatchedClick: Boolean = false
+        private var releaseDispatchedWhen: Long = Long.MIN_VALUE
+        private var releaseDispatchedX: Int = Int.MIN_VALUE
+        private var releaseDispatchedY: Int = Int.MIN_VALUE
+
         override fun mouseClicked(e: MouseEvent) {
             if (e.isConsumed || !nativeWidget.isEnabled || isPointerEventsDisabled()) return
             if (com.nexustools.genericui.event.PopupMouseCaptureManager.interceptClick(e.x.toFloat(), e.y.toFloat(), this@SwingBaseNativeImpl)) return
             if (e.clickCount >= 2 && onDoubleClickListener != null) {
+                releaseDispatchedClick = false
+                releaseDispatchedWhen = Long.MIN_VALUE
                 onDoubleClickListener?.invoke()
-            } else if (e.button == MouseEvent.BUTTON1 && onClickListener != null) {
-                onClickListener?.invoke()
+            } else if ((e.button == MouseEvent.BUTTON1 || e.button == MouseEvent.NOBUTTON) && onClickListener != null) {
+                val isDuplicateOfRelease = releaseDispatchedClick &&
+                    abs(e.getWhen() - releaseDispatchedWhen) <= 5L &&
+                    abs(e.x - releaseDispatchedX) <= 2 &&
+                    abs(e.y - releaseDispatchedY) <= 2
+                releaseDispatchedClick = false
+                releaseDispatchedWhen = Long.MIN_VALUE
+                if (!isDuplicateOfRelease) {
+                    onClickListener?.invoke()
+                }
             }
         }
 
         override fun mousePressed(e: MouseEvent) {
             if (e.isConsumed || !nativeWidget.isEnabled || isPointerEventsDisabled()) return
             if (com.nexustools.genericui.event.PopupMouseCaptureManager.interceptPointerDown(e.x.toFloat(), e.y.toFloat(), this@SwingBaseNativeImpl)) return
+            if (e.button == MouseEvent.BUTTON1 && !e.isPopupTrigger) {
+                primaryPressActive = true
+                pressStartX = e.x
+                pressStartY = e.y
+                pressMovedBeyondTolerance = false
+                releaseDispatchedClick = false
+                releaseDispatchedWhen = Long.MIN_VALUE
+            }
             val pe = toPointerEvent(e)
             onPointerDownListener?.invoke(pe)
             if (e.isPopupTrigger || e.button == MouseEvent.BUTTON3) {
@@ -167,15 +196,47 @@ open class SwingBaseNativeImpl(
         }
 
         override fun mouseReleased(e: MouseEvent) {
-            if (e.isConsumed || !nativeWidget.isEnabled || isPointerEventsDisabled()) return
-            if (com.nexustools.genericui.event.PopupMouseCaptureManager.interceptPointerUp(e.x.toFloat(), e.y.toFloat(), this@SwingBaseNativeImpl)) return
+            if (e.isConsumed || !nativeWidget.isEnabled || isPointerEventsDisabled()) {
+                primaryPressActive = false
+                pressMovedBeyondTolerance = false
+                return
+            }
+            if (com.nexustools.genericui.event.PopupMouseCaptureManager.interceptPointerUp(e.x.toFloat(), e.y.toFloat(), this@SwingBaseNativeImpl)) {
+                primaryPressActive = false
+                pressMovedBeyondTolerance = false
+                return
+            }
             val pe = toPointerEvent(e)
-            if (PointerDragManager.isDragging) {
+            val wasDragging = PointerDragManager.isDragging
+            if (wasDragging) {
                 PointerDragManager.notifyGlobalPointerUp(pe, coordinatesAreTargetLocal = false)
             }
             onPointerUpListener?.invoke(pe)
             if (e.isPopupTrigger) {
                 onContextMenuListener?.invoke(pe)
+            }
+            if (primaryPressActive) {
+                val movedTooFar = pressMovedBeyondTolerance ||
+                    abs(e.x - pressStartX) > 6 ||
+                    abs(e.y - pressStartY) > 6
+                val isPrimary = e.button == MouseEvent.BUTTON1 || e.button == MouseEvent.NOBUTTON
+                val shouldDispatchReleaseClick = dispatchesClickOnPrimaryRelease() &&
+                    !wasDragging &&
+                    !movedTooFar &&
+                    !e.isPopupTrigger &&
+                    isPrimary &&
+                    e.clickCount <= 1 &&
+                    onClickListener != null &&
+                    nativeWidget.contains(e.x, e.y)
+                primaryPressActive = false
+                pressMovedBeyondTolerance = false
+                if (shouldDispatchReleaseClick) {
+                    releaseDispatchedClick = true
+                    releaseDispatchedWhen = e.getWhen()
+                    releaseDispatchedX = e.x
+                    releaseDispatchedY = e.y
+                    onClickListener?.invoke()
+                }
             }
         }
 
@@ -186,6 +247,9 @@ open class SwingBaseNativeImpl(
 
         override fun mouseDragged(e: MouseEvent) {
             if (e.isConsumed || !nativeWidget.isEnabled || isPointerEventsDisabled()) return
+            if (primaryPressActive && (abs(e.x - pressStartX) > 6 || abs(e.y - pressStartY) > 6)) {
+                pressMovedBeyondTolerance = true
+            }
             val pe = toPointerEvent(e)
             if (PointerDragManager.isDragging) {
                 PointerDragManager.notifyGlobalPointerMove(pe, coordinatesAreTargetLocal = false)
@@ -325,17 +389,47 @@ open class SwingBaseNativeImpl(
         return false
     }
 
+    protected open fun dispatchesClickOnPrimaryRelease(): Boolean = false
+
+    protected fun requestAwtFocusOnEdt(target: JComponent) {
+        val task = Runnable {
+            if (!target.isFocusOwner && target.isFocusable && target.isEnabled) {
+                target.requestFocusInWindow()
+            }
+        }
+        if (SwingUtilities.isEventDispatchThread() || GraphicsEnvironment.isHeadless()) {
+            task.run()
+        } else {
+            SwingUtilities.invokeLater(task)
+        }
+    }
+
+    protected fun clearAwtFocusOnEdtIfOwner(target: JComponent) {
+        val task = Runnable {
+            if (target.isFocusOwner) {
+                KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
+            }
+        }
+        if (SwingUtilities.isEventDispatchThread() || GraphicsEnvironment.isHeadless()) {
+            task.run()
+        } else {
+            SwingUtilities.invokeLater(task)
+        }
+    }
+
     protected open fun allowsSystemAestheticStyles(): Boolean =
         this is SwingStyledContainerImpl ||
             this is SwingStyledComponentImpl ||
             this is SwingStyledButtonImpl ||
+            this is SwingStyledTextInputImpl ||
             AestheticStylePolicy.isExplicitlyStyledTagOrPrefix(componentTagName, componentClassPrefix) ||
             isInCustomStyleEngineSubtree()
 
     protected open fun allowsBackdropBlur(): Boolean =
         this is SwingStyledContainerImpl ||
             this is SwingStyledComponentImpl ||
-            this is SwingStyledButtonImpl
+            this is SwingStyledButtonImpl ||
+            this is SwingStyledTextInputImpl
 
     protected open fun allowsBootstrapButtonTinting(): Boolean =
         this is SwingButtonImpl && this !is SwingStyledButtonImpl
@@ -344,7 +438,10 @@ open class SwingBaseNativeImpl(
         AestheticStylePolicy.isBootstrapSpecificNonControlTagOrPrefix(componentTagName, componentClassPrefix)
 
     protected open fun allowsBootstrapColorForStyledSpec(): Boolean =
-        this is SwingStyledButtonImpl || allowsBootstrapNonControlColor() || isInCustomStyleEngineSubtree()
+        this is SwingStyledButtonImpl ||
+            this is SwingStyledTextInputImpl ||
+            allowsBootstrapNonControlColor() ||
+            isInCustomStyleEngineSubtree()
 
     internal fun snapshotForStyledVisuals(): BootstrapStyleSnapshot =
         if (allowsBootstrapColorForStyledSpec()) {
@@ -645,15 +742,38 @@ open class SwingBaseNativeImpl(
         val isItalic = fontStyleSpec == com.nexustools.genericui.enums.css.CssFontStyle.ITALIC ||
             fontStyleSpec == com.nexustools.genericui.enums.css.CssFontStyle.OBLIQUE ||
             (this is SwingTextImpl && SwingSurfacePaintUtil.hasClassToken(componentClassPrefix, styleSnapshot.customClasses, "fst-italic"))
-        val familyName = compStyle?.getFontFamily()?.resolvedPrimaryName() ?: base.family
+        val explicitFamilyName = compStyle?.getFontFamily()?.resolvedPrimaryName()
+        val rawFamilyName = explicitFamilyName ?: base.family
+        val familyName = if (explicitFamilyName == null && rawFamilyName.equals("Tahoma", ignoreCase = true)) {
+            Font.SANS_SERIF
+        } else {
+            rawFamilyName
+        }
         val sizePx = compStyle?.fontSizePx
             ?: compComputed?.fontSizePx
             ?: headingDefaultSize
             ?: styleSnapshot.fontSize?.let { bsFontSizePx(it) }
             ?: base.size2D
         val styleMask = (if (isBold) Font.BOLD else 0) or (if (isItalic) Font.ITALIC else 0)
-        if (familyName != base.family || styleMask != nativeWidget.font?.style || kotlin.math.abs(sizePx - (nativeWidget.font?.size2D ?: 0f)) > 0.05f) {
-            nativeWidget.font = Font(familyName, styleMask, sizePx.toInt().coerceAtLeast(1)).deriveFont(sizePx)
+        val widgetText = (nativeWidget as? javax.swing.AbstractButton)?.text
+            ?: (nativeWidget as? javax.swing.JLabel)?.text
+        val pointSize = sizePx.toInt().coerceAtLeast(1)
+        val candidate = Font(familyName, styleMask, pointSize).deriveFont(sizePx)
+        val resolvedFont = if (!widgetText.isNullOrEmpty() && candidate.canDisplayUpTo(widgetText) != -1) {
+            val sansFallback = Font(Font.SANS_SERIF, styleMask, pointSize).deriveFont(sizePx)
+            if (sansFallback.canDisplayUpTo(widgetText) == -1) sansFallback else candidate
+        } else {
+            candidate
+        }
+        val currentFont = nativeWidget.font
+        val currentMissingGlyph = !widgetText.isNullOrEmpty() &&
+            (currentFont == null || currentFont.canDisplayUpTo(widgetText) != -1)
+        if (currentMissingGlyph ||
+            resolvedFont.family != currentFont?.family ||
+            styleMask != currentFont.style ||
+            kotlin.math.abs(sizePx - currentFont.size2D) > 0.05f
+        ) {
+            nativeWidget.font = resolvedFont
         }
     }
 

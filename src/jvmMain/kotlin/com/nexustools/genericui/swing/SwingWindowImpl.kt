@@ -10,6 +10,9 @@ import com.nexustools.genericui.event.PointerDragSession
 import com.nexustools.genericui.geometry.Point
 import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.geometry.Size
+import com.nexustools.genericui.image.ImageDecodeOptions
+import com.nexustools.genericui.image.ImageLoader
+import com.nexustools.genericui.image.ImageSource
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.WindowNativeImpl
 import com.nexustools.genericui.style.css.CssCursorValue
@@ -25,6 +28,7 @@ import java.awt.Dimension
 import java.awt.GraphicsEnvironment
 import java.awt.MouseInfo
 import java.awt.Rectangle
+import java.awt.Taskbar
 import java.awt.Toolkit
 import java.awt.Window
 import java.awt.event.AWTEventListener
@@ -40,6 +44,7 @@ import javax.swing.JFrame
 import javax.swing.JMenuBar
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
+import kotlinx.coroutines.Job
 
 /**
  * Java Swing `JFrame` + root `JPanel` implementation of [WindowNativeImpl].
@@ -156,13 +161,91 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
         installUndecoratedDragAndResizeListeners()
     }
 
-    private fun loadDefaultWindowIcon(): java.awt.Image? {
+    private fun loadDefaultWindowIcon(): java.awt.Image? =
+        resolveWindowIconImageSync(defaultWindowIconPath)
+
+    private var windowIconPathState: String? = null
+    private var windowIconLoadJob: Job? = null
+
+    fun getWindowIconPath(): String? = windowIconPathState
+
+    override fun setWindowIcon(iconPathOrSvg: String?) {
+        windowIconLoadJob?.cancel()
+        windowIconLoadJob = null
+        val normalized = iconPathOrSvg?.trim()?.takeIf { it.isNotEmpty() }
+        windowIconPathState = normalized
+        val effectiveSpec = normalized ?: defaultWindowIconPath
+        nativeWidget.putClientProperty("windowIcon", effectiveSpec)
+
+        val syncImage = resolveWindowIconImageSync(effectiveSpec)
+        if (syncImage != null) {
+            applyAwtWindowAndTaskbarIcon(syncImage)
+            return
+        }
+
+        val isRemote = effectiveSpec.startsWith("http://", ignoreCase = true) ||
+            effectiveSpec.startsWith("https://", ignoreCase = true)
+        if (isRemote || effectiveSpec.contains("://")) {
+            windowIconLoadJob = ImageLoader.launchLoad(
+                source = ImageSource.fromUrl(effectiveSpec),
+                options = ImageDecodeOptions(targetWidth = 128, targetHeight = 128, antialiasing = true),
+                onLoaded = { buf ->
+                    val awtImg = SwingControlTintRenderUtil.imageBufferToBufferedImage(buf)
+                    applyAwtWindowAndTaskbarIcon(awtImg)
+                },
+                onError = {}
+            )
+        }
+    }
+
+    private fun applyAwtWindowAndTaskbarIcon(image: java.awt.Image) {
+        nativeWidget.putClientProperty("windowIconLoaded", true)
+        nativeWidget.putClientProperty("windowIconImage", image)
+        runOnEdt {
+            jFrame?.iconImage = image
+            if (!GraphicsEnvironment.isHeadless()) {
+                runCatching {
+                    if (Taskbar.isTaskbarSupported()) {
+                        val taskbar = Taskbar.getTaskbar()
+                        if (taskbar.isSupported(Taskbar.Feature.ICON_IMAGE)) {
+                            taskbar.iconImage = image
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resolveWindowIconImageSync(spec: String): java.awt.Image? {
+        val trimmed = spec.trim()
+        if (trimmed.isEmpty()) return null
+        if (trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
+        ) {
+            return null
+        }
+        val opts = ImageDecodeOptions(targetWidth = 128, targetHeight = 128, antialiasing = true)
+        val codecDecoded = runCatching {
+            val active = ImageLoader.activeNativeCodec
+            if (active != null) {
+                ImageLoader.load(ImageSource.fromUrl(trimmed), opts)
+            } else {
+                val codec = SwingImageIoCodecImpl()
+                ImageLoader.activeNativeCodec = codec
+                codec.decode(ImageSource.fromUrl(trimmed), opts)
+                    ?: ImageLoader.load(ImageSource.fromUrl(trimmed), opts)
+            }
+        }.getOrNull()
+        if (codecDecoded != null && codecDecoded.width > 1 && codecDecoded.height > 1) {
+            return SwingControlTintRenderUtil.imageBufferToBufferedImage(codecDecoded)
+        }
         return try {
-            val localFile = java.io.File(defaultWindowIconPath)
+            val localFile = java.io.File(trimmed)
             if (localFile.isFile) {
                 javax.imageio.ImageIO.read(localFile)
             } else {
-                val stream = SwingWindowImpl::class.java.getResourceAsStream("/$defaultWindowIconPath")
+                val clean = trimmed.removePrefix("res://").trimStart('/')
+                val stream = SwingWindowImpl::class.java.getResourceAsStream("/$clean")
                 if (stream != null) stream.use { javax.imageio.ImageIO.read(it) } else null
             }
         } catch (_: Throwable) {
@@ -1578,6 +1661,8 @@ class SwingWindowImpl : SwingBaseContainerNativeImpl(JPanel(BorderLayout()), "wi
     }
 
     override fun dispose() {
+        windowIconLoadJob?.cancel()
+        windowIconLoadJob = null
         runOnEdt {
             cleanupWindowResources()
         }

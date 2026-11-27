@@ -7,8 +7,10 @@ import com.nexustools.genericui.image.ImageBuffer
 import com.nexustools.genericui.image.ImageDecodeOptions
 import com.nexustools.genericui.image.ImageLoader
 import com.nexustools.genericui.image.ImageSource
+import com.nexustools.genericui.image.MonocolorImageRecolorProcessor
 import com.nexustools.genericui.jvm.JvmControlTintPixelUtil
 import com.nexustools.genericui.style.color.BootstrapColorPalette
+import com.nexustools.genericui.style.color.ImageTintMode
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import com.nexustools.genericui.style.theme.ThemeConfig
@@ -327,19 +329,53 @@ object SwingControlTintRenderUtil {
         iconSpec: String,
         targetSizePx: Int,
         onLoaded: (ImageIcon) -> Unit
+    ): Job? = loadScaledIconAsync(
+        iconSpec = iconSpec,
+        targetSizePx = targetSizePx,
+        tintToTheme = false,
+        tintColor = null,
+        isDarkTheme = false,
+        onLoaded = onLoaded
+    )
+
+    internal fun loadScaledIconAsync(
+        iconSpec: String,
+        targetSizePx: Int,
+        tintToTheme: Boolean,
+        tintColor: RgbaColor?,
+        isDarkTheme: Boolean,
+        onLoaded: (ImageIcon) -> Unit
     ): Job? {
         val trimmed = iconSpec.trim()
         if (trimmed.isEmpty()) return null
+        if (ImageLoader.activeNativeCodec == null) {
+            ImageLoader.activeNativeCodec = SwingImageIoCodecImpl()
+        }
         val size = targetSizePx.coerceAtLeast(1)
+        fun finalizeBufferToIcon(buf: ImageBuffer): ImageIcon {
+            var scaled = if (buf.width != size || buf.height != size) {
+                ImageLoader.resize(buf, size, size, antialiasing = true)
+            } else {
+                buf
+            }
+            if (tintToTheme) {
+                val effectiveTint = tintColor ?: if (isDarkTheme) {
+                    MonocolorImageRecolorProcessor.DEFAULT_DARK_THEME_ICON_COLOR
+                } else {
+                    MonocolorImageRecolorProcessor.DEFAULT_LIGHT_THEME_ICON_COLOR
+                }
+                scaled = MonocolorImageRecolorProcessor.processImageBuffer(
+                    buffer = scaled,
+                    mode = ImageTintMode.SRC_IN,
+                    tintColor = effectiveTint,
+                    isDarkTheme = isDarkTheme
+                )
+            }
+            return ImageIcon(imageBufferToBufferedImage(scaled))
+        }
         if (trimmed.startsWith("memory://", ignoreCase = true)) {
             ImageLoader.resolveMemoryBuffer(trimmed)?.let { buf ->
-                val scaled = if (buf.width != size || buf.height != size) {
-                    ImageLoader.resize(buf, size, size, antialiasing = true)
-                } else {
-                    buf
-                }
-                val icon = ImageIcon(imageBufferToBufferedImage(scaled))
-                onLoaded(icon)
+                onLoaded(finalizeBufferToIcon(buf))
                 return null
             }
         }
@@ -347,12 +383,7 @@ object SwingControlTintRenderUtil {
             source = ImageSource.fromUrl(trimmed),
             options = ImageDecodeOptions(targetWidth = size, targetHeight = size, antialiasing = true),
             onLoaded = { buf ->
-                val scaled = if (buf.width != size || buf.height != size) {
-                    ImageLoader.resize(buf, size, size, antialiasing = true)
-                } else {
-                    buf
-                }
-                val icon = ImageIcon(imageBufferToBufferedImage(scaled))
+                val icon = finalizeBufferToIcon(buf)
                 if (SwingUtilities.isEventDispatchThread()) {
                     onLoaded(icon)
                 } else {

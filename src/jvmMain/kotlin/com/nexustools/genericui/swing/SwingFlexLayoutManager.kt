@@ -151,6 +151,49 @@ internal class SwingFlexLayoutManager(
                             if (cW > widest) widest = cW
                         }
                         widest + insets.left + insets.right
+                    } else if (
+                        (rootSnapshot.display == CssDisplay.FLEX || rootSnapshot.display == CssDisplay.INLINE_FLEX) &&
+                        !isEffectivelyLayered(parent, rootSnapshot)
+                    ) {
+                        val innerAvailW = (computeW - insets.left - insets.right).coerceAtLeast(1)
+                        var hasFlexGrowChild = false
+                        var flowChildCount = 0
+                        var naturalRowW = insets.left + insets.right
+                        for (child in children) {
+                            if (!child.isVisible) continue
+                            val cSnap = buildSnapshotFor(child, innerAvailW, safeAvailH.coerceAtLeast(1), isLayoutRoot = false)
+                            if (cSnap.display == CssDisplay.NONE) continue
+                            if (cSnap.position == CssPosition.ABSOLUTE || cSnap.position == CssPosition.FIXED) continue
+                            flowChildCount++
+                            if (cSnap.flexGrow > 0f) hasFlexGrowChild = true
+                            val intrinsic = SwingIntrinsicSizeMeasurer.measureIntrinsicSize(
+                                child,
+                                innerAvailW,
+                                safeAvailH.coerceAtLeast(1)
+                            )
+                            val wSpec = cSnap.width?.resolvePx(
+                                referencePx = innerAvailW.toFloat(),
+                                viewportWidthPx = computeW.toFloat(),
+                                viewportHeightPx = safeAvailH.coerceAtLeast(1).toFloat()
+                            )?.roundToInt()
+                            val minW = cSnap.minWidth?.resolvePx(
+                                referencePx = innerAvailW.toFloat(),
+                                viewportWidthPx = computeW.toFloat(),
+                                viewportHeightPx = safeAvailH.coerceAtLeast(1).toFloat()
+                            )?.roundToInt() ?: 0
+                            val mL = cSnap.marginLeft?.resolvePx(referencePx = innerAvailW.toFloat())?.roundToInt() ?: 0
+                            val mR = cSnap.marginRight?.resolvePx(referencePx = innerAvailW.toFloat())?.roundToInt() ?: 0
+                            naturalRowW += max(wSpec ?: intrinsic.width, minW).coerceAtLeast(0) + mL + mR
+                        }
+                        if (flowChildCount > 1) {
+                            naturalRowW += (flowChildCount - 1) * rootSnapshot.columnGapPx
+                        }
+                        val measuredUsedW = max(contentUsedW + insets.left + insets.right, insets.left + insets.right)
+                        if (hasFlexGrowChild) {
+                            max(minOf(measuredUsedW, naturalRowW), insets.left + insets.right)
+                        } else {
+                            measuredUsedW
+                        }
                     } else {
                         max(contentUsedW + insets.left + insets.right, insets.left + insets.right)
                     }

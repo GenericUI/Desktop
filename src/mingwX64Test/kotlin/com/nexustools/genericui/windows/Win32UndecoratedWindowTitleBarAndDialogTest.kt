@@ -8,7 +8,7 @@ import com.nexustools.genericui.component.form.Select
 import com.nexustools.genericui.component.form.SelectOption
 import com.nexustools.genericui.component.layout.Container
 import com.nexustools.genericui.component.layout.ScrollView
-import com.nexustools.genericui.component.layout.StyledContainer
+import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.component.shell.Window
 import com.nexustools.genericui.component.typography.Text
@@ -37,6 +37,7 @@ import kotlinx.cinterop.allocArray
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKString
+import kotlinx.cinterop.toLong
 import platform.windows.GWL_STYLE
 import platform.windows.GetClassNameW
 import platform.windows.GetClientRect
@@ -59,6 +60,7 @@ import platform.windows.IDC_SIZEWE
 import platform.windows.MapWindowPoints
 import platform.windows.POINT
 import platform.windows.RECT
+import platform.windows.SendMessageW
 import platform.windows.WMSZ_BOTTOMRIGHT
 import platform.windows.WMSZ_LEFT
 import platform.windows.WS_MAXIMIZEBOX
@@ -124,6 +126,8 @@ class Win32UndecoratedWindowTitleBarAndDialogTest {
             setUndecorated(true)
             setContent(Container("div"))
         }
+        win.show(factory)
+        Win32NativeWindowHost.pumpVisualWindowEvents(24L)
         val winImpl = win.ensureNativeImpl() as WindowsWindowNativeImpl
         val expectedMask = Win32HwndHandle.WS_POPUP or
             Win32HwndHandle.WS_THICKFRAME or
@@ -136,8 +140,6 @@ class Win32UndecoratedWindowTitleBarAndDialogTest {
             "WindowsWindowNativeImpl undecorated dwStyle must include WS_POPUP|WS_THICKFRAME|WS_MINIMIZEBOX|WS_MAXIMIZEBOX|WS_SYSMENU"
         )
 
-        win.show(factory)
-        Win32NativeWindowHost.pumpVisualWindowEvents(24L)
         val hwnd = assertNotNull(Win32NativeWindowHost.activeHwnd)
         val liveStyle = GetWindowLongW(hwnd, GWL_STYLE)
         assertTrue((liveStyle and WS_POPUP.toInt()) != 0, "Live undecorated HWND must have WS_POPUP")
@@ -280,7 +282,7 @@ class Win32UndecoratedWindowTitleBarAndDialogTest {
     }
 
     @Test
-    fun nativeTitleBarPaletteAndStyledSurfaceTextColorRespectLightAndDarkThemes() = withVisualHost { _ ->
+    fun nativeTitleBarPaletteAndStyledSurfaceTextColorRespectLightAndDarkThemes() = withVisualHost { factory ->
         SystemThemeDetector.overrideDetectedTheme = ThemeMode.LIGHT
 
         val darkPalette = Win32DwmUxThemeBridge.resolveTitleBarPalette(isDark = true)
@@ -297,6 +299,11 @@ class Win32UndecoratedWindowTitleBarAndDialogTest {
         }
         overlayTb.addChild(titleText)
 
+        val hostWin = Window(title = "Palette Host", initialSize = Size(320, 160)).apply {
+            setContent(Container("div", "w-100 h-100").apply { addChild(overlayTb) })
+        }
+        hostWin.show(factory)
+
         val tbImpl = overlayTb.ensureNativeImpl() as DesktopBaseNativeImpl<*>
         val spec = Win32StyledWidgetHelper.resolveEffectiveVisualSpec(
             tbImpl.nativeWidget as Win32HwndHandle,
@@ -307,6 +314,7 @@ class Win32UndecoratedWindowTitleBarAndDialogTest {
         assertEquals(RgbaColor(18, 20, 26, 255), spec.backgroundColor)
         val lblImpl = titleText.ensureNativeImpl() as DesktopBaseNativeImpl<*>
         assertEquals(RgbaColor(242, 245, 250, 255), lblImpl.getEffectiveTextColor())
+        hostWin.close()
     }
 
     @Test
@@ -455,10 +463,13 @@ class Win32UndecoratedWindowTitleBarAndDialogTest {
         assertTrue(sb.width > 0 && sb.height > 0, "Select inside DialogWindow must record non-empty bounds")
         val comboRect = memScoped {
             val r = alloc<RECT>()
-            GetWindowRect(comboHwnd, r.ptr)
+            assertTrue(
+                SendMessageW(comboHwnd, 0x0152u /* CB_GETDROPPEDCONTROLRECT */, 0uL, r.ptr.toLong()) != 0L,
+                "CB_GETDROPPEDCONTROLRECT should succeed on ComboBox HWND"
+            )
             r.bottom - r.top
         }
-        assertTrue(comboRect >= 260, "ComboBox HWND height must accommodate drop-down list")
+        assertTrue(comboRect >= 260, "ComboBox dropped-down HWND height must accommodate drop-down list (got $comboRect)")
 
         val clickX = (sb.x + sb.width * 0.7f).toInt()
         val clickY = (sb.y + sb.height * 0.5f).toInt()

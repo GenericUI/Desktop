@@ -31,6 +31,7 @@ class WindowsApplicationNativeImpl :
         super.setThemeMode(mode)
         installWindowsThemeDetector()
         Win32NativeWindowHost.forcedThemeMode = mode
+        Win32NativeWindowHost.invalidateSystemThemeCache()
         val resolved = SystemThemeDetector.resolveTheme(mode)
         val isDark = resolved == ThemeMode.DARK
         nativeApplication.attributes["dwmUseImmersiveDarkMode"] = isDark
@@ -58,6 +59,7 @@ class WindowsApplicationNativeImpl :
         WindowsSystemTrayNativeImpl.disposeAll()
         if (interactiveWin32GuiEnabled) {
             WindowsHeadlessTrayLoop.requestQuit()
+            Win32NativeWindowHost.requestQuitMessageLoop()
         }
         super.exitApplication(exitCode)
     }

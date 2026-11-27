@@ -36,6 +36,7 @@ import com.nexustools.genericui.gtk.impl.GtkRangeSliderNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkScrollViewNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkSelectNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkSpinnerNativeImpl
+import com.nexustools.genericui.gtk.impl.GtkStyledTextInputNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTabNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTableNativeImpl
 import com.nexustools.genericui.gtk.impl.GtkTextInputNativeImpl
@@ -79,6 +80,7 @@ import com.nexustools.genericui.nativeimpl.feedback.SpinnerNativeImpl
 import com.nexustools.genericui.nativeimpl.form.CheckboxNativeImpl
 import com.nexustools.genericui.nativeimpl.form.RangeSliderNativeImpl
 import com.nexustools.genericui.nativeimpl.form.SelectNativeImpl
+import com.nexustools.genericui.nativeimpl.form.StyledTextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.form.TextInputNativeImpl
 import com.nexustools.genericui.nativeimpl.io.FileSystemNativeImpl
 import com.nexustools.genericui.nativeimpl.layout.ContainerNativeImpl
@@ -277,6 +279,13 @@ class GtkNativeFactory : NativeFactory {
 
     override fun createTextInput(multiline: Boolean): TextInputNativeImpl<*> =
         GtkTextInputNativeImpl(GtkWidgetHandle(if (multiline) "GtkScrolledWindow_GtkTextView" else "GtkEntry"), multiline)
+
+    override fun createStyledTextInput(multiline: Boolean, classPrefix: String): StyledTextInputNativeImpl<*> =
+        GtkStyledTextInputNativeImpl(
+            nativeWidget = GtkWidgetHandle(if (multiline) "GtkOverlay_StyledTextView" else "GtkOverlay_StyledEntry"),
+            multiline = multiline,
+            classPrefix = classPrefix
+        )
 
     override fun createSelect(): SelectNativeImpl<*> =
         GtkSelectNativeImpl(GtkWidgetHandle("GtkDropDown"))

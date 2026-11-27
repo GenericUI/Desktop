@@ -308,14 +308,17 @@ class WindowsAnimationNativeImpl : DefaultAnimationNativeImpl() {
      * Called by `Win32NativeWindowHost` `WndProc` on `WM_APP_VBLANK`.
      */
     internal fun handleWmAppVBlank() {
-        stateLock.withLock {
-            vblankPostedInFlight = false
-            vblankPostedHwndKey = 0L
+        try {
+            if (isDisposed) return
+            val nowMs = queryHighResTimestampMs()
+            dispatchFrameAtTimestamp(nowMs)
+            Win32NativeWindowHost.stepLiveVBlankFrame(nowMsOverride = nowMs)
+        } finally {
+            stateLock.withLock {
+                vblankPostedInFlight = false
+                vblankPostedHwndKey = 0L
+            }
         }
-        if (isDisposed) return
-        val nowMs = queryHighResTimestampMs()
-        dispatchFrameAtTimestamp(nowMs)
-        Win32NativeWindowHost.stepLiveVBlankFrame(nowMsOverride = nowMs)
     }
 
     /**

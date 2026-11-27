@@ -38,6 +38,11 @@ class MacosTabNativeImpl(
         onTabUpdatedHook?.invoke()
     }
 
+    override fun setTintImageToThemeNative(tintToTheme: Boolean) {
+        super.setTintImageToThemeNative(tintToTheme)
+        onTabUpdatedHook?.invoke()
+    }
+
     override fun setClosableNative(closable: Boolean) {
         super.setClosableNative(closable)
         onTabUpdatedHook?.invoke()

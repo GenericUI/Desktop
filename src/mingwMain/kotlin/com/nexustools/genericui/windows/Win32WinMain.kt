@@ -41,6 +41,8 @@ object Win32WinMain {
     private var msftEditModule: HMODULE? = null
     private var preferredAppModeFn: CPointer<CFunction<(Int) -> Int>>? = null
     private var allowDarkModeForWindowFn: CPointer<CFunction<(HWND?, Int) -> Int>>? = null
+    private var flushMenuThemesFn: CPointer<CFunction<() -> Unit>>? = null
+    private var lastPreferredAppMode: Int = -1
 
     /**
      * Ensures Per-Monitor DPI v2, ComCtl32 v6 activation context (before `InitCommonControlsEx`),
@@ -102,7 +104,10 @@ object Win32WinMain {
                     ?.reinterpret<CFunction<(Int) -> Int>>()
                 allowDarkModeForWindowFn = GetProcAddress(uxtheme, 133L.toCPointer<ByteVar>())
                     ?.reinterpret<CFunction<(HWND?, Int) -> Int>>()
+                flushMenuThemesFn = GetProcAddress(uxtheme, 136L.toCPointer<ByteVar>())
+                    ?.reinterpret<CFunction<() -> Unit>>()
                 preferredAppModeFn?.invoke(1) // AllowDark
+                lastPreferredAppMode = 1
             }
 
             OleInitialize(null)
@@ -118,6 +123,21 @@ object Win32WinMain {
         ensureWindowsControlsInitialized()
         val fn = allowDarkModeForWindowFn ?: return false
         return fn(hwnd, if (allow) 1 else 0) != 0
+    }
+
+    /**
+     * Synchronizes process-wide Win32 `HMENU` popup dark/light theming via `uxtheme.dll`
+     * ordinal #135 (`SetPreferredAppMode`: `2 = ForceDark`, `3 = ForceLight`) and ordinal #136
+     * (`FlushMenuThemes`) so Win32 popup context menus follow the app's active dark/light mode.
+     */
+    fun syncUxThemeMenuDarkMode(isDark: Boolean) {
+        ensureWindowsControlsInitialized()
+        val desiredMode = if (isDark) 2 else 3
+        if (lastPreferredAppMode != desiredMode) {
+            lastPreferredAppMode = desiredMode
+            preferredAppModeFn?.invoke(desiredMode)
+            flushMenuThemesFn?.invoke()
+        }
     }
 
     fun initializeFromProcessStartup(
