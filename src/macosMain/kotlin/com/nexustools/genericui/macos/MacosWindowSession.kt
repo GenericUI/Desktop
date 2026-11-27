@@ -9,6 +9,7 @@ import com.nexustools.genericui.desktop.core.DesktopNativeWidget
 import com.nexustools.genericui.desktop.dialog.DesktopDialogWindowNativeImpl
 import com.nexustools.genericui.desktop.dock.DesktopDockWindowNativeImpl
 import com.nexustools.genericui.desktop.layout.DesktopContainerLayoutController
+import com.nexustools.genericui.desktop.shell.DesktopWindowNativeImpl
 import com.nexustools.genericui.enums.css.CssDisplay
 import com.nexustools.genericui.enums.bootstrap.FlexDirection
 import com.nexustools.genericui.geometry.Rect
@@ -59,12 +60,16 @@ internal class MacosWindowSession(
     var nativeTitleBarHoverPinned: Boolean = false
     var lastSyncedNativeTitleBarVisible: Boolean? = null
     var lastSyncedNativeTitleBarAlpha: Double = -1.0
+    var cachedOverlayTitleBarHandle: MacosViewHandle? = null
+    var cachedOverlayTitleBarTreeVer: Long = -1L
+    var cachedOverlayTitleBarHostImpl: MacosWindowNativeImpl? = null
     var activeWindowResizeDragSession: com.nexustools.genericui.event.PointerDragSession? = null
     var lastRootOrderedViews: List<NSView> = emptyList()
     var lastRootPinnedBack: List<NSView> = emptyList()
     val stageViews = mutableListOf<MacosInteractiveSurfaceView>()
     var titleBarView: MacosTitleBarView? = null
-    internal var titleBarInsetTopPx: Int = 28
+    internal var titleBarInsetTopPx: Int = 0
+    internal var stageViewCollectCountForTest: Int = 0
     internal var attachedUnifiedNavbar: com.nexustools.genericui.macos.impl.MacosNavbarNativeImpl? = null
 
     fun hostContainer(): DesktopBaseContainerNativeImpl<*>? =
@@ -134,23 +139,28 @@ internal class MacosWindowSession(
             val orderedImpls = controller.resolveChildrenSortedByZIndex()
             val orderedViews = ArrayList<NSView>(orderedImpls.size + 1)
             for (childImpl in orderedImpls) {
-                val childView = MacosAppKitDispatch.resolveOrCreateChildNsView(childImpl)
-                if (childView != null) {
-                    orderedViews.add(childView)
-                    val b = childImpl.nativeWidget.bounds
-                    val framed = if (topInset > 0) {
-                        Rect(b.x, b.y + topInset, b.width, b.height)
-                    } else {
-                        b
-                    }
-                    MacosAppKitDispatch.applyFrameAndTransform(
-                        view = childView,
-                        bounds = framed,
-                        transform = (childImpl.nativeWidget as? MacosViewHandle)?.cssTransform,
-                        useAlignmentRectExpansion = childImpl.usesNativeControlAlignmentExpansion(),
-                        knownHandle = childImpl.nativeWidget as? MacosViewHandle
-                    )
+                if (childImpl is DesktopWindowNativeImpl<*> ||
+                    childImpl is DesktopDialogWindowNativeImpl<*> ||
+                    childImpl is DesktopDockWindowNativeImpl<*>
+                ) {
+                    continue
                 }
+                val childView = MacosAppKitDispatch.resolveOrCreateChildNsView(childImpl)
+                if (childView == null || childView is MacosWindowRootView) continue
+                orderedViews.add(childView)
+                val b = childImpl.nativeWidget.bounds
+                val framed = if (topInset > 0) {
+                    Rect(b.x, b.y + topInset, b.width, b.height)
+                } else {
+                    b
+                }
+                MacosAppKitDispatch.applyFrameAndTransform(
+                    view = childView,
+                    bounds = framed,
+                    transform = (childImpl.nativeWidget as? MacosViewHandle)?.cssTransform,
+                    useAlignmentRectExpansion = childImpl.usesNativeControlAlignmentExpansion(),
+                    knownHandle = childImpl.nativeWidget as? MacosViewHandle
+                )
             }
             val unifiedNav = attachedUnifiedNavbar
             if (unifiedNav != null && topInset > 0) {
@@ -194,6 +204,9 @@ internal class MacosWindowSession(
         if ((nsWindow as? MacosHostWindow)?.isNativeOverlayTitleBarHostWindow == true) {
             MacosNativeWindowHost.syncNativeOverlayTitleBarForSession(this)
         }
+        if (!nsWindow.inLiveResize && (nsWindow as? MacosHostWindow)?.isPerformingNativeZoom != true) {
+            MacosSurfaceLayerSupport.refreshBackdropViewsForWindow(nsWindow, force = false)
+        }
     }
 
     private fun needsRootHierarchySync(orderedViews: List<NSView>, pinnedBack: List<NSView>): Boolean {
@@ -205,31 +218,30 @@ internal class MacosWindowSession(
     }
 
     private fun ensureRootLayoutController(host: DesktopBaseContainerNativeImpl<*>): DesktopContainerLayoutController {
-        val existing = rootLayoutController
-        if (existing != null && layoutHostRef === host) {
-            val rawChildren = host.rawChildImplsSnapshot()
-            val logicalChildren = existing.getLogicalChildren()
-            if (logicalChildren.size != rawChildren.size ||
-                logicalChildren.indices.any { logicalChildren[it] !== rawChildren[it] }
-            ) {
-                existing.clearLogicalChildren()
-                for (child in rawChildren) {
-                    existing.addLogicalChild(child)
-                }
+        val controller = rootLayoutController?.takeIf { layoutHostRef === host }
+            ?: DesktopContainerLayoutController(
+                host = host,
+                defaultDisplay = CssDisplay.FLEX,
+                defaultFlexDirection = FlexDirection.COLUMN
+            ).also {
+                layoutHostRef = host
+                rootLayoutController = it
             }
-            return existing
+        val rawChildren = host.rawChildImplsSnapshot()
+        val logicalChildren = controller.getLogicalChildren()
+        if (logicalChildren.size != rawChildren.size ||
+            logicalChildren.indices.any { logicalChildren[it] !== rawChildren[it] }
+        ) {
+            controller.clearLogicalChildren()
+            for (child in rawChildren) {
+                controller.addLogicalChild(child)
+            }
         }
-        val created = DesktopContainerLayoutController(
-            host = host,
-            defaultDisplay = CssDisplay.FLEX,
-            defaultFlexDirection = FlexDirection.COLUMN
-        )
-        layoutHostRef = host
-        rootLayoutController = created
-        return created
+        return controller
     }
 
     private fun collectStageViews(parent: NSView) {
+        stageViewCollectCountForTest++
         stageViews.clear()
         fun walk(v: NSView) {
             if (v is MacosInteractiveSurfaceView) {
@@ -245,7 +257,7 @@ internal class MacosWindowSession(
     }
 
     fun presentStageSurfaces(forceRefresh: Boolean = false): Boolean {
-        if (stageViews.isEmpty()) {
+        if (lastStageTopologyVersion != MacosNativeWindowHost.stageTopologyVersion) {
             collectStageViews(rootView)
         }
         var updated = false
@@ -253,6 +265,9 @@ internal class MacosWindowSession(
             if (stage.presentLatestFrame(forceRefresh = forceRefresh)) {
                 updated = true
             }
+        }
+        if (updated || forceRefresh) {
+            MacosSurfaceLayerSupport.refreshBackdropForVideoFrameIfIntersecting(nsWindow, stageViews)
         }
         return updated
     }

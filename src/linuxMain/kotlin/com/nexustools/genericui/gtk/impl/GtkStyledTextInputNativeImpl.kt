@@ -283,34 +283,17 @@ open class GtkStyledTextInputNativeImpl(
         if (width <= 0 || height <= 0) return
         val dark = GtkRetainedContainerSupport.resolveDarkTheme()
         val visuals = resolveCurrentVisuals()
-        val effectiveSpec = if (isFocusedState()) {
-            visuals
-        } else {
-            visuals.copy(focusRingColor = null, focusRingWidthPx = null)
-        }
         val computed = getComputedStyle()
-        val paintSpec = GtkSurfaceRenderHelper.fromStyledVisualSpec(
-            spec = effectiveSpec,
-            cornerRadii = computed?.borderRadius,
-            backdropFilter = (nativeWidget.attributes["backdropFilter"] as? CssFilter) ?: effectiveSpec.backdropFilter,
-            foregroundFilter = (nativeWidget.attributes["cssFilter"] as? CssFilter) ?: effectiveSpec.filter,
-            opacity = effectiveSpec.opacity ?: getOpacity(),
-            darkTheme = dark
-        )
-        val hasBackdrop = GtkSurfaceRenderHelper.effectiveBackdropFilter(paintSpec)?.let {
-            LinuxBackdropFilterController.shared.hasActiveEffects(it)
-        } == true
-        val behindCapture: (() -> IntArray?)? = if (hasBackdrop) {
-            { GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(this, width, height) }
-        } else {
-            null
-        }
-        GtkSurfaceRenderHelper.paintSurface(
+        GtkSurfaceRenderHelper.paintStyledWidgetSurface(
+            impl = this,
             cr = cr,
             width = width,
             height = height,
-            spec = paintSpec,
-            behindBgraCapture = behindCapture
+            visuals = visuals,
+            cornerRadii = computed?.borderRadius,
+            opacity = visuals.opacity ?: getOpacity(),
+            focused = isFocusedState(),
+            darkTheme = dark
         )
     }
 

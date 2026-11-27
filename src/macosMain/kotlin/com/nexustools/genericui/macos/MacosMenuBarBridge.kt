@@ -11,6 +11,7 @@ import com.nexustools.genericui.geometry.Rect
 import com.nexustools.genericui.nativeimpl.layout.DividerNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.ContextMenuNativeImpl
 import com.nexustools.genericui.nativeimpl.shell.MenuBarNativeImpl
+import com.nexustools.genericui.nativeimpl.shell.MenuNativeImpl
 import com.nexustools.genericui.threading.GenericUiThreading
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.useContents
@@ -56,7 +57,17 @@ internal object MacosMenuBarBridge {
         return menu
     }
 
-    fun installMainMenu(appName: String, menuBarImpl: MenuBarNativeImpl<*>?) {
+    fun installMainMenu(
+        appName: String,
+        menuBarImpl: MenuBarNativeImpl<*>?,
+        applicationMenuImpl: MenuNativeImpl<*>? = null
+    ) {
+        if (!NSThread.isMainThread) {
+            MacosAppKitDispatch.onMainOrDefer {
+                installMainMenu(appName, menuBarImpl, applicationMenuImpl)
+            }
+            return
+        }
         mainMenuTarget.clearActions()
         val resolvedAppName = appName.ifBlank {
             NSProcessInfo.processInfo.processName.ifBlank { "Application" }
@@ -66,12 +77,32 @@ internal object MacosMenuBarBridge {
         // 1. Standard macOS Application menu
         val appMenuItem = NSMenuItem(title = resolvedAppName, action = null, keyEquivalent = "")
         val appMenu = NSMenu(title = resolvedAppName)
-        appMenu.addItemWithTitle(
-            string = "About $resolvedAppName",
-            action = NSSelectorFromString("orderFrontStandardAboutPanel:"),
+        appMenu.autoenablesItems = true
+        val aboutItem = NSMenuItem(
+            title = "About $resolvedAppName",
+            action = NSSelectorFromString("onAppAbout:"),
             keyEquivalent = ""
         )
+        aboutItem.target = mainMenuTarget
+        appMenu.addItem(aboutItem)
         appMenu.addItem(NSMenuItem.separatorItem())
+
+        val desktopAppMenu = applicationMenuImpl as? DesktopMenuNativeImpl<*>
+        if (desktopAppMenu != null) {
+            val addedCustom = populateMenuFromChildren(
+                menu = appMenu,
+                children = desktopAppMenu.items,
+                target = mainMenuTarget,
+                autoenablesSubmenus = true
+            )
+            if (addedCustom > 0) {
+                val lastIdx = appMenu.numberOfItems - 1L
+                val lastIsSeparator = lastIdx >= 0L && appMenu.itemAtIndex(lastIdx)?.separatorItem == true
+                if (!lastIsSeparator) {
+                    appMenu.addItem(NSMenuItem.separatorItem())
+                }
+            }
+        }
 
         val hideItem = NSMenuItem(
             title = "Hide $resolvedAppName",
@@ -194,34 +225,44 @@ internal object MacosMenuBarBridge {
     private fun buildSubmenu(
         title: String,
         menuImpl: DesktopMenuNativeImpl<*>,
-        target: MacosMenuActionTarget = mainMenuTarget
+        target: MacosMenuActionTarget = mainMenuTarget,
+        autoenablesItems: Boolean = false
     ): NSMenu {
         val menu = NSMenu(title = title)
-        menu.autoenablesItems = false
-        populateMenuFromChildren(menu, menuImpl.items, target)
+        menu.autoenablesItems = autoenablesItems
+        populateMenuFromChildren(menu, menuImpl.items, target, autoenablesItems)
         return menu
     }
 
     private fun populateMenuFromChildren(
         menu: NSMenu,
         children: List<NativeImpl<*>>,
-        target: MacosMenuActionTarget
-    ) {
+        target: MacosMenuActionTarget,
+        autoenablesSubmenus: Boolean = false
+    ): Int {
+        var addedCount = 0
         for (child in children) {
             when (child) {
-                is DividerNativeImpl<*> -> menu.addItem(NSMenuItem.separatorItem())
+                is DividerNativeImpl<*> -> {
+                    menu.addItem(NSMenuItem.separatorItem())
+                    addedCount++
+                }
                 is DesktopMenuNativeImpl<*> -> {
                     if (!child.isVisible()) continue
                     val subTitle = child.getLabel().ifBlank { "Submenu" }
                     val subItem = NSMenuItem(title = subTitle, action = null, keyEquivalent = "")
                     subItem.enabled = child.isEnabled()
-                    subItem.submenu = buildSubmenu(subTitle, child, target)
+                    subItem.submenu = buildSubmenu(subTitle, child, target, autoenablesSubmenus)
                     menu.addItem(subItem)
+                    addedCount++
                 }
                 is DesktopMenuItemNativeImpl<*> -> {
                     if (!child.isVisible()) continue
                     val shortcut = child.getShortcut()
-                    val keyEq = shortcut?.key?.lowercase()?.takeIf { it.length == 1 } ?: ""
+                    val keyEq = when (val rawKey = shortcut?.key?.trim()?.lowercase()) {
+                        "comma" -> ","
+                        else -> rawKey?.takeIf { it.length == 1 } ?: ""
+                    }
                     val nsItem = NSMenuItem(
                         title = child.getLabel(),
                         action = NSSelectorFromString("onMenuItemTriggered:"),
@@ -238,7 +279,7 @@ internal object MacosMenuBarBridge {
                     if (child.checkable) {
                         nsItem.state = if (child.isChecked()) NSControlStateValueOn else NSControlStateValueOff
                     }
-                    target.bindAction(nsItem) {
+                    target.bindAction(nsItem, menuItemImpl = child) {
                         GenericUiThreading.runOnLogic {
                             if (child.isEnabled()) {
                                 child.dispatchClick()
@@ -257,9 +298,11 @@ internal object MacosMenuBarBridge {
                     }
                     nsItem.target = target
                     menu.addItem(nsItem)
+                    addedCount++
                 }
             }
         }
+        return addedCount
     }
 
     /**

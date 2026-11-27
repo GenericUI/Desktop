@@ -137,4 +137,14 @@ open class DesktopStyledButtonNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun resolveCurrentVisuals(): StyledVisualSpec = styledDelegate.resolveCurrentVisuals()
+
+    override fun setAttribute(name: String, value: String?) {
+        super<DesktopButtonNativeImpl>.setAttribute(name, value)
+        applyDesktopStyledFilterAttribute(
+            name = name,
+            value = value,
+            getBase = { getBaseVisuals() },
+            setBase = { setBaseVisuals(it) }
+        )
+    }
 }

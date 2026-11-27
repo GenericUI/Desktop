@@ -270,7 +270,7 @@ internal class MacosViewInteractionController(
         if (MacosNativeWindowHost.visualTestMode) return false
         if (NSEvent.pressedMouseButtons != 0uL) return false
         val win = view.window ?: return false
-        if (event.window !== win || !win.isVisible()) return false
+        if (!isSameNsWindow(event.window, win) || !win.isVisible()) return false
         val mousePt = NSEvent.mouseLocation
         val (mx, my) = mousePt.useContents { x to y }
         val insideWin = win.frame.useContents {

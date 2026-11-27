@@ -97,8 +97,10 @@ object GtkSemanticContainerWidget {
         val hasBackdrop = appearance.backdropFilter?.let {
             LinuxBackdropFilterController.shared.hasActiveEffects(it)
         } == true
-        val behindCapture: (() -> IntArray?)? = if (hasBackdrop) {
-            { GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(host, width, height) }
+        val behindCapture: ((Int, Int, Int, Int) -> GtkSurfaceRenderHelper.PaddedBgraCapture?)? = if (hasBackdrop) {
+            { padL, padT, padR, padB ->
+                GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(host, width, height, padL, padT, padR, padB)
+            }
         } else {
             null
         }

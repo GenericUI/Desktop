@@ -10,8 +10,10 @@ import com.nexustools.genericui.macos.MacosAppKitDispatch
 import com.nexustools.genericui.macos.MacosFocusSupport
 import com.nexustools.genericui.macos.MacosControlActionTarget
 import com.nexustools.genericui.macos.MacosViewHandle
+import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.style.css.CssTransform
+import com.nexustools.genericui.style.mapper.BootstrapStyleSnapshot
 import kotlinx.cinterop.CValue
 import kotlinx.cinterop.useContents
 import platform.AppKit.NSButton
@@ -104,6 +106,13 @@ class MacosCheckboxNativeImpl(
     private var switchControl: NSSwitch? = null
     private var switchLabeledView: MacosSwitchLabeledView? = null
     private var rootMountedView: NSView? = null
+    private var cachedMeasureView: NSView? = null
+    private var cachedMeasureLabel: String? = null
+    private var cachedMeasureComputed: ComputedStyle? = null
+    private var cachedMeasureSnapshot: BootstrapStyleSnapshot? = null
+    private var cachedMeasureMaxW: Float? = null
+    private var cachedMeasureMaxH: Float? = null
+    private var cachedMeasureSize: Size? = null
 
     init {
         nativeWidget.viewMaterializer = {
@@ -116,6 +125,7 @@ class MacosCheckboxNativeImpl(
     }
 
     private fun mountControl(isInitial: Boolean) {
+        cachedMeasureSize = null
         val oldRoot = rootMountedView
         val nextRoot: NSView
         if (switchStyle) {
@@ -210,25 +220,48 @@ class MacosCheckboxNativeImpl(
     }
 
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {
-        val btn = buttonControl
-        if (btn != null) {
-            syncViewState()
-            val fit = btn.fittingSize()
-            val aligned = btn.alignmentRectForFrame(fit.useContents { NSMakeRect(0.0, 0.0, width, height) })
-            return aligned.useContents {
-                Size(ceil(size.width).toInt().coerceAtLeast(24), ceil(size.height).toInt().coerceAtLeast(20))
+        val activeView = rootMountedView
+        val cached = cachedMeasureSize
+        if (cached != null &&
+            cachedMeasureView === activeView &&
+            cachedMeasureLabel == labelText &&
+            cachedMeasureComputed === lastComputedStyle &&
+            cachedMeasureSnapshot == styleSnapshot &&
+            cachedMeasureMaxW == maxWidth &&
+            cachedMeasureMaxH == maxHeight
+        ) {
+            return cached
+        }
+        val measured = run {
+            val btn = buttonControl
+            if (btn != null) {
+                syncViewState()
+                val fit = btn.fittingSize()
+                val aligned = btn.alignmentRectForFrame(fit.useContents { NSMakeRect(0.0, 0.0, width, height) })
+                return@run aligned.useContents {
+                    Size(ceil(size.width).toInt().coerceAtLeast(24), ceil(size.height).toInt().coerceAtLeast(20))
+                }
             }
+            val sw = switchControl
+            if (sw != null) {
+                val swFit = sw.fittingSize().useContents { ceil(width).toInt() to ceil(height).toInt() }
+                val extra = if (labelText.isNotEmpty()) (labelText.length * 7 + 16) else 0
+                return@run Size((swFit.first + extra).coerceAtLeast(38), swFit.second.coerceAtLeast(22))
+            }
+            Size(120, 24)
         }
-        val sw = switchControl
-        if (sw != null) {
-            val swFit = sw.fittingSize().useContents { ceil(width).toInt() to ceil(height).toInt() }
-            val extra = if (labelText.isNotEmpty()) (labelText.length * 7 + 16) else 0
-            return Size((swFit.first + extra).coerceAtLeast(38), swFit.second.coerceAtLeast(22))
-        }
-        return Size(120, 24)
+        cachedMeasureView = activeView
+        cachedMeasureLabel = labelText
+        cachedMeasureComputed = lastComputedStyle
+        cachedMeasureSnapshot = styleSnapshot
+        cachedMeasureMaxW = maxWidth
+        cachedMeasureMaxH = maxHeight
+        cachedMeasureSize = measured
+        return measured
     }
 
     override fun setLabel(label: String) {
+        cachedMeasureSize = null
         val wasEmpty = labelText.isEmpty()
         super.setLabel(label)
         val isEmpty = labelText.isEmpty()
@@ -292,6 +325,7 @@ class MacosCheckboxNativeImpl(
     }
 
     override fun onNativeStyleSynced() {
+        cachedMeasureSize = null
         syncViewState()
     }
 

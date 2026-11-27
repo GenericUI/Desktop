@@ -2,7 +2,9 @@
 
 package com.nexustools.genericui.gtk.widget
 
+import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.gtk.Gtk4DynamicBindings
+import com.nexustools.genericui.gtk.GtkWidgetHandle
 import com.nexustools.genericui.linux.style.LinuxBackdropFilterController
 import com.nexustools.genericui.linux.style.LinuxStyledSurfaceHelper
 import com.nexustools.genericui.style.color.RgbaColor
@@ -36,6 +38,66 @@ import kotlin.math.roundToInt
  * and GSK color-matrix/blur/drop-shadow nodes.
  */
 object GtkSurfaceRenderHelper {
+
+    data class PaddedBgraCapture(
+        val pixels: IntArray,
+        val bufferWidth: Int,
+        val bufferHeight: Int,
+        val regionX: Int,
+        val regionY: Int
+    )
+
+    fun resolveWidgetBackdropFilter(
+        handle: GtkWidgetHandle,
+        visuals: StyledVisualSpec
+    ): CssFilter? {
+        val attrFilter = (handle.attributes["attrBackdropFilter"] as? CssFilter)
+            ?: (handle.attributes["backdropFilter"] as? CssFilter)
+            ?: visuals.backdropFilter
+        val attrBlurPx = (handle.attributes["attrBackdropBlurPx"] as? Float)
+            ?: visuals.backdropBlurPx
+        return CssFilter.backdropBlurOrFilter(attrBlurPx, attrFilter)
+    }
+
+    fun paintStyledWidgetSurface(
+        impl: DesktopBaseNativeImpl<GtkWidgetHandle>,
+        cr: COpaquePointer,
+        width: Int,
+        height: Int,
+        visuals: StyledVisualSpec,
+        cornerRadii: CssCornerRadii?,
+        opacity: Float,
+        focused: Boolean,
+        darkTheme: Boolean
+    ) {
+        val effectiveSpec = if (focused) visuals else visuals.copy(focusRingColor = null, focusRingWidthPx = null)
+        val handle = impl.nativeWidget
+        val paintSpec = fromStyledVisualSpec(
+            spec = effectiveSpec,
+            cornerRadii = cornerRadii,
+            backdropFilter = resolveWidgetBackdropFilter(handle, effectiveSpec),
+            foregroundFilter = (handle.attributes["cssFilter"] as? CssFilter) ?: effectiveSpec.filter,
+            opacity = opacity,
+            darkTheme = darkTheme
+        )
+        val hasBackdrop = effectiveBackdropFilter(paintSpec)?.let {
+            LinuxBackdropFilterController.shared.hasActiveEffects(it)
+        } == true
+        val behindCapture: ((Int, Int, Int, Int) -> PaddedBgraCapture?)? = if (hasBackdrop) {
+            { padL, padT, padR, padB ->
+                GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(impl, width, height, padL, padT, padR, padB)
+            }
+        } else {
+            null
+        }
+        paintSurface(
+            cr = cr,
+            width = width,
+            height = height,
+            spec = paintSpec,
+            behindBgraCapture = behindCapture
+        )
+    }
 
     fun fromStyledVisualSpec(
         spec: StyledVisualSpec,
@@ -82,20 +144,16 @@ object GtkSurfaceRenderHelper {
         darkTheme = darkTheme
     )
 
-    fun effectiveBackdropFilter(spec: GtkSurfacePaintSpec): CssFilter? {
-        val explicit = spec.backdropFilter
-        if (explicit != null && LinuxBackdropFilterController.shared.hasActiveEffects(explicit)) {
-            return explicit
-        }
-        return if (spec.backdropBlurPx > 0f) CssFilter(blur = CssLength.px(spec.backdropBlurPx)) else null
-    }
+    fun effectiveBackdropFilter(spec: GtkSurfacePaintSpec): CssFilter? =
+        CssFilter.backdropBlurOrFilter(spec.backdropBlurPx.takeIf { it > 0f }, spec.backdropFilter)
+            ?.takeIf { LinuxBackdropFilterController.shared.hasActiveEffects(it) }
 
     fun paintSurface(
         cr: COpaquePointer,
         width: Int,
         height: Int,
         spec: GtkSurfacePaintSpec,
-        behindBgraCapture: (() -> IntArray?)? = null
+        behindBgraCapture: ((padLeft: Int, padTop: Int, padRight: Int, padBottom: Int) -> PaddedBgraCapture?)? = null
     ) {
         if (width <= 0 || height <= 0) return
         val wF = width.toFloat()
@@ -180,8 +238,16 @@ object GtkSurfaceRenderHelper {
         )
     }
 
-    fun premulBgraWordsToCairoSurface(pixels: IntArray, width: Int, height: Int): COpaquePointer? {
-        if (width <= 0 || height <= 0 || pixels.size < width * height) return null
+    fun premulBgraWordsToCairoSurface(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        srcStrideWords: Int = width,
+        srcOffsetX: Int = 0,
+        srcOffsetY: Int = 0
+    ): COpaquePointer? {
+        if (width <= 0 || height <= 0 || srcStrideWords < srcOffsetX + width) return null
+        if (pixels.size < (srcOffsetY + height - 1) * srcStrideWords + srcOffsetX + width) return null
         val surface = Gtk4DynamicBindings.cairoImageSurfaceCreate(width, height) ?: return null
         Gtk4DynamicBindings.cairoSurfaceFlush(surface)
         val dstPtr = Gtk4DynamicBindings.cairoImageSurfaceGetData(surface)?.reinterpret<ByteVar>()
@@ -190,7 +256,8 @@ object GtkSurfaceRenderHelper {
             pixels.usePinned { pinned ->
                 val srcBytes = pinned.addressOf(0).reinterpret<ByteVar>()
                 for (y in 0 until height) {
-                    memcpy(dstPtr + (y * stride), srcBytes + (y * width * 4), (width * 4).toULong())
+                    val srcByteOff = ((srcOffsetY + y) * srcStrideWords + srcOffsetX) * 4
+                    memcpy(dstPtr + (y * stride), srcBytes + srcByteOff, (width * 4).toULong())
                 }
             }
             Gtk4DynamicBindings.cairoSurfaceMarkDirty(surface)
@@ -325,22 +392,39 @@ object GtkSurfaceRenderHelper {
         height: Int,
         spec: GtkSurfacePaintSpec,
         radii: FloatArray,
-        behindBgraCapture: (() -> IntArray?)?
+        behindBgraCapture: ((padLeft: Int, padTop: Int, padRight: Int, padBottom: Int) -> PaddedBgraCapture?)?
     ) {
         val filter = effectiveBackdropFilter(spec) ?: return
-        val captured = behindBgraCapture?.invoke()
-        if (captured != null && captured.size >= width * height) {
-            val copy = captured.copyOf(width * height)
-            val applied = applyCssFilterToPremulBgraBuffer(
-                pixels = copy,
-                width = width,
-                height = height,
+        val pads = LinuxBackdropFilterController.computeHaloPadding(filter)
+        val captured = behindBgraCapture?.invoke(pads[0], pads[1], pads[2], pads[3])
+        if (captured != null && captured.bufferWidth > 0 && captured.bufferHeight > 0 &&
+            captured.pixels.size >= captured.bufferWidth * captured.bufferHeight
+        ) {
+            val bufW = captured.bufferWidth
+            val bufH = captured.bufferHeight
+            val copy = captured.pixels.copyOf(bufW * bufH)
+            val applied = LinuxBackdropFilterController.shared.applyToPremulBgraBuffer(
                 filter = filter,
+                pixels = copy,
+                strideWords = bufW,
+                bufferWidth = bufW,
+                bufferHeight = bufH,
+                regionX = captured.regionX,
+                regionY = captured.regionY,
+                regionWidth = width,
+                regionHeight = height,
                 cornerRadiusPx = radii[0],
                 componentOpacity = spec.opacity
             )
             if (applied) {
-                val img = premulBgraWordsToCairoSurface(copy, width, height)
+                val img = premulBgraWordsToCairoSurface(
+                    pixels = copy,
+                    width = width,
+                    height = height,
+                    srcStrideWords = bufW,
+                    srcOffsetX = captured.regionX,
+                    srcOffsetY = captured.regionY
+                )
                 if (img != null) {
                     Gtk4DynamicBindings.cairoSave(cr)
                     Gtk4DynamicBindings.gtkWidgetSetClipPathForRoundedCorners(

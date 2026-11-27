@@ -3,6 +3,7 @@
 package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.core.NativeImpl
+import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopBaseNativeImpl
 import com.nexustools.genericui.desktop.core.DesktopStageOverlaySpec
 import com.nexustools.genericui.desktop.layout.DesktopContainerLayoutController
@@ -267,6 +268,7 @@ class MacosStyledContainerNativeImpl(
 
     internal fun resyncChildZOrderOnWindowAttach() {
         if (!MacosAppKitDispatch.isMainThread() || isDisposed || styledView?.window == null) return
+        layoutController?.invalidateZOrder()
         lastSyncedChildOrder = emptyList()
         syncSubviewsWithOrder(resolveOrderedChildren())
     }
@@ -274,16 +276,19 @@ class MacosStyledContainerNativeImpl(
     override fun onChildZIndexInvalidated() {
         super.onChildZIndexInvalidated()
         lastSyncedChildOrder = emptyList()
-        if (MacosAppKitDispatch.isMainThread() && styledView != null && !isDisposed) {
-            syncSubviewsWithOrder(resolveOrderedChildren())
+        MacosAppKitDispatch.onMainOrDefer {
+            if (!isDisposed && styledView != null) {
+                syncSubviewsWithOrder(resolveOrderedChildren())
+            }
         }
+        nativeWidget.notifyTreeInvalidated(visualOnly = false)
         nativeWidget.requestRetainedRelayout()
     }
 
     private fun syncSubviewsWithOrder(orderedChildren: List<DesktopBaseNativeImpl<*>>) {
         if (!MacosAppKitDispatch.isMainThread()) {
             MacosAppKitDispatch.onMainOrDefer {
-                if (!isDisposed) syncSubviewsWithOrder(orderedChildren)
+                if (!isDisposed) syncSubviewsWithOrder(resolveOrderedChildren())
             }
             return
         }
@@ -307,8 +312,10 @@ class MacosStyledContainerNativeImpl(
     override fun onChildAddedNative(childImpl: NativeImpl<*>, index: Int) {
         super.onChildAddedNative(childImpl, index)
         lastSyncedChildOrder = emptyList()
-        if (MacosAppKitDispatch.isMainThread()) {
-            syncSubviewsWithOrder(resolveOrderedChildren())
+        MacosAppKitDispatch.onMainOrDefer {
+            if (!isDisposed && styledView != null) {
+                syncSubviewsWithOrder(resolveOrderedChildren())
+            }
         }
         nativeWidget.requestRetainedRelayout()
     }
@@ -316,8 +323,10 @@ class MacosStyledContainerNativeImpl(
     override fun onChildRemovedNative(childImpl: NativeImpl<*>) {
         super.onChildRemovedNative(childImpl)
         lastSyncedChildOrder = emptyList()
-        if (MacosAppKitDispatch.isMainThread()) {
-            syncSubviewsWithOrder(resolveOrderedChildren())
+        MacosAppKitDispatch.onMainOrDefer {
+            if (!isDisposed && styledView != null) {
+                syncSubviewsWithOrder(resolveOrderedChildren())
+            }
         }
         nativeWidget.requestRetainedRelayout()
     }
@@ -325,8 +334,10 @@ class MacosStyledContainerNativeImpl(
     override fun onChildrenClearedNative() {
         super.onChildrenClearedNative()
         lastSyncedChildOrder = emptyList()
-        if (MacosAppKitDispatch.isMainThread()) {
-            syncSubviewsWithOrder(emptyList())
+        MacosAppKitDispatch.onMainOrDefer {
+            if (!isDisposed && styledView != null) {
+                syncSubviewsWithOrder(resolveOrderedChildren())
+            }
         }
         nativeWidget.requestRetainedRelayout()
     }
@@ -351,11 +362,21 @@ class MacosStyledContainerNativeImpl(
                 }
             }
             if (!zOrderSyncedInLayout) {
+                val backdropPinned = parentView.surfaceSupport.pinnedBackdropSubviews()
+                val pinnedBack = ArrayList<NSView>(1 + backdropPinned.size)
+                parentView.interactiveSurfaceView?.let { pinnedBack.add(it) }
+                pinnedBack.addAll(backdropPinned)
+                val expectedChildViews = ArrayList<NSView>(ordered.size)
+                for (child in ordered) {
+                    val v = MacosAppKitDispatch.resolveOrCreateChildNsView(child)
+                    if (v != null) expectedChildViews.add(v)
+                }
                 val needsOrderSync = !wasRealized ||
                     lastSyncedHasInteractiveSurface != (parentView.interactiveSurfaceView != null) ||
-                    lastSyncedBackdropCount != parentView.surfaceSupport.pinnedBackdropSubviews().size ||
+                    lastSyncedBackdropCount != backdropPinned.size ||
                     ordered.size != lastSyncedChildOrder.size ||
-                    ordered.indices.any { ordered[it] !== lastSyncedChildOrder[it] }
+                    ordered.indices.any { ordered[it] !== lastSyncedChildOrder[it] } ||
+                    !MacosAppKitDispatch.isChildViewHierarchyInSync(parentView, expectedChildViews, pinnedBack)
                 if (needsOrderSync) {
                     syncSubviewsWithOrder(ordered)
                 }
@@ -427,6 +448,8 @@ class MacosStyledContainerNativeImpl(
     }
 
     override fun onNativeZIndexChanged(zIndex: Int) {
+        (nativeWidget.parentWidget?.attributes?.get("nativeImpl") as? DesktopBaseContainerNativeImpl<*>)
+            ?.onChildZIndexInvalidated()
         nativeWidget.requestRetainedRelayout()
     }
 

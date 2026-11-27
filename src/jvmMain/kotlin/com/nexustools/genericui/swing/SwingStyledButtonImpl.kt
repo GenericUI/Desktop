@@ -48,14 +48,21 @@ class SwingStyledButtonImpl(
             SwingSurfacePaintUtil.withComponentTransform(this, g) { tg ->
                 if (!isContentAreaFilled) {
                     val focusedState = (getClientProperty("styledButtonFocused") as? Boolean) ?: hasFocus()
-                    val effBackdrop = CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
+                    val impl = getClientProperty(SwingBaseNativeImpl.CLIENT_PROPERTY_KEY) as? SwingStyledButtonImpl
+                    val effBackdrop = if (impl != null) {
+                        SwingSurfacePaintUtil.resolveEffectiveBackdropFilter(impl, spec)
+                    } else {
+                        CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
+                    }
+                    val cornerRadii = impl?.currentComputedStyleForSurface()?.borderRadius
                     if (effBackdrop != null && componentOpacity > SwingSurfacePaintUtil.OPACITY_SKIP_THRESHOLD && width > 0 && height > 0) {
                         SwingSurfacePaintUtil.paintBackdropWithOpacity(
                             g = tg,
                             target = this,
                             filter = effBackdrop,
                             cornerRadiusPx = spec.borderRadiusPx ?: 0f,
-                            componentOpacity = componentOpacity
+                            componentOpacity = componentOpacity,
+                            cornerRadii = cornerRadii
                         )
                     }
                     SwingSurfacePaintUtil.paintStyledSurface(
@@ -64,7 +71,8 @@ class SwingStyledButtonImpl(
                         height = height,
                         spec = spec.copy(opacity = null),
                         isFocused = focusedState,
-                        componentOpacity = componentOpacity
+                        componentOpacity = componentOpacity,
+                        cornerRadii = cornerRadii
                     )
                 }
                 if (componentOpacity < 0.999f) {
@@ -155,18 +163,27 @@ class SwingStyledButtonImpl(
         nativeWidget.isOpaque = false
     }
 
+    override fun setAttribute(name: String, value: String?) {
+        super<SwingButtonImpl>.setAttribute(name, value)
+        if (SwingSurfacePaintUtil.isBackdropAttributeName(name)) {
+            syncCurrentVisuals()
+        } else {
+            nativeWidget.repaint()
+        }
+    }
+
     private fun syncCurrentVisuals() {
         val current = getStyledVisuals()
+        val effBackdrop = SwingSurfacePaintUtil.resolveEffectiveBackdropFilter(this, current)
         nativeWidget.isContentAreaFilled = false
         nativeWidget.isBorderPainted = false
         nativeWidget.isFocusPainted = false
         nativeWidget.isOpaque = false
         nativeWidget.putClientProperty("backdropBlurPx", current.backdropBlurPx)
-        nativeWidget.putClientProperty("backdropFilter", current.backdropFilter)
+        nativeWidget.putClientProperty("backdropFilter", effBackdrop ?: current.backdropFilter)
         nativeWidget.putClientProperty(
             "-webkit-backdrop-filter",
-            current.backdropFilter?.toCssString()
-                ?: current.backdropBlurPx?.takeIf { it > 0f }?.let { "blur(${it}px)" }
+            effBackdrop?.toCssString()
         )
         nativeWidget.putClientProperty("styledButtonVisuals", current)
         nativeWidget.putClientProperty("styledButtonFocused", focused)
@@ -294,36 +311,25 @@ class SwingStyledButtonImpl(
     }
 
     override fun resolveCurrentVisuals(): StyledVisualSpec {
-        val isDark = (Application.current?.getResolvedTheme() ?: SystemThemeDetector.detectSystemTheme()) == ThemeMode.DARK
+        val isDark = SwingSurfacePaintUtil.isDarkThemeForComponent(nativeWidget)
         val computedBase = StyledVisualSpec.fromComponentAndComputed(
             componentStyle = lastComponentStyle,
             computedStyle = lastComputedStyle,
             snapshot = styleSnapshot,
             darkTheme = isDark
         )
-        var effective = computedBase.mergeWith(baseVisuals)
-
-        if (!isEnabled()) {
-            val computedDisabled = lastComputedStyle?.disabledStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedDisabled).mergeWith(disabledVisuals)
-            return effective
-        }
-
-        if (hovered) {
-            val computedHover = lastComputedStyle?.hoverStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedHover).mergeWith(hoverVisuals)
-        }
-
-        if (focused) {
-            val computedFocus = lastComputedStyle?.focusStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedFocus).mergeWith(focusVisuals)
-        }
-
-        if (activePressed) {
-            val computedActive = lastComputedStyle?.activeStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
-            effective = effective.mergeWith(computedActive).mergeWith(activeVisuals)
-        }
-
-        return effective
+        return SwingSurfacePaintUtil.resolveStateVisuals(
+            computedBase = computedBase,
+            baseVisuals = baseVisuals,
+            computedStyle = lastComputedStyle,
+            isEnabled = isEnabled(),
+            hovered = hovered,
+            focused = focused,
+            activePressed = activePressed,
+            hoverVisuals = hoverVisuals,
+            focusVisuals = focusVisuals,
+            activeVisuals = activeVisuals,
+            disabledVisuals = disabledVisuals
+        )
     }
 }

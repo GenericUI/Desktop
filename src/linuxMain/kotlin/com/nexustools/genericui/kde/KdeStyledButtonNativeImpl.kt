@@ -43,8 +43,8 @@ open class KdeStyledButtonNativeImpl(
                 val sz = measureIntrinsicSize(null, null)
                 sz.width.toInt().coerceAtLeast(32) to sz.height.toInt().coerceAtLeast(24)
             },
-            onHoverChanged = { h -> hovered = h; nativeWidget.requestRepaint() },
-            onPressedChanged = { p -> pressed = p; nativeWidget.requestRepaint() }
+            onHoverChanged = { h -> hovered = h; setHoveredState(h); nativeWidget.requestRepaint() },
+            onPressedChanged = { p -> pressed = p; setActivePressedState(p); nativeWidget.requestRepaint() }
         )
         KdeVTableBridge.attachWidgetHooks(ptr, KdeVTableBridge.HOOK_INPUT) {
             onFocusIn = { _ -> setFocusedState(true) }
@@ -55,7 +55,7 @@ open class KdeStyledButtonNativeImpl(
     private fun paintStyledButton(widgetPtr: COpaquePointer, painter: COpaquePointer, w: Int, h: Int) {
         val visuals = resolveCurrentVisuals()
         val computed = getComputedStyle()
-        val backdrop = nativeWidget.attributes["backdropFilter"] as? CssFilter ?: visuals.backdropFilter
+        val backdrop = KdePainterSupport.resolveWidgetBackdropFilter(nativeWidget, visuals)
         val grad = visuals.backgroundGradient ?: (nativeWidget.attributes["backgroundGradient"] as? Gradient)
 
         KdePainterSupport.paintStyledSurface(
@@ -68,7 +68,7 @@ open class KdeStyledButtonNativeImpl(
             gradientOverride = grad,
             backdropFilterOverride = backdrop,
             focused = focused,
-            opacity = getOpacity(),
+            opacity = visuals.opacity ?: getOpacity(),
             isPressed = pressed,
             isHovered = hovered
         )
@@ -104,6 +104,11 @@ open class KdeStyledButtonNativeImpl(
             maxOf(base.width.toFloat(), (measured.first + 24.0).toFloat()),
             maxOf(base.height.toFloat(), (measured.second + 14.0).toFloat())
         )
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        super.setAttribute(name, value)
+        KdePainterSupport.handleStyledBackdropAttribute(this, name, value)
     }
 
     override fun onNativeBoundsChanged(rect: Rect) { nativeWidget.applyBoundsToNative(rect); nativeWidget.requestRepaint() }

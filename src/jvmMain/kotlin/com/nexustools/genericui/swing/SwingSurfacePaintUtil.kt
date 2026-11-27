@@ -6,6 +6,8 @@ import com.nexustools.genericui.enums.ui.ThemeMode
 import com.nexustools.genericui.style.color.BootstrapColorPalette
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.enums.css.CssBorderStyle
+import com.nexustools.genericui.style.css.ComputedStyle
+import com.nexustools.genericui.style.css.CssCornerRadii
 import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.StyledVisualSpec
 import com.nexustools.genericui.style.gradient.Gradient.Gradient
@@ -23,6 +25,8 @@ import java.awt.Graphics2D
 import java.awt.LinearGradientPaint
 import java.awt.RadialGradientPaint
 import java.awt.RenderingHints
+import java.awt.Shape
+import java.awt.geom.Path2D
 import java.awt.geom.Point2D
 import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
@@ -30,6 +34,7 @@ import javax.swing.JComponent
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.min
 import kotlin.math.sin
 
 /**
@@ -266,12 +271,123 @@ internal object SwingSurfacePaintUtil {
 
     const val OPACITY_SKIP_THRESHOLD: Float = 0.004f
 
+    fun resolveClampedCornerRadii(
+        radii: CssCornerRadii?,
+        fallbackRadiusPx: Float?,
+        widthPx: Float,
+        heightPx: Float
+    ): FloatArray {
+        if (widthPx <= 0f || heightPx <= 0f) return FloatArray(4)
+        var tl: Float
+        var tr: Float
+        var br: Float
+        var bl: Float
+        if (radii != null) {
+            tl = (radii.topLeft.resolvePx(widthPx) ?: 0f).coerceAtLeast(0f)
+            tr = (radii.topRight.resolvePx(widthPx) ?: 0f).coerceAtLeast(0f)
+            br = (radii.bottomRight.resolvePx(widthPx) ?: 0f).coerceAtLeast(0f)
+            bl = (radii.bottomLeft.resolvePx(widthPx) ?: 0f).coerceAtLeast(0f)
+        } else {
+            val uniform = (fallbackRadiusPx ?: 0f).coerceAtLeast(0f)
+            tl = uniform; tr = uniform; br = uniform; bl = uniform
+        }
+        var scale = 1f
+        if (tl + tr > widthPx) scale = min(scale, widthPx / (tl + tr))
+        if (bl + br > widthPx) scale = min(scale, widthPx / (bl + br))
+        if (tl + bl > heightPx) scale = min(scale, heightPx / (tl + bl))
+        if (tr + br > heightPx) scale = min(scale, heightPx / (tr + br))
+        if (scale < 1f) {
+            tl *= scale; tr *= scale; br *= scale; bl *= scale
+        }
+        return floatArrayOf(tl, tr, br, bl)
+    }
+
+    fun buildRoundedRectShape(x: Float, y: Float, w: Float, h: Float, radii: FloatArray): Shape {
+        val tl = radii[0]
+        val tr = radii[1]
+        val br = radii[2]
+        val bl = radii[3]
+        if (tl == tr && tr == br && br == bl) {
+            val arc = tl * 2f
+            return RoundRectangle2D.Float(x, y, w, h, arc, arc)
+        }
+        val path = Path2D.Float()
+        val r = x + w
+        val b = y + h
+        path.moveTo((x + tl).toDouble(), y.toDouble())
+        path.lineTo((r - tr).toDouble(), y.toDouble())
+        if (tr > 0f) path.quadTo(r.toDouble(), y.toDouble(), r.toDouble(), (y + tr).toDouble())
+        else path.lineTo(r.toDouble(), y.toDouble())
+        path.lineTo(r.toDouble(), (b - br).toDouble())
+        if (br > 0f) path.quadTo(r.toDouble(), b.toDouble(), (r - br).toDouble(), b.toDouble())
+        else path.lineTo(r.toDouble(), b.toDouble())
+        path.lineTo((x + bl).toDouble(), b.toDouble())
+        if (bl > 0f) path.quadTo(x.toDouble(), b.toDouble(), x.toDouble(), (b - bl).toDouble())
+        else path.lineTo(x.toDouble(), b.toDouble())
+        path.lineTo(x.toDouble(), (y + tl).toDouble())
+        if (tl > 0f) path.quadTo(x.toDouble(), y.toDouble(), (x + tl).toDouble(), y.toDouble())
+        else path.lineTo(x.toDouble(), y.toDouble())
+        path.closePath()
+        return path
+    }
+
+    fun isBackdropAttributeName(name: String): Boolean =
+        name.equals("backdrop-filter", ignoreCase = true) ||
+            name.equals("-webkit-backdrop-filter", ignoreCase = true) ||
+            name.equals("backdropFilter", ignoreCase = true) ||
+            name.equals("backdropBlurPx", ignoreCase = true)
+
+    fun resolveEffectiveBackdropFilter(impl: SwingBaseNativeImpl, spec: StyledVisualSpec): CssFilter? {
+        val attrFilterRaw = impl.getAttribute("backdrop-filter")
+            ?: impl.getAttribute("-webkit-backdrop-filter")
+            ?: impl.getAttribute("backdropFilter")
+        val attrFilter = attrFilterRaw?.let { CssFilter.parse(it) }
+        val attrBlurPx = impl.getAttribute("backdropBlurPx")?.toFloatOrNull()
+        val effectiveFilter = attrFilter ?: spec.backdropFilter
+        val effectiveBlurPx = attrBlurPx ?: spec.backdropBlurPx
+        return CssFilter.backdropBlurOrFilter(effectiveBlurPx, effectiveFilter)
+    }
+
+    fun resolveStateVisuals(
+        computedBase: StyledVisualSpec,
+        baseVisuals: StyledVisualSpec,
+        computedStyle: ComputedStyle?,
+        isEnabled: Boolean,
+        hovered: Boolean,
+        focused: Boolean,
+        activePressed: Boolean,
+        hoverVisuals: StyledVisualSpec? = null,
+        focusVisuals: StyledVisualSpec? = null,
+        activeVisuals: StyledVisualSpec? = null,
+        disabledVisuals: StyledVisualSpec? = null
+    ): StyledVisualSpec {
+        var effective = computedBase.mergeWith(baseVisuals)
+        if (!isEnabled) {
+            val computedDisabled = computedStyle?.disabledStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            return effective.mergeWith(computedDisabled).mergeWith(disabledVisuals)
+        }
+        if (hovered) {
+            val computedHover = computedStyle?.hoverStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(computedHover).mergeWith(hoverVisuals)
+        }
+        if (focused) {
+            val computedFocus = computedStyle?.focusStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(computedFocus).mergeWith(focusVisuals)
+        }
+        if (activePressed) {
+            val computedActive = computedStyle?.activeStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(computedActive).mergeWith(activeVisuals)
+        }
+        return effective
+    }
+
     fun paintBackdropWithOpacity(
         g: Graphics,
         target: JComponent,
         filter: CssFilter,
         cornerRadiusPx: Float,
-        componentOpacity: Float
+        componentOpacity: Float,
+        cornerRadii: CssCornerRadii? = null
     ) {
         val alpha = componentOpacity.coerceIn(0f, 1f)
         if (alpha <= OPACITY_SKIP_THRESHOLD || target.width <= 0 || target.height <= 0) return
@@ -281,12 +397,12 @@ internal object SwingSurfacePaintUtil {
                 if (alpha < 0.999f) {
                     blurG2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha)
                 }
-                SwingHardwareBackdropBlurRenderer.paintBackdrop(blurG2, target, filter, cornerRadiusPx)
+                SwingHardwareBackdropBlurRenderer.paintBackdrop(blurG2, target, filter, cornerRadiusPx, cornerRadii)
             } finally {
                 blurG2.dispose()
             }
         } else {
-            SwingHardwareBackdropBlurRenderer.paintBackdrop(g, target, filter, cornerRadiusPx)
+            SwingHardwareBackdropBlurRenderer.paintBackdrop(g, target, filter, cornerRadiusPx, cornerRadii)
         }
     }
 
@@ -390,7 +506,8 @@ internal object SwingSurfacePaintUtil {
         height: Int,
         spec: StyledVisualSpec,
         isFocused: Boolean = false,
-        componentOpacity: Float = 1f
+        componentOpacity: Float = 1f,
+        cornerRadii: CssCornerRadii? = null
     ) {
         if (width <= 0 || height <= 0) return
         val g2 = g.create() as Graphics2D
@@ -403,17 +520,10 @@ internal object SwingSurfacePaintUtil {
             if (op < 0.999f) {
                 g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, op)
             }
-            val shapeW = (width - 1).coerceAtLeast(1).toFloat()
-            val shapeH = (height - 1).coerceAtLeast(1).toFloat()
-            val arc = ((spec.borderRadiusPx ?: 0f) * 2f).coerceIn(0f, minOf(shapeW, shapeH))
-            val shape = RoundRectangle2D.Float(
-                0.5f,
-                0.5f,
-                shapeW,
-                shapeH,
-                arc,
-                arc
-            )
+            val sw = (width - 1).coerceAtLeast(1).toFloat()
+            val sh = (height - 1).coerceAtLeast(1).toFloat()
+            val radii = resolveClampedCornerRadii(cornerRadii, spec.borderRadiusPx, sw, sh)
+            val shape = buildRoundedRectShape(0.5f, 0.5f, sw, sh, radii)
 
             val grad = spec.backgroundGradient
             val bg = spec.backgroundColor
@@ -461,14 +571,14 @@ internal object SwingSurfacePaintUtil {
                 g2.stroke = BasicStroke(ringW)
                 val ringBoxW = (width - 3).coerceAtLeast(1).toFloat()
                 val ringBoxH = (height - 3).coerceAtLeast(1).toFloat()
-                val ringArc = minOf(arc, ringBoxW, ringBoxH)
-                val ringShape = RoundRectangle2D.Float(
+                val ringMaxRadius = minOf(ringBoxW, ringBoxH) * 0.5f
+                val ringRadii = FloatArray(4) { i -> minOf((radii[i] - 1f).coerceAtLeast(0f), ringMaxRadius) }
+                val ringShape = buildRoundedRectShape(
                     1.5f,
                     1.5f,
                     ringBoxW,
                     ringBoxH,
-                    ringArc,
-                    ringArc
+                    ringRadii
                 )
                 g2.draw(ringShape)
             }

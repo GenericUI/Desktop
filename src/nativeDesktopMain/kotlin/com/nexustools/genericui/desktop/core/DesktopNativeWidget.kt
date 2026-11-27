@@ -763,6 +763,7 @@ open class DesktopNativeWidget(
                 ++globalNonOverlayMutationVersion
             }
             onNativeTreeInvalidated?.invoke()
+            onNativeTreeInvalidatedWidget?.invoke(this)
         }
     }
 
@@ -778,6 +779,7 @@ open class DesktopNativeWidget(
         val suppressTreeVersionBumpCount: kotlin.concurrent.AtomicInt = kotlin.concurrent.AtomicInt(0)
         var activeViewportScrollHost: DesktopNativeWidget? = null
         var onNativeTreeInvalidated: (() -> Unit)? = null
+        var onNativeTreeInvalidatedWidget: ((DesktopNativeWidget) -> Unit)? = null
         var onCursorUpdated: (() -> Unit)? = null
         var overlayInvalidationListener: ((DesktopNativeWidget) -> Unit)? = null
         var overlayLayoutInvalidationListener: ((DesktopNativeWidget) -> Unit)? = null

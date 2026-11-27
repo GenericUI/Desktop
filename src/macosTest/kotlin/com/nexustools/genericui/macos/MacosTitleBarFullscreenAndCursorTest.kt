@@ -75,11 +75,7 @@ import platform.AppKit.NSTrackingActiveAlways
 import platform.AppKit.NSTrackingActiveInKeyWindow
 import platform.AppKit.NSTrackingArea
 import platform.AppKit.NSView
-import platform.AppKit.NSVisualEffectBlendingMode
-import platform.AppKit.NSVisualEffectMaterialHUDWindow
-import platform.AppKit.NSVisualEffectMaterialHeaderView
-import platform.AppKit.NSVisualEffectMaterialPopover
-import platform.AppKit.NSVisualEffectState
+import platform.AppKit.NSVisualEffectView
 import platform.AppKit.NSWindowCloseButton
 import platform.AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
 import platform.AppKit.NSWindowCollectionBehaviorFullScreenNone
@@ -569,26 +565,17 @@ class MacosTitleBarFullscreenAndCursorTest {
         val regView = assertNotNull((regularBlurred.ensureNativeImpl()!!.nativeWidget as MacosViewHandle).nsView as? MacosStyledContainerView)
         val barView = assertNotNull((titleBarBlurred.ensureNativeImpl()!!.nativeWidget as MacosViewHandle).nsView as? MacosStyledContainerView)
 
-        val regVev = assertNotNull(regView.surfaceSupport.visualEffectView, "Pure blur(18px) must use live NSVisualEffectView")
-        assertNull(regView.surfaceSupport.backdropUnderlayView)
-        assertEquals(NSVisualEffectBlendingMode.NSVisualEffectBlendingModeWithinWindow, regVev.blendingMode)
-        assertEquals(NSVisualEffectState.NSVisualEffectStateActive, regVev.state)
-        assertEquals(NSVisualEffectMaterialHeaderView, regVev.material)
-        assertEquals(NSAppearanceNameDarkAqua, regVev.appearance?.name)
-
-        val barVev = assertNotNull(barView.surfaceSupport.visualEffectView, "Titlebar blur(18px) must use live NSVisualEffectView")
-        assertNull(barView.surfaceSupport.backdropUnderlayView)
-        assertEquals(NSVisualEffectBlendingMode.NSVisualEffectBlendingModeWithinWindow, barVev.blendingMode)
-        assertEquals(NSVisualEffectState.NSVisualEffectStateActive, barVev.state)
-        assertEquals(NSVisualEffectMaterialHUDWindow, barVev.material)
-        assertTrue(barVev.alphaValue in 0.30..0.85, "Translucent overlay titlebar VEV alpha must be tuned in 0.30..0.85, got ${barVev.alphaValue}")
-        assertEquals(NSAppearanceNameDarkAqua, barVev.appearance?.name)
+        assertTrue(regView.subviews.none { it is NSVisualEffectView }, "Pure blur(18px) must not mount NSVisualEffectView")
+        assertTrue(barView.subviews.none { it is NSVisualEffectView }, "Titlebar blur(18px) must not mount NSVisualEffectView")
+        assertNotNull(regView.surfaceSupport.backdropUnderlayView, "Pure blur(18px) must use CoreImage backdropUnderlayView")
+        assertNotNull(barView.surfaceSupport.backdropUnderlayView, "Titlebar blur(18px) must use CoreImage backdropUnderlayView")
+        assertNotNull(regView.surfaceSupport.tintOverlayView)
+        assertNotNull(barView.surfaceSupport.tintOverlayView)
 
         MacosNativeWindowHost.syncThemeAppearance(ThemeMode.LIGHT)
         MacosNativeWindowHost.pumpVisualWindowEvents(48L)
-        assertEquals(NSAppearanceNameAqua, regVev.appearance?.name)
-        assertEquals(NSAppearanceNameAqua, barVev.appearance?.name)
-        assertEquals(NSVisualEffectMaterialPopover, barVev.material)
+        assertNotNull(regView.surfaceSupport.backdropUnderlayView)
+        assertNotNull(barView.surfaceSupport.backdropUnderlayView)
 
         window.close()
     }

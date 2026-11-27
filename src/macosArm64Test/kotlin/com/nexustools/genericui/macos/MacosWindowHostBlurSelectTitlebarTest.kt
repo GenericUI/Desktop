@@ -1199,7 +1199,7 @@ class MacosWindowHostBlurSelectTitlebarTest {
             try {
                 val winImpl = win.nativeImpl as MacosWindowNativeImpl
                 assertEquals(false, winImpl.nativeWidget.attributes["showWindowIcon"])
-                val nsWin = MacosNativeWindowHost.windowSessionNsWindowForTest(winImpl)
+                val nsWin = MacosNativeWindowHost.windowSessionForTest(winImpl)?.nsWindow
                 nsWin?.standardWindowButton(platform.AppKit.NSWindowDocumentIconButton)?.let { docBtn ->
                     assertTrue(docBtn.isHidden())
                 }

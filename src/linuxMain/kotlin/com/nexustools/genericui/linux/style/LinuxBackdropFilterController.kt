@@ -12,6 +12,7 @@ import kotlinx.cinterop.plus
 import kotlinx.cinterop.usePinned
 import platform.posix.memcpy
 import kotlin.concurrent.atomics.AtomicReference
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.max
 
@@ -96,17 +97,11 @@ class LinuxBackdropFilterController {
         val clippedH = y1 - y0
         if (clippedW <= 0 || clippedH <= 0) return false
 
-        val blurPx = if (filter.hasBlur) (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, MAX_BLUR_RADIUS_PX) else 0f
-        val blurPad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 32) else 0
-        val shadow = filter.dropShadow?.takeIf { filter.hasDropShadow }
-        val shadowBlurPx = if (shadow != null) (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, MAX_BLUR_RADIUS_PX) else 0f
-        val shadowOffX = shadow?.offsetX?.resolvePx() ?: 0f
-        val shadowOffY = shadow?.offsetY?.resolvePx() ?: 0f
-        val shadowBlurPad = if (shadow != null && shadowBlurPx > 0f) ceil(shadowBlurPx * 1.5f).toInt().coerceIn(1, 32) else 0
-        val padLeft = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, shadowOffX)).toInt().coerceAtMost(64)) else blurPad
-        val padRight = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, -shadowOffX)).toInt().coerceAtMost(64)) else blurPad
-        val padTop = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, shadowOffY)).toInt().coerceAtMost(64)) else blurPad
-        val padBottom = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, -shadowOffY)).toInt().coerceAtMost(64)) else blurPad
+        val pads = computeHaloPadding(filter)
+        val padLeft = pads[0]
+        val padTop = pads[1]
+        val padRight = pads[2]
+        val padBottom = pads[3]
 
         val capX0 = (x0 - padLeft).coerceAtLeast(0)
         val capY0 = (y0 - padTop).coerceAtLeast(0)
@@ -166,6 +161,27 @@ class LinuxBackdropFilterController {
         private const val MAX_BLUR_RADIUS_PX = 48f
 
         val shared: LinuxBackdropFilterController = LinuxBackdropFilterController()
+
+        /**
+         * Computes `[padLeft, padTop, padRight, padBottom]` halo capture padding in pixels for
+         * [filter], accounting for `blur * 1.5f` and `drop-shadow` offset + blur halo + spread.
+         */
+        fun computeHaloPadding(filter: CssFilter?): IntArray {
+            if (filter == null || filter.isNone || !filter.hasActiveEffects) return intArrayOf(0, 0, 0, 0)
+            val blurPx = if (filter.hasBlur) (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, MAX_BLUR_RADIUS_PX) else 0f
+            val blurPad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 72) else 0
+            val shadow = filter.dropShadow?.takeIf { filter.hasDropShadow }
+            val shadowBlurPx = if (shadow != null) (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, MAX_BLUR_RADIUS_PX) else 0f
+            val shadowOffX = shadow?.offsetX?.resolvePx() ?: 0f
+            val shadowOffY = shadow?.offsetY?.resolvePx() ?: 0f
+            val shadowSpread = abs(shadow?.spreadRadius?.resolvePx() ?: 0f)
+            val shadowBlurPad = if (shadow != null && shadowBlurPx > 0f) ceil(shadowBlurPx * 1.5f).toInt().coerceIn(1, 72) else 0
+            val padLeft = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, shadowOffX) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+            val padRight = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, -shadowOffX) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+            val padTop = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, shadowOffY) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+            val padBottom = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, -shadowOffY) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+            return intArrayOf(padLeft, padTop, padRight, padBottom)
+        }
 
         private val scratchPool = Array<AtomicReference<IntArray?>>(SCRATCH_POOL_SIZE) {
             AtomicReference(null)

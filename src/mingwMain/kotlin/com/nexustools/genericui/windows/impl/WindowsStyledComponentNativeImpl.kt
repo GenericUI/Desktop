@@ -66,6 +66,11 @@ class WindowsStyledComponentNativeImpl(
         Win32RetainedControlSupport.onZIndexChanged(nativeWidget, zIndex)
     }
 
+    override fun setAttribute(name: String, value: String?) {
+        super.setAttribute(name, value)
+        Win32RetainedControlSupport.handleStyledAttributeUpdate(nativeWidget, name)
+    }
+
     override fun onNativeStyleSynced() {
         Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = true)
         nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }

@@ -803,6 +803,8 @@ open class SwingBaseNativeImpl(
         }
     }
 
+    internal fun getAttribute(name: String): String? = attributesMap[name]
+
     override fun setAttribute(name: String, value: String?) {
         if (value == null) {
             attributesMap.remove(name)

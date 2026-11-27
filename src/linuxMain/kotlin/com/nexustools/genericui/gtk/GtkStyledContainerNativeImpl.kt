@@ -50,31 +50,86 @@ open class GtkStyledContainerNativeImpl(
             }
         }
         val dark = GtkRetainedContainerSupport.resolveDarkTheme()
-        val visuals = getStyledVisuals()
+        val visuals = resolveCurrentVisuals()
         val computed = getComputedStyle()
-        val paintSpec = GtkSurfaceRenderHelper.fromStyledVisualSpec(
-            spec = visuals,
-            cornerRadii = computed?.borderRadius,
-            backdropFilter = nativeWidget.attributes["backdropFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.backdropFilter,
-            foregroundFilter = nativeWidget.attributes["cssFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.filter,
-            opacity = getOpacity(),
-            darkTheme = dark
-        )
-        val hasBackdrop = GtkSurfaceRenderHelper.effectiveBackdropFilter(paintSpec)?.let {
-            LinuxBackdropFilterController.shared.hasActiveEffects(it)
-        } == true
-        val behindCapture: (() -> IntArray?)? = if (hasBackdrop) {
-            { GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(this, width, height) }
-        } else {
-            null
-        }
-        GtkSurfaceRenderHelper.paintSurface(
+        GtkSurfaceRenderHelper.paintStyledWidgetSurface(
+            impl = this,
             cr = cr,
             width = width,
             height = height,
-            spec = paintSpec,
-            behindBgraCapture = behindCapture
+            visuals = visuals,
+            cornerRadii = computed?.borderRadius,
+            opacity = visuals.opacity ?: getOpacity(),
+            focused = isFocusedState(),
+            darkTheme = dark
         )
+    }
+
+    private fun resolveCurrentVisuals(): StyledVisualSpec {
+        var effective = getStyledVisuals()
+        val computed = getComputedStyle()
+        if (!isEnabled()) {
+            val dis = computed?.disabledStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            return effective.mergeWith(dis)
+        }
+        if (isHoveredState()) {
+            val hov = computed?.hoverStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(hov)
+        }
+        if (isFocusedState()) {
+            val foc = computed?.focusStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(foc)
+        }
+        if (isActivePressedState()) {
+            val act = computed?.activeStyle?.let { StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(act)
+        }
+        return effective
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        super.setAttribute(name, value)
+        GtkWidgetLifecycleBridge.handleStyledBackdropAttribute(this, name, value)
+    }
+
+    override fun setHoveredState(hovered: Boolean) {
+        val prev = isHoveredState()
+        super.setHoveredState(hovered)
+        if (prev != isHoveredState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.backgroundSurfacePtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+            nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+        }
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        val prev = isFocusedState()
+        super.setFocusedState(focused)
+        if (prev != isFocusedState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.backgroundSurfacePtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+            nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+        }
+    }
+
+    override fun setActivePressedState(active: Boolean) {
+        val prev = isActivePressedState()
+        super.setActivePressedState(active)
+        if (prev != isActivePressedState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.backgroundSurfacePtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+            nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+        }
+    }
+
+    override fun setEnabled(enabled: Boolean) {
+        val prev = isEnabled()
+        super.setEnabled(enabled)
+        if (prev != isEnabled()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.backgroundSurfacePtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+            nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+        }
     }
 
     override fun onChildAddedNative(childImpl: NativeImpl<*>, index: Int) {

@@ -10,8 +10,10 @@ import com.nexustools.genericui.macos.MacosAppKitDispatch
 import com.nexustools.genericui.macos.MacosFocusSupport
 import com.nexustools.genericui.macos.MacosControlActionTarget
 import com.nexustools.genericui.macos.MacosViewHandle
+import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.style.css.CssTransform
+import com.nexustools.genericui.style.mapper.BootstrapStyleSnapshot
 import kotlinx.cinterop.useContents
 import platform.AppKit.NSComboBox
 import platform.AppKit.NSComboBoxDelegateProtocol
@@ -19,6 +21,7 @@ import platform.AppKit.NSControlSizeLarge
 import platform.AppKit.NSControlSizeRegular
 import platform.AppKit.NSControlSizeSmall
 import platform.AppKit.NSPopUpButton
+import platform.AppKit.NSView
 import platform.AppKit.alignmentRectForFrame
 import platform.AppKit.fittingSize
 import platform.Foundation.NSMakeRect
@@ -85,6 +88,15 @@ class MacosSelectNativeImpl(
 
     private var popUpButton: NSPopUpButton? = null
     private var comboBox: NSComboBox? = null
+    private var cachedMeasureView: NSView? = null
+    private var cachedMeasureOptions: List<Pair<String, String>>? = null
+    private var cachedMeasureSelectedVal: String? = null
+    private var cachedMeasureComboVariant: Boolean = false
+    private var cachedMeasureComputed: ComputedStyle? = null
+    private var cachedMeasureSnapshot: BootstrapStyleSnapshot? = null
+    private var cachedMeasureMaxW: Float? = null
+    private var cachedMeasureMaxH: Float? = null
+    private var cachedMeasureSize: Size? = null
 
     init {
         nativeWidget.viewMaterializer = {
@@ -104,6 +116,7 @@ class MacosSelectNativeImpl(
 
     private fun mountActiveSelectView() {
         val wantCombo = isComboBoxVariant()
+        cachedMeasureSize = null
         nativeWidget.attributes["usesAppKitAlignmentRect"] = true
         if (wantCombo) {
             val cb = NSComboBox(frame = NSMakeRect(0.0, 0.0, 160.0, 28.0)).apply {
@@ -191,6 +204,7 @@ class MacosSelectNativeImpl(
             return
         }
         val wantCombo = isComboBoxVariant()
+        cachedMeasureSize = null
         nativeWidget.attributes["usesAppKitAlignmentRect"] = true
         if (wantCombo && comboBox == null) {
             val oldView = popUpButton
@@ -218,23 +232,50 @@ class MacosSelectNativeImpl(
 
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size {
         val view = (popUpButton ?: comboBox)
-        if (view != null) {
+        val isCombo = isComboBoxVariant()
+        val cached = cachedMeasureSize
+        if (cached != null &&
+            cachedMeasureView === view &&
+            cachedMeasureComboVariant == isCombo &&
+            cachedMeasureOptions == optionsList &&
+            cachedMeasureSelectedVal == selectedVal &&
+            cachedMeasureComputed === lastComputedStyle &&
+            cachedMeasureSnapshot == styleSnapshot &&
+            cachedMeasureMaxW == maxWidth &&
+            cachedMeasureMaxH == maxHeight
+        ) {
+            return cached
+        }
+        val measured = if (view != null) {
             syncAll()
             val fit = view.fittingSize()
             val aligned = view.alignmentRectForFrame(fit.useContents { NSMakeRect(0.0, 0.0, width, height) })
-            return aligned.useContents {
+            aligned.useContents {
                 Size(ceil(size.width).toInt().coerceAtLeast(110), ceil(size.height).toInt().coerceAtLeast(26))
             }
+        } else {
+            Size(140, 28)
         }
-        return Size(140, 28)
+        cachedMeasureView = view
+        cachedMeasureOptions = optionsList.toList()
+        cachedMeasureSelectedVal = selectedVal
+        cachedMeasureComboVariant = isCombo
+        cachedMeasureComputed = lastComputedStyle
+        cachedMeasureSnapshot = styleSnapshot
+        cachedMeasureMaxW = maxWidth
+        cachedMeasureMaxH = maxHeight
+        cachedMeasureSize = measured
+        return measured
     }
 
     override fun setOptions(options: List<Pair<String, String>>) {
+        cachedMeasureSize = null
         super.setOptions(options)
         syncAll()
     }
 
     override fun setSelectedValue(value: String?) {
+        cachedMeasureSize = null
         super.setSelectedValue(value)
         syncAll()
     }
@@ -285,6 +326,7 @@ class MacosSelectNativeImpl(
     }
 
     override fun onNativeStyleSynced() {
+        cachedMeasureSize = null
         syncAll()
     }
 

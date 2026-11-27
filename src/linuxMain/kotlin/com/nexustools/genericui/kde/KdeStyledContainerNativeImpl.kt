@@ -58,8 +58,36 @@ open class KdeStyledContainerNativeImpl(
             impl = this,
             hookMask = KdeVTableBridge.HOOK_PAINT or KdeVTableBridge.HOOK_RESIZE,
             dispatchLeftClickOnRelease = true,
-            onPaint = { wPtr, painter, w, h -> paintStyledContainer(wPtr, painter, w, h) }
+            onPaint = { wPtr, painter, w, h -> paintStyledContainer(wPtr, painter, w, h) },
+            onHoverChanged = { h -> setHoveredState(h); nativeWidget.requestRepaint() },
+            onPressedChanged = { p -> setActivePressedState(p); nativeWidget.requestRepaint() }
         )
+        KdeVTableBridge.attachWidgetHooks(ptr, KdeVTableBridge.HOOK_INPUT) {
+            onFocusIn = { _ -> setFocusedState(true); nativeWidget.requestRepaint() }
+            onFocusOut = { _ -> setFocusedState(false); nativeWidget.requestRepaint() }
+        }
+    }
+
+    private fun resolveCurrentVisuals(): com.nexustools.genericui.style.css.StyledVisualSpec {
+        var effective = getStyledVisuals()
+        val computed = getComputedStyle()
+        if (!isEnabled()) {
+            val dis = computed?.disabledStyle?.let { com.nexustools.genericui.style.css.StyledVisualSpec.fromComputedStyle(it) }
+            return effective.mergeWith(dis)
+        }
+        if (isHoveredState()) {
+            val hov = computed?.hoverStyle?.let { com.nexustools.genericui.style.css.StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(hov)
+        }
+        if (isFocusedState()) {
+            val foc = computed?.focusStyle?.let { com.nexustools.genericui.style.css.StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(foc)
+        }
+        if (isActivePressedState()) {
+            val act = computed?.activeStyle?.let { com.nexustools.genericui.style.css.StyledVisualSpec.fromComputedStyle(it) }
+            effective = effective.mergeWith(act)
+        }
+        return effective
     }
 
     private fun paintStyledContainer(widgetPtr: COpaquePointer, painter: COpaquePointer, w: Int, h: Int) {
@@ -68,9 +96,9 @@ open class KdeStyledContainerNativeImpl(
                 return
             }
         }
-        val visuals = getStyledVisuals()
+        val visuals = resolveCurrentVisuals()
         val computed = getComputedStyle()
-        val backdrop = nativeWidget.attributes["backdropFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.backdropFilter
+        val backdrop = KdePainterSupport.resolveWidgetBackdropFilter(nativeWidget, visuals)
         val grad = visuals.backgroundGradient ?: (nativeWidget.attributes["backgroundGradient"] as? Gradient)
 
         KdePainterSupport.paintStyledSurface(
@@ -82,9 +110,52 @@ open class KdeStyledContainerNativeImpl(
             radii = computed?.borderRadius,
             gradientOverride = grad,
             backdropFilterOverride = backdrop,
-            focused = false,
-            opacity = getOpacity()
+            focused = isFocusedState(),
+            opacity = visuals.opacity ?: getOpacity(),
+            isPressed = isActivePressedState(),
+            isHovered = isHoveredState()
         )
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        super.setAttribute(name, value)
+        KdePainterSupport.handleStyledBackdropAttribute(this, name, value)
+    }
+
+    override fun setHoveredState(hovered: Boolean) {
+        val prev = isHoveredState()
+        super.setHoveredState(hovered)
+        if (prev != isHoveredState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.requestRepaint()
+        }
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        val prev = isFocusedState()
+        super.setFocusedState(focused)
+        if (prev != isFocusedState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.requestRepaint()
+        }
+    }
+
+    override fun setActivePressedState(active: Boolean) {
+        val prev = isActivePressedState()
+        super.setActivePressedState(active)
+        if (prev != isActivePressedState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.requestRepaint()
+        }
+    }
+
+    override fun setEnabled(enabled: Boolean) {
+        val prev = isEnabled()
+        super.setEnabled(enabled)
+        if (prev != isEnabled()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.requestRepaint()
+        }
     }
 
     override fun measureIntrinsicSize(maxWidth: Float?, maxHeight: Float?): Size =

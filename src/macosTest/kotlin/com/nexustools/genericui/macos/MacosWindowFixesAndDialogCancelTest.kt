@@ -2,14 +2,22 @@
 
 package com.nexustools.genericui.macos
 
+import com.nexustools.genericui.animation.Animator
 import com.nexustools.genericui.component.action.Button
 import com.nexustools.genericui.component.dialog.DialogWindow
+import com.nexustools.genericui.component.form.Select
+import com.nexustools.genericui.component.form.SelectOption
+import com.nexustools.genericui.component.fragment.Fragment
+import com.nexustools.genericui.component.fragment.FragmentContainer
 import com.nexustools.genericui.component.layout.Container
 import com.nexustools.genericui.component.layout.HStack
+import com.nexustools.genericui.component.layout.ScrollView
+import com.nexustools.genericui.component.layout.VStack
 import com.nexustools.genericui.component.layout.styled.StyledContainer
 import com.nexustools.genericui.component.shell.Application
 import com.nexustools.genericui.component.shell.Window
 import com.nexustools.genericui.component.typography.Badge
+import com.nexustools.genericui.component.typography.Text
 import com.nexustools.genericui.core.GenericUI
 import com.nexustools.genericui.desktop.core.DesktopInteractiveSurfaceSpec
 import com.nexustools.genericui.desktop.core.DesktopNativeWidget
@@ -23,11 +31,20 @@ import com.nexustools.genericui.enums.window.WindowState
 import com.nexustools.genericui.geometry.Size
 import com.nexustools.genericui.macos.impl.MacosBadgeView
 import com.nexustools.genericui.macos.impl.MacosTextNativeImpl
+import com.nexustools.genericui.nativeimpl.system.DefaultAnimationNativeImpl
 import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.style.css.ComputedStyle
 import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.CssLength
+import com.nexustools.genericui.style.css.CssStyleSheet
+import com.nexustools.genericui.system.style.BlinkStyleEngine
+import com.nexustools.genericui.system.style.SystemCssAnimationController
 import com.nexustools.genericui.threading.GenericUiThreading
+import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.allocArray
+import kotlinx.cinterop.free
+import kotlinx.cinterop.nativeHeap
+import kotlinx.cinterop.set
 import kotlinx.cinterop.useContents
 import platform.AppKit.NSButton
 import platform.AppKit.NSCursor
@@ -38,9 +55,12 @@ import platform.AppKit.NSEventTypeMouseMoved
 import platform.AppKit.NSKernAttributeName
 import platform.AppKit.NSParagraphStyle
 import platform.AppKit.NSParagraphStyleAttributeName
+import platform.AppKit.NSPanel
+import platform.AppKit.NSPopUpButton
 import platform.AppKit.NSScreen
-import platform.AppKit.NSVisualEffectMaterialHUDWindow
-import platform.AppKit.NSVisualEffectMaterialTitlebar
+import platform.AppKit.NSScrollView
+import platform.AppKit.NSView
+import platform.AppKit.NSVisualEffectView
 import platform.AppKit.NSWindowCloseButton
 import platform.AppKit.NSWindowMiniaturizeButton
 import platform.AppKit.NSWindowStyleMaskFullScreen
@@ -600,6 +620,13 @@ class MacosWindowFixesAndDialogCancelTest {
             backgroundColor = RgbaColor(20, 20, 24, 94)
             backdropFilter = blurFilter
         }
+        val higherOpacityTitleBar = StyledContainer().apply {
+            setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_WINDOW_TITLE_BAR)
+            style.setWidth(CssLength.px(240f))
+            style.setHeight(CssLength.px(32f))
+            backgroundColor = RgbaColor(16, 18, 24, 173)
+            backdropFilter = blurFilter
+        }
         val uncoloredTitleBar = StyledContainer().apply {
             setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_WINDOW_TITLE_BAR)
             style.setWidth(CssLength.px(240f))
@@ -609,6 +636,7 @@ class MacosWindowFixesAndDialogCancelTest {
         val window = Window(title = "Vibrancy Alpha", initialSize = Size(320, 140)).apply {
             setContent(Container().apply {
                 addChild(translucentTitleBar)
+                addChild(higherOpacityTitleBar)
                 addChild(uncoloredTitleBar)
             })
         }
@@ -617,15 +645,24 @@ class MacosWindowFixesAndDialogCancelTest {
         MacosNativeWindowHost.pumpVisualWindowEvents(48L)
 
         val transView = assertNotNull((translucentTitleBar.ensureNativeImpl()!!.nativeWidget as MacosViewHandle).nsView as? MacosStyledContainerView)
+        val higherView = assertNotNull((higherOpacityTitleBar.ensureNativeImpl()!!.nativeWidget as MacosViewHandle).nsView as? MacosStyledContainerView)
         val uncoloredView = assertNotNull((uncoloredTitleBar.ensureNativeImpl()!!.nativeWidget as MacosViewHandle).nsView as? MacosStyledContainerView)
 
-        val transVev = assertNotNull(transView.surfaceSupport.visualEffectView)
-        val uncoloredVev = assertNotNull(uncoloredView.surfaceSupport.visualEffectView)
+        assertTrue(transView.subviews.none { it is NSVisualEffectView })
+        assertTrue(higherView.subviews.none { it is NSVisualEffectView })
+        assertTrue(uncoloredView.subviews.none { it is NSVisualEffectView })
 
-        assertEquals(NSVisualEffectMaterialHUDWindow, transVev.material)
-        assertEquals(NSVisualEffectMaterialHUDWindow, uncoloredVev.material)
-        assertTrue(transVev.alphaValue in 0.45..0.65, "Translucent overlay titlebar VEV alpha must scale down (~0.52), got ${transVev.alphaValue}")
-        assertEquals(1.0, uncoloredVev.alphaValue, 1e-4, "Uncolored VEV alpha must stay 1.0")
+        assertNotNull(transView.surfaceSupport.backdropUnderlayView)
+        assertNotNull(higherView.surfaceSupport.backdropUnderlayView)
+        assertNotNull(uncoloredView.surfaceSupport.backdropUnderlayView)
+
+        assertNotNull(transView.surfaceSupport.tintOverlayView)
+        assertNotNull(higherView.surfaceSupport.tintOverlayView)
+        assertNotNull(uncoloredView.surfaceSupport.tintOverlayView)
+
+        assertEquals(RgbaColor(20, 20, 24, 94), transView.surfaceSupport.activeSurfaceSpec.backgroundColor)
+        assertEquals(RgbaColor(16, 18, 24, 173), higherView.surfaceSupport.activeSurfaceSpec.backgroundColor)
+        assertNull(uncoloredView.surfaceSupport.activeSurfaceSpec.backgroundColor)
 
         window.close()
     }
@@ -887,6 +924,415 @@ class MacosWindowFixesAndDialogCancelTest {
 
         } finally {
             window.close()
+        }
+    }
+
+    @Test
+    fun macosInteractiveSurfaceUsesIoSurfaceWithoutPerFrameCgImageAndSkipsRedundantStageRedrawCapture() = withInteractiveMacosHost { factory ->
+        val srcW = 64
+        val srcH = 36
+        val byteSize = srcW * srcH * 4
+        val rawPtr = nativeHeap.allocArray<ByteVar>(byteSize)
+        var swap = 0L
+        var acquireCalls = 0
+
+        val stageContainer = Container().apply {
+            getStyle().apply {
+                setWidth(CssLength.PERCENT_100)
+                setHeight(CssLength.PERCENT_100)
+            }
+        }
+        val window = Window(title = "IOSurface Video Path", initialSize = Size(320, 180)).apply {
+            setUndecorated(true)
+            setContent(stageContainer)
+        }
+        try {
+            // Fill BGRA with 0 alpha to verify ignoreAlpha forces opaque alpha=0xFF in IOSurface
+            for (i in 0 until (srcW * srcH)) {
+                val off = i * 4
+                rawPtr[off] = 240.toByte()     // B
+                rawPtr[off + 1] = 100.toByte() // G
+                rawPtr[off + 2] = 30.toByte()  // R
+                rawPtr[off + 3] = 0.toByte()   // A
+            }
+
+            window.show(factory)
+            MacosNativeWindowHost.pumpVisualWindowEvents(24L)
+
+            val winImpl = window.ensureNativeImpl() as MacosWindowNativeImpl
+            val stageNative = stageContainer.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+            DesktopInteractiveSurfaceSpec(
+                surfaceWidth = { srcW },
+                surfaceHeight = { srcH },
+                swapCount = { swap },
+                acquireBgraPtr = {
+                    if (swap <= 0L) {
+                        Pair(null, 0)
+                    } else {
+                        acquireCalls++
+                        rawPtr to byteSize
+                    }
+                },
+                suppressDefaultBorder = true,
+                contentFitMode = { ObjectFit.CONTAIN },
+                contentAspectRatio = { 16f / 9f }
+            ).attachTo(stageNative)
+            DesktopNativeWidget.globalLayoutMutationVersion++
+            MacosNativeWindowHost.invalidateAllWindows(stageOnly = false)
+            MacosNativeWindowHost.forceSynchronousPaint(stageOnly = false)
+            MacosNativeWindowHost.pumpVisualWindowEvents(24L)
+
+            val surfaceView = assertNotNull(
+                (stageNative as MacosViewHandle).nsView
+                    ?.subviews
+                    ?.filterIsInstance<MacosInteractiveSurfaceView>()
+                    ?.firstOrNull(),
+                "Expected retained MacosInteractiveSurfaceView mounted on stage container"
+            )
+
+            // Initial upload + advance across multiple swaps to exercise ring reuse
+            swap = 1L
+            assertTrue(surfaceView.presentLatestFrame(forceRefresh = false))
+            assertTrue(surfaceView.activeSlotUsesIoSurface, "Live frame presentation must use IOSurface backing")
+            assertEquals(0, surfaceView.cgImageBuildCount, "Live IOSurface upload must not build a CGImage")
+
+            for (nextSwap in 2L..7L) {
+                swap = nextSwap
+                assertTrue(surfaceView.presentLatestFrame(forceRefresh = false))
+            }
+            assertEquals(7, acquireCalls)
+            assertEquals(3, surfaceView.ringAllocationCount, "3-slot IOSurface ring must allocate at most 3 surfaces")
+            assertTrue(surfaceView.ringSlotReuseCount >= 4, "3-slot IOSurface ring must reuse surfaces after warmup")
+            assertEquals(0, surfaceView.cgImageBuildCount, "Presenting 7 frames via IOSurface must build 0 CGImages")
+
+            // Steady-state calls at unchanged swapCount and bounds must skip both capture and CATransaction bounds sync
+            val commitsBeforeSteady = surfaceView.layerBoundsSyncCommitCount
+            repeat(5) {
+                assertFalse(surfaceView.presentLatestFrame(forceRefresh = false))
+            }
+            assertEquals(7, acquireCalls, "Unchanged swapCount must skip duplicate acquireBgraPtr calls")
+            assertEquals(commitsBeforeSteady, surfaceView.layerBoundsSyncCommitCount, "Unchanged geometry must skip layer bounds CATransaction")
+
+            // requestStageRedraw() (triggered by HUD progress ticks) must NOT re-capture unchanged swapCount
+            MacosNativeWindowHost.requestStageRedraw()
+            MacosNativeWindowHost.pumpVisualWindowEvents(32L)
+            assertEquals(7, acquireCalls, "Stage-only overlay redraws must not force re-capturing unchanged video frames")
+
+            // Lazy CGImage snapshot path (used by screenshots) must render opaque blue pixels from the active IOSurface
+            val lazyCg = assertNotNull(surfaceView.currentCgImage(), "Expected lazy CGImage generation from active IOSurface")
+            assertEquals(srcW.toULong(), platform.CoreGraphics.CGImageGetWidth(lazyCg))
+            assertEquals(1, surfaceView.cgImageBuildCount)
+
+            val shot = assertNotNull(MacosNativeWindowHost.captureWindowScreenshot(winImpl, 320, 180))
+            val off = (90 * shot.width + 160) * 4
+            val r = shot.bytes[off].toInt() and 0xFF
+            val g = shot.bytes[off + 1].toInt() and 0xFF
+            val b = shot.bytes[off + 2].toInt() and 0xFF
+            val a = shot.bytes[off + 3].toInt() and 0xFF
+            assertTrue(r in 15..55 && g in 80..120 && b >= 220 && a == 255, "Screenshot from IOSurface must preserve RGB and opaque alpha, got ($r, $g, $b, $a)")
+        } finally {
+            window.close()
+            nativeHeap.free(rawPtr)
+        }
+    }
+
+    @Test
+    fun overlayFadeOutWithFollowUpCursorClassNeverFlickersAlphaOrNativeTitlebarToZero() = withInteractiveMacosHost { factory ->
+        val scheduler = object : DefaultAnimationNativeImpl() {}
+        val prevScheduler = Animator.customScheduler
+        SystemCssAnimationController.clear()
+        Animator.customScheduler = scheduler
+        BlinkStyleEngine.ensureInstalled()
+        SystemCssAnimationController.ensureInstalled()
+
+        val sheet = CssStyleSheet.parse(
+            """
+            @keyframes overlayFadeOut {
+                0% { opacity: 1; }
+                100% { opacity: 0; }
+            }
+            @keyframes overlayFadeIn {
+                0% { opacity: 0; }
+                100% { opacity: 1; }
+            }
+            .overlay-fading-root {
+                opacity: 1;
+                animation: overlayFadeIn 200ms ease-out forwards;
+            }
+            .overlay-fading-root.hidden {
+                opacity: 0;
+                pointer-events: none;
+                animation: overlayFadeOut 200ms ease-in forwards;
+            }
+            .overlay-fading-root.hidden.hud-cursor-hidden {
+                cursor: none;
+            }
+            """.trimIndent()
+        )
+
+        val titleBar = StyledContainer().apply {
+            setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_WINDOW_TITLE_BAR)
+            setAttribute("data-native-titlebar-controls", "true")
+            setAttribute("data-titlebar-enabled", "true")
+            setAttribute("data-titlebar-active", "true")
+            style.setWidth(CssLength.px(480f))
+            style.setHeight(CssLength.px(32f))
+        }
+        val overlayRoot = StyledContainer("overlay-fading-root").apply {
+            addClass("overlay-fading-root")
+            setAttribute("data-overlay-root", "true")
+            addChild(titleBar)
+        }
+        val window = Window(title = "Overlay Fade Stability", initialSize = Size(480, 270)).apply {
+            setUndecorated(true)
+            setContent(Container().apply { addChild(overlayRoot) })
+        }
+
+        try {
+            window.show(factory)
+            MacosNativeWindowHost.pumpVisualWindowEvents(48L)
+
+            val hostWin = assertNotNull(MacosNativeWindowHost.activeNsWindow as? MacosHostWindow)
+            val overlayView = assertNotNull((overlayRoot.ensureNativeImpl()!!.nativeWidget as MacosViewHandle).nsView)
+            val closeButton = assertNotNull(hostWin.standardWindowButton(NSWindowCloseButton))
+            val titlebarContainer = assertNotNull(hostWin.titlebarContainerView())
+
+            sheet.applyToTree(overlayRoot)
+            Animator.advanceTimeBy(250.0)
+            MacosNativeWindowHost.pumpVisualWindowEvents(32L)
+
+            assertEquals(1.0, overlayView.alphaValue, 1e-3, "Overlay NSView must start visible at alpha=1.0")
+            assertTrue(closeButton.alphaValue > 0.9 && !closeButton.isHidden(), "Native traffic light must be visible before fade-out")
+            assertTrue(titlebarContainer.alphaValue > 0.9 && !titlebarContainer.isHidden(), "Native titlebar container must be visible before fade-out")
+
+            // Trigger fade-out + immediate follow-up cursor-hidden class mutation at t=0
+            overlayRoot.addClass("hidden")
+            assertEquals(1f, overlayRoot.opacity, 0.001f)
+            MacosNativeWindowHost.pumpVisualWindowEvents(24L)
+            assertEquals(1.0, overlayView.alphaValue, 1e-3, "NSView alpha must stay 1.0 immediately on .hidden before advancing time")
+            assertTrue(closeButton.alphaValue > 0.9 && !closeButton.isHidden(), "Traffic lights must stay visible at t=0 of overlayFadeOut")
+            assertTrue(titlebarContainer.alphaValue > 0.9 && !titlebarContainer.isHidden(), "Titlebar container must stay visible at t=0 of overlayFadeOut")
+
+            overlayRoot.addClass("hud-cursor-hidden")
+            assertEquals(1f, overlayRoot.opacity, 0.001f)
+            MacosNativeWindowHost.pumpVisualWindowEvents(24L)
+            assertEquals(1.0, overlayView.alphaValue, 1e-3, "Adding .hud-cursor-hidden at t=0 must NOT drop NSView alpha to 0")
+            assertTrue(closeButton.alphaValue > 0.9 && !closeButton.isHidden(), "Adding .hud-cursor-hidden at t=0 must NOT hide traffic lights")
+            assertTrue(titlebarContainer.alphaValue > 0.9 && !titlebarContainer.isHidden(), "Adding .hud-cursor-hidden at t=0 must NOT hide titlebar container")
+
+            // Advance mid-fade and toggle cursor class again
+            Animator.advanceTimeBy(100.0)
+            MacosNativeWindowHost.pumpVisualWindowEvents(24L)
+            val midAlpha = overlayView.alphaValue
+            assertTrue(midAlpha in 0.1..0.9, "Overlay NSView alpha must fade smoothly at midpoint, got $midAlpha")
+            assertFalse(titlebarContainer.isHidden())
+            assertEquals(midAlpha, titlebarContainer.alphaValue, 0.05)
+
+            overlayRoot.removeClass("hud-cursor-hidden")
+            MacosNativeWindowHost.pumpVisualWindowEvents(24L)
+            assertEquals(midAlpha, overlayView.alphaValue, 0.02, "Mid-fade cursor class removal must preserve current NSView alpha")
+
+            // Complete fade-out
+            Animator.advanceTimeBy(150.0)
+            MacosNativeWindowHost.pumpVisualWindowEvents(32L)
+            assertEquals(0.0, overlayView.alphaValue, 1e-3, "Overlay NSView alpha must reach 0.0 when fade-out completes")
+            assertTrue(titlebarContainer.isHidden() && titlebarContainer.alphaValue <= 0.01, "Native titlebar container must hide once fade-out completes")
+            assertTrue(closeButton.isHiddenOrHasHiddenAncestor() || titlebarContainer.isHidden(), "Native traffic lights must hide once fade-out completes")
+        } finally {
+            window.close()
+            SystemCssAnimationController.clear()
+            Animator.cancelAllAnimations()
+            Animator.customScheduler = prevScheduler
+            scheduler.dispose()
+        }
+    }
+
+    @Test
+    fun ownedFragmentDialogRendersInOwnPanelWithoutStealingRootViewOrVBlankLag() = withInteractiveMacosHost { factory ->
+        val frameBytes = ByteArray(320 * 180 * 4)
+        val stageContainer = Container("stage-surface", "w-100 h-100")
+        val ownerTitleBar = StyledContainer().apply {
+            setAttribute(DesktopStageOverlaySpec.ATTR_OVERLAY_ROLE, DesktopStageOverlaySpec.ROLE_WINDOW_TITLE_BAR)
+            setAttribute("data-native-titlebar-controls", "true")
+            setAttribute("data-titlebar-enabled", "true")
+            setAttribute("data-titlebar-active", "true")
+            style.setWidth(CssLength.px(960f))
+            style.setHeight(CssLength.px(32f))
+        }
+        val ownerOverlayRoot = StyledContainer("owner-overlay").apply {
+            setAttribute("data-overlay-root", "true")
+            addChild(ownerTitleBar)
+        }
+        val ownerRoot = Container("owner-root", "w-100 h-100").apply {
+            addChild(stageContainer)
+            addChild(ownerOverlayRoot)
+        }
+        val ownerWindow = Window(title = "Owner Stage Window", initialSize = Size(960, 600)).apply {
+            setUndecorated(true)
+            setContent(ownerRoot)
+        }
+
+        val scrollSelect = Select(
+            options = listOf(
+                SelectOption("auto", "Automatic"),
+                SelectOption("manual", "Manual")
+            ),
+            selectedValue = "auto"
+        )
+        val infoText = Text("Receiver configuration details")
+        val scrollInner = VStack(gapPx = 8).apply {
+            addClass("w-100")
+            addChild(scrollSelect)
+            addChild(infoText)
+        }
+        val scrollView = ScrollView().apply {
+            addClass("w-100")
+            addChild(scrollInner)
+        }
+        val cancelBtn = Button("Cancel")
+        val saveBtn = Button("Save")
+        val footer = HStack(gapPx = 8).apply {
+            addClass("w-100")
+            addChild(cancelBtn)
+            addChild(saveBtn)
+        }
+        val fragmentRootStack = VStack(gapPx = 12).apply {
+            addClass("w-100")
+            addClass("h-100")
+            addChild(scrollView, weight = 1f)
+            addChild(footer)
+        }
+        val settingsFragment = Fragment().apply {
+            addClass("w-100")
+            addClass("h-100")
+            addChild(fragmentRootStack)
+        }
+        val fragmentContainer = FragmentContainer().apply {
+            addClass("w-100")
+            addClass("h-100")
+        }
+        val dialog = DialogWindow(title = "Receiver Settings").apply {
+            setWindowSize(Size(640, 560))
+            setMinWindowSize(Size(480, 420))
+            setContent(fragmentContainer)
+        }
+        fragmentContainer.setFragment(settingsFragment)
+
+        fun containsViewRecursively(root: NSView, target: NSView): Boolean {
+            if (root === target) return true
+            for (sub in root.subviews) {
+                val child = sub as? NSView ?: continue
+                if (containsViewRecursively(child, target)) return true
+            }
+            return false
+        }
+
+        try {
+            ownerWindow.show(factory)
+            val stageNative = stageContainer.ensureNativeImpl()!!.nativeWidget as DesktopNativeWidget
+            DesktopInteractiveSurfaceSpec(
+                surfaceWidth = { 320 },
+                surfaceHeight = { 180 },
+                swapCount = { 1L },
+                captureBgra = { frameBytes },
+                suppressDefaultBorder = true
+            ).attachTo(stageNative)
+            DesktopNativeWidget.globalLayoutMutationVersion++
+            MacosNativeWindowHost.invalidateAllWindows(stageOnly = false)
+            MacosNativeWindowHost.pumpVisualWindowEvents(48L)
+
+            dialog.open(ownerWindow)
+
+            val ownerWinImpl = ownerWindow.ensureNativeImpl() as MacosWindowNativeImpl
+            val dialogImpl = dialog.ensureNativeImpl() as MacosDialogWindowNativeImpl
+            val ownerSession = assertNotNull(MacosNativeWindowHost.windowSessionForTest(ownerWinImpl))
+            val dialogSession = assertNotNull(MacosNativeWindowHost.dialogSessionForTest(dialogImpl))
+            val panel = assertNotNull(dialogSession.nsWindow as? NSPanel)
+            val ownerNsWin = ownerSession.nsWindow
+
+            fun verifyDialogPanelHierarchyAndBounds(phase: String) {
+                assertTrue(
+                    ownerWinImpl.rawChildImplsSnapshot().none { it === dialogImpl },
+                    "$phase: owner rawChildImpls must not contain owned dialogImpl"
+                )
+                assertTrue(
+                    panel.contentView == dialogSession.rootView,
+                    "$phase: panel.contentView must be dialogSession.rootView, was ${panel.contentView}"
+                )
+                assertTrue(
+                    dialogSession.rootView.window == panel,
+                    "$phase: dialogSession.rootView.window must be panel ($panel), was ${dialogSession.rootView.window}"
+                )
+                assertEquals(0, dialogSession.titleBarInsetTopPx, "$phase: dialogSession.titleBarInsetTopPx must be 0")
+                assertTrue(dialogSession.rootView.subviews.isNotEmpty(), "$phase: dialogSession.rootView must have realized subviews")
+
+                val scrollNsView = assertNotNull((scrollView.ensureNativeImpl()?.nativeWidget as? MacosViewHandle)?.nsView as? NSScrollView)
+                val selectNsView = assertNotNull((scrollSelect.ensureNativeImpl()?.nativeWidget as? MacosViewHandle)?.nsView as? NSPopUpButton)
+                val cancelNsView = assertNotNull((cancelBtn.ensureNativeImpl()?.nativeWidget as? MacosViewHandle)?.nsView as? NSButton)
+                val saveNsView = assertNotNull((saveBtn.ensureNativeImpl()?.nativeWidget as? MacosViewHandle)?.nsView as? NSButton)
+
+                for (descView in listOf<NSView>(scrollNsView, selectNsView, cancelNsView, saveNsView)) {
+                    assertTrue(
+                        descView.window == panel,
+                        "$phase: dialog descendant $descView must be mounted in panel ($panel), was ${descView.window}"
+                    )
+                    assertFalse(
+                        descView.window == ownerNsWin,
+                        "$phase: dialog descendant $descView must never attach to ownerNsWin ($ownerNsWin)"
+                    )
+                    descView.bounds.useContents {
+                        assertTrue(
+                            size.width > 0.0 && size.height > 0.0,
+                            "$phase: dialog descendant $descView must have positive bounds, got ${size.width}x${size.height}"
+                        )
+                    }
+                }
+
+                assertFalse(
+                    containsViewRecursively(ownerSession.rootView, dialogSession.rootView),
+                    "$phase: ownerSession.rootView must not contain dialogSession.rootView"
+                )
+                for (descView in listOf<NSView>(scrollNsView, selectNsView, cancelNsView, saveNsView)) {
+                    assertFalse(
+                        containsViewRecursively(ownerSession.rootView, descView),
+                        "$phase: ownerSession.rootView must not contain dialog descendant $descView"
+                    )
+                }
+
+                panel.contentMinSize.useContents {
+                    assertTrue(width >= 480.0, "$phase: panel.contentMinSize.width must be >= 480.0, got $width")
+                    assertTrue(height >= 420.0, "$phase: panel.contentMinSize.height must be >= 420.0, got $height")
+                }
+            }
+
+            verifyDialogPanelHierarchyAndBounds("immediate")
+            MacosNativeWindowHost.pumpVisualWindowEvents(48L)
+            verifyDialogPanelHierarchyAndBounds("afterPump")
+
+            MacosNativeWindowHost.resetFrameMetrics()
+            val collectsBefore = dialogSession.stageViewCollectCountForTest
+            repeat(10) {
+                MacosNativeWindowHost.onAnimatorVBlankTick()
+            }
+            MacosNativeWindowHost.pumpVisualWindowEvents(48L)
+            assertEquals(collectsBefore, dialogSession.stageViewCollectCountForTest)
+            assertTrue(panel.contentView == dialogSession.rootView)
+            assertTrue(dialogSession.rootView.window == panel)
+            assertTrue(
+                MacosNativeWindowHost.getFrameMetricsSnapshot().fullWindowPaints <= 2L,
+                "Expected <= 2 fullWindowPaints across 10 VBlank ticks, got ${MacosNativeWindowHost.getFrameMetricsSnapshot().fullWindowPaints}"
+            )
+
+            dialog.setWindowSize(Size(720, 600))
+            MacosNativeWindowHost.pumpVisualWindowEvents(48L)
+            assertEquals(720 to 600, dialogSession.currentClientSize())
+        } finally {
+            if (dialog.isWindowShown) {
+                dialog.close()
+            }
+            if (ownerWindow.isWindowShown) {
+                ownerWindow.close()
+            }
         }
     }
 }

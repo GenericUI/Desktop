@@ -229,6 +229,16 @@ object Win32RetainedControlSupport {
         Win32ControlMessageRouter.syncTypographyAndColors(handle, owner, defaultTransparentBg)
     }
 
+    fun handleStyledAttributeUpdate(handle: Win32HwndHandle, name: String) {
+        if (name.equals("backdrop-filter", ignoreCase = true) ||
+            name.equals("-webkit-backdrop-filter", ignoreCase = true) ||
+            name.equals("backdropFilter", ignoreCase = true) ||
+            name.equals("backdropBlurPx", ignoreCase = true)
+        ) {
+            handle.hwnd?.let { InvalidateRect(it, null, 0) }
+        }
+    }
+
     fun onDispose(handle: Win32HwndHandle) {
         Win32InteractiveSurfaceHwnd.releaseSurfaceResources(handle)
         handle.hwnd?.let { Win32LayeredStageHostHwnd.unregisterStageHost(it) }

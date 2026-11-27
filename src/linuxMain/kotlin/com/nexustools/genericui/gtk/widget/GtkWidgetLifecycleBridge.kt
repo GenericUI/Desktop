@@ -20,6 +20,7 @@ import com.nexustools.genericui.style.color.RgbaColor
 import com.nexustools.genericui.enums.css.CssCursor
 import com.nexustools.genericui.style.css.CssCursorValue
 import com.nexustools.genericui.style.css.CssCustomCursor
+import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.CssTransform
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.StableRef
@@ -27,6 +28,7 @@ import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.staticCFunction
 import kotlin.math.PI
+import kotlin.math.max
 
 /**
  * Shared retained `GtkWidget*` lifecycle, event controller, focus/hover/press, Z-order,
@@ -470,11 +472,47 @@ object GtkWidgetLifecycleBridge {
         return da
     }
 
+    fun handleStyledBackdropAttribute(
+        impl: DesktopBaseNativeImpl<GtkWidgetHandle>,
+        name: String,
+        value: String?
+    ) {
+        val attrs = impl.nativeWidget.attributes
+        when {
+            name.equals("backdrop-filter", ignoreCase = true) ||
+                name.equals("-webkit-backdrop-filter", ignoreCase = true) ||
+                name.equals("backdropFilter", ignoreCase = true) -> {
+                val parsed = value?.let { CssFilter.parse(it) }
+                if (parsed != null) {
+                    attrs["attrBackdropFilter"] = parsed
+                } else {
+                    attrs.remove("attrBackdropFilter")
+                }
+                impl.nativeWidget.backgroundSurfacePtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+                impl.nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+            }
+            name.equals("backdropBlurPx", ignoreCase = true) -> {
+                val parsed = value?.toFloatOrNull()
+                if (parsed != null) {
+                    attrs["attrBackdropBlurPx"] = parsed
+                } else {
+                    attrs.remove("attrBackdropBlurPx")
+                }
+                impl.nativeWidget.backgroundSurfacePtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+                impl.nativeWidget.realGtkWidgetPtr?.let { Gtk4DynamicBindings.gtkWidgetQueueDraw(it) }
+            }
+        }
+    }
+
     fun captureBehindWidgetPremulBgra(
         impl: DesktopBaseNativeImpl<GtkWidgetHandle>,
         width: Int,
-        height: Int
-    ): IntArray? {
+        height: Int,
+        padLeft: Int = 0,
+        padTop: Int = 0,
+        padRight: Int = 0,
+        padBottom: Int = 0
+    ): GtkSurfaceRenderHelper.PaddedBgraCapture? {
         if (width <= 0 || height <= 0) return null
         val targetHandle = impl.nativeWidget
         val pointerKey = targetHandle.nativePointer
@@ -482,7 +520,17 @@ object GtkWidgetLifecycleBridge {
         return try {
             val hierarchy = findWindowRootAndCumulativeOrigin(targetHandle) ?: return null
             val (rootHandle, absX, absY) = hierarchy
-            val surface = Gtk4DynamicBindings.cairoImageSurfaceCreate(width, height) ?: return null
+            val rootBounds = (rootHandle.ownerImpl as? DesktopBaseNativeImpl<*>)?.getBounds() ?: rootHandle.bounds
+            val rootW = max(rootBounds.width, absX + width)
+            val rootH = max(rootBounds.height, absY + height)
+            val effPadL = padLeft.coerceIn(0, absX.coerceAtLeast(0))
+            val effPadT = padTop.coerceIn(0, absY.coerceAtLeast(0))
+            val effPadR = padRight.coerceIn(0, max(0, rootW - (absX + width)))
+            val effPadB = padBottom.coerceIn(0, max(0, rootH - (absY + height)))
+            val capW = width + effPadL + effPadR
+            val capH = height + effPadT + effPadB
+
+            val surface = Gtk4DynamicBindings.cairoImageSurfaceCreate(capW, capH) ?: return null
             val cr = Gtk4DynamicBindings.cairoCreate(surface)
             if (cr == null) {
                 Gtk4DynamicBindings.cairoSurfaceDestroy(surface)
@@ -490,11 +538,18 @@ object GtkWidgetLifecycleBridge {
             }
             try {
                 Gtk4DynamicBindings.cairoSave(cr)
-                Gtk4DynamicBindings.cairoTranslate(cr, -absX.toDouble(), -absY.toDouble())
+                Gtk4DynamicBindings.cairoTranslate(cr, -(absX - effPadL).toDouble(), -(absY - effPadT).toDouble())
                 renderSubtreeToCairo(rootHandle, cr, stopBeforeHandle = targetHandle)
                 Gtk4DynamicBindings.cairoRestore(cr)
                 Gtk4DynamicBindings.cairoDestroy(cr)
-                GtkSurfaceRenderHelper.cairoSurfaceToPremulBgraWords(surface, width, height)
+                val words = GtkSurfaceRenderHelper.cairoSurfaceToPremulBgraWords(surface, capW, capH)
+                GtkSurfaceRenderHelper.PaddedBgraCapture(
+                    pixels = words,
+                    bufferWidth = capW,
+                    bufferHeight = capH,
+                    regionX = effPadL,
+                    regionY = effPadT
+                )
             } finally {
                 Gtk4DynamicBindings.cairoSurfaceDestroy(surface)
             }

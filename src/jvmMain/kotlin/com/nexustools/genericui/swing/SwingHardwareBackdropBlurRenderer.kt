@@ -1,7 +1,6 @@
 package com.nexustools.genericui.swing
 
-import com.nexustools.genericui.jvm.style.JvmBackdropCapturePlan
-import com.nexustools.genericui.jvm.style.JvmBackdropCapturePlanner
+import com.nexustools.genericui.style.css.CssCornerRadii
 import com.nexustools.genericui.style.css.CssFilter
 import com.nexustools.genericui.style.css.FastBackdropBlurKernel
 import com.nexustools.genericui.style.css.StyledVisualSpec
@@ -15,11 +14,12 @@ import java.awt.GraphicsEnvironment
 import java.awt.RenderingHints
 import java.awt.Transparency
 import java.awt.Window
-import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
 import java.awt.image.VolatileImage
 import javax.swing.JComponent
 import javax.swing.JRootPane
+import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
@@ -41,11 +41,17 @@ object SwingHardwareBackdropBlurRenderer {
 
     private val activeCaptureViews = ThreadLocal.withInitial { LinkedHashSet<JComponent>(4) }
 
+    private class PaddedCaptureRegion(
+        val capW: Int,
+        val capH: Int,
+        val regionX: Int,
+        val regionY: Int,
+        val translateX: Int,
+        val translateY: Int
+    )
+
     private class ComponentRenderCache {
         var viFull: VolatileImage? = null
-        var viHalf: VolatileImage? = null
-        var viQuarter: VolatileImage? = null
-        var viEighth: VolatileImage? = null
         var lastGc: GraphicsConfiguration? = null
 
         var fallbackBmp: BufferedImage? = null
@@ -66,41 +72,16 @@ object SwingHardwareBackdropBlurRenderer {
             return targetBmp to fallbackPixels
         }
 
-        fun ensureVolatileChain(
+        fun ensureVolatileCapture(
             gc: GraphicsConfiguration,
             w: Int,
-            h: Int,
-            needQuarter: Boolean,
-            needEighth: Boolean
-        ): Boolean {
+            h: Int
+        ): VolatileImage? {
             if (lastGc !== gc) {
                 flushVolatiles()
                 lastGc = gc
             }
-            val full = ensureVolatile(viFull, gc, w, h) { viFull = it } ?: return false
-            val hw = max(1, (w + 1) / 2)
-            val hh = max(1, (h + 1) / 2)
-            val half = ensureVolatile(viHalf, gc, hw, hh) { viHalf = it } ?: return false
-            if (needQuarter) {
-                val qw = max(1, (hw + 1) / 2)
-                val qh = max(1, (hh + 1) / 2)
-                ensureVolatile(viQuarter, gc, qw, qh) { viQuarter = it } ?: return false
-                if (needEighth) {
-                    val ew = max(1, (qw + 1) / 2)
-                    val eh = max(1, (qh + 1) / 2)
-                    ensureVolatile(viEighth, gc, ew, eh) { viEighth = it } ?: return false
-                }
-            }
-            return !full.contentsLost() && !half.contentsLost()
-        }
-
-        private fun ensureVolatile(
-            existing: VolatileImage?,
-            gc: GraphicsConfiguration,
-            w: Int,
-            h: Int,
-            assign: (VolatileImage) -> Unit
-        ): VolatileImage? {
+            val existing = viFull
             if (existing != null && existing.width == w && existing.height == h) {
                 if (existing.validate(gc) != VolatileImage.IMAGE_INCOMPATIBLE) {
                     return existing
@@ -114,23 +95,37 @@ object SwingHardwareBackdropBlurRenderer {
             } catch (_: Throwable) {
                 null
             } ?: return null
-            assign(created)
+            viFull = created
             return created
         }
 
         fun flushVolatiles() {
             viFull?.flush(); viFull = null
-            viHalf?.flush(); viHalf = null
-            viQuarter?.flush(); viQuarter = null
-            viEighth?.flush(); viEighth = null
         }
+    }
+
+    internal fun computeDirectionalHaloPadding(filter: CssFilter): IntArray {
+        val blurPx = if (filter.hasBlur) (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 128f) else 0f
+        val blurPad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 96) else 0
+        val shadow = filter.dropShadow?.takeIf { filter.hasDropShadow }
+        val shadowBlurPx = if (shadow != null) (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, 128f) else 0f
+        val shadowBlurPad = if (shadow != null && shadowBlurPx > 0f) ceil(shadowBlurPx * 1.5f).toInt().coerceIn(1, 96) else 0
+        val shadowOffX = shadow?.offsetX?.resolvePx() ?: 0f
+        val shadowOffY = shadow?.offsetY?.resolvePx() ?: 0f
+        val shadowSpread = abs(shadow?.spreadRadius?.resolvePx() ?: 0f)
+        val padLeft = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, shadowOffX) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+        val padRight = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, -shadowOffX) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+        val padTop = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, shadowOffY) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+        val padBottom = if (shadow != null) max(blurPad, shadowBlurPad + ceil(max(0f, -shadowOffY) + shadowSpread).toInt().coerceAtMost(64)) else blurPad
+        return intArrayOf(padLeft, padTop, padRight, padBottom)
     }
 
     fun paintBackdrop(
         g: Graphics,
         target: JComponent,
         filter: CssFilter,
-        cornerRadiusPx: Float
+        cornerRadiusPx: Float,
+        cornerRadii: CssCornerRadii? = null
     ) {
         val w = target.width
         val h = target.height
@@ -141,7 +136,7 @@ object SwingHardwareBackdropBlurRenderer {
             val root = resolveBackdropRoot(target) ?: return
             val path = buildAncestorPath(root, target) ?: return
             val cache = obtainCache(target)
-            val plan = JvmBackdropCapturePlanner.planCapture(filter, w, h, minHardwareBlurPx = 4f)
+            val region = computePaddedCaptureRegion(root, path, target, w, h, computeDirectionalHaloPadding(filter))
 
             val g2 = g as? Graphics2D
             val gc = if (g2 != null && !GraphicsEnvironment.isHeadless()) {
@@ -154,16 +149,41 @@ object SwingHardwareBackdropBlurRenderer {
                 null
             }
 
-            if (g2 != null && gc != null && plan.supportsHardwareFastBlurOnly) {
-                if (tryPaintHardwareVolatilePingPong(g2, gc, cache, root, path, target, w, h, plan.blurPx, cornerRadiusPx)) {
+            if (g2 != null && gc != null) {
+                if (tryPaintHardwareVolatilePingPong(g2, gc, cache, root, path, target, region, filter, w, h, cornerRadiusPx, cornerRadii)) {
                     return
                 }
             }
 
-            paintSoftwareFallback(g, cache, root, path, target, plan, w, h, cornerRadiusPx)
+            paintSoftwareFallback(g, cache, root, path, target, region, filter, w, h, cornerRadiusPx, cornerRadii)
         } finally {
             activeSet.remove(target)
         }
+    }
+
+    private fun computePaddedCaptureRegion(
+        root: Container,
+        path: List<Container>,
+        target: JComponent,
+        w: Int,
+        h: Int,
+        pads: IntArray
+    ): PaddedCaptureRegion {
+        val (ox, oy) = computeTargetOffsetInRoot(path, target)
+        val rootW = max(root.width, ox + w)
+        val rootH = max(root.height, oy + h)
+        val effPadL = pads[0].coerceIn(0, ox.coerceAtLeast(0))
+        val effPadT = pads[1].coerceIn(0, oy.coerceAtLeast(0))
+        val effPadR = pads[2].coerceIn(0, max(0, rootW - (ox + w)))
+        val effPadB = pads[3].coerceIn(0, max(0, rootH - (oy + h)))
+        return PaddedCaptureRegion(
+            capW = w + effPadL + effPadR,
+            capH = h + effPadT + effPadB,
+            regionX = effPadL,
+            regionY = effPadT,
+            translateX = -(ox - effPadL),
+            translateY = -(oy - effPadT)
+        )
     }
 
     private fun tryPaintHardwareVolatilePingPong(
@@ -173,75 +193,56 @@ object SwingHardwareBackdropBlurRenderer {
         root: Container,
         path: List<Container>,
         target: JComponent,
+        region: PaddedCaptureRegion,
+        filter: CssFilter,
         w: Int,
         h: Int,
-        blurPx: Float,
-        cornerRadiusPx: Float
+        cornerRadiusPx: Float,
+        cornerRadii: CssCornerRadii?
     ): Boolean {
-        val needQuarter = blurPx >= 6f && w >= 16 && h >= 16
-        val needEighth = blurPx >= 12f && w >= 32 && h >= 32
-
+        val capW = region.capW
+        val capH = region.capH
         repeat(2) {
-            if (!cache.ensureVolatileChain(gc, w, h, needQuarter, needEighth)) return false
-            val full = cache.viFull ?: return false
-            val half = cache.viHalf ?: return false
-
+            val full = cache.ensureVolatileCapture(gc, capW, capH) ?: return false
             val fg = full.createGraphics()
             try {
                 fg.composite = AlphaComposite.Src
                 fg.color = Color(0, 0, 0, 0)
-                fg.fillRect(0, 0, w, h)
+                fg.fillRect(0, 0, capW, capH)
                 fg.composite = AlphaComposite.SrcOver
-                val (ox, oy) = computeTargetOffsetInRoot(path, target)
-                fg.translate(-ox, -oy)
+                fg.translate(region.translateX, region.translateY)
                 drawSubtreeUpToTarget(root, path, 0, target, fg)
             } finally {
                 fg.dispose()
             }
+            if (full.contentsLost()) return@repeat
 
-            drawScaledBilinear(full, half, half.width, half.height)
-            if (needQuarter) {
-                val quarter = cache.viQuarter ?: return false
-                drawScaledBilinear(half, quarter, quarter.width, quarter.height)
-                if (needEighth) {
-                    val eighth = cache.viEighth ?: return false
-                    drawScaledBilinear(quarter, eighth, eighth.width, eighth.height)
-                    drawScaledBilinear(eighth, quarter, quarter.width, quarter.height)
-                }
-                drawScaledBilinear(quarter, half, half.width, half.height)
-            }
+            val snapshot = try {
+                full.snapshot
+            } catch (_: Throwable) {
+                null
+            } ?: return false
+            val (outBmp, pixels) = cache.ensureFallback(capW, capH)
+            snapshot.getRGB(0, 0, capW, capH, pixels, 0, capW)
+            snapshot.flush()
 
-            if (full.contentsLost() || half.contentsLost()) return@repeat
+            FastBackdropBlurKernel.applyBackdropToArgbRegion(
+                filter = filter,
+                argbPixels = pixels,
+                bufferWidth = capW,
+                bufferHeight = capH,
+                regionX = region.regionX,
+                regionY = region.regionY,
+                regionWidth = w,
+                regionHeight = h,
+                cornerRadiusPx = 0f
+            )
+            outBmp.setRGB(0, 0, capW, capH, pixels, 0, capW)
 
-            val clipped = g2.create() as Graphics2D
-            try {
-                clipped.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                clipped.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-                applyRoundedClip(clipped, w, h, cornerRadiusPx)
-                clipped.drawImage(half, 0, 0, w, h, null)
-            } finally {
-                clipped.dispose()
-            }
-            if (!half.contentsLost()) return true
+            drawCroppedBackdrop(g2, outBmp, region, w, h, cornerRadiusPx, cornerRadii)
+            return true
         }
         return false
-    }
-
-    private fun drawScaledBilinear(
-        src: VolatileImage,
-        dst: VolatileImage,
-        dstW: Int,
-        dstH: Int
-    ) {
-        val g = dst.createGraphics()
-        try {
-            g.composite = AlphaComposite.Src
-            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-            g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED)
-            g.drawImage(src, 0, 0, dstW, dstH, null)
-        } finally {
-            g.dispose()
-        }
     }
 
     private fun paintSoftwareFallback(
@@ -250,14 +251,15 @@ object SwingHardwareBackdropBlurRenderer {
         root: Container,
         path: List<Container>,
         target: JComponent,
-        plan: JvmBackdropCapturePlan,
+        region: PaddedCaptureRegion,
+        filter: CssFilter,
         w: Int,
         h: Int,
-        cornerRadiusPx: Float
+        cornerRadiusPx: Float,
+        cornerRadii: CssCornerRadii?
     ) {
-        val dsScale = plan.downsampleScale
-        val capW = plan.captureWidth
-        val capH = plan.captureHeight
+        val capW = region.capW
+        val capH = region.capH
         val (capture, pixels) = cache.ensureFallback(capW, capH)
 
         val capG = capture.createGraphics()
@@ -266,11 +268,7 @@ object SwingHardwareBackdropBlurRenderer {
             capG.color = Color(0, 0, 0, 0)
             capG.fillRect(0, 0, capW, capH)
             capG.composite = AlphaComposite.SrcOver
-            if (dsScale > 1) {
-                capG.scale(capW.toDouble() / w.toDouble(), capH.toDouble() / h.toDouble())
-            }
-            val (ox, oy) = computeTargetOffsetInRoot(path, target)
-            capG.translate(-ox, -oy)
+            capG.translate(region.translateX, region.translateY)
             drawSubtreeUpToTarget(root, path, 0, target, capG)
         } finally {
             capG.dispose()
@@ -278,43 +276,61 @@ object SwingHardwareBackdropBlurRenderer {
 
         capture.getRGB(0, 0, capW, capH, pixels, 0, capW)
         FastBackdropBlurKernel.applyBackdropToArgbRegion(
-            filter = plan.scaledFilter,
+            filter = filter,
             argbPixels = pixels,
             bufferWidth = capW,
             bufferHeight = capH,
-            regionX = 0,
-            regionY = 0,
-            regionWidth = capW,
-            regionHeight = capH,
+            regionX = region.regionX,
+            regionY = region.regionY,
+            regionWidth = w,
+            regionHeight = h,
             cornerRadiusPx = 0f
         )
         capture.setRGB(0, 0, capW, capH, pixels, 0, capW)
 
         val g2 = g.create() as Graphics2D
         try {
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
-            applyRoundedClip(g2, w, h, cornerRadiusPx)
-            g2.drawImage(capture, 0, 0, w, h, null)
+            drawCroppedBackdrop(g2, capture, region, w, h, cornerRadiusPx, cornerRadii)
         } finally {
             g2.dispose()
         }
     }
 
-    private fun applyRoundedClip(g2: Graphics2D, w: Int, h: Int, cornerRadiusPx: Float) {
-        val r = cornerRadiusPx.coerceIn(0f, min(w, h) * 0.5f)
-        if (r > 0.5f) {
-            val arc = r * 2f
-            g2.clip(
-                RoundRectangle2D.Float(
-                    0.5f,
-                    0.5f,
-                    (w - 1).coerceAtLeast(1).toFloat(),
-                    (h - 1).coerceAtLeast(1).toFloat(),
-                    arc,
-                    arc
-                )
+    private fun drawCroppedBackdrop(
+        g2: Graphics2D,
+        paddedImage: BufferedImage,
+        region: PaddedCaptureRegion,
+        w: Int,
+        h: Int,
+        cornerRadiusPx: Float,
+        cornerRadii: CssCornerRadii?
+    ) {
+        val clipped = g2.create() as Graphics2D
+        try {
+            clipped.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            clipped.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+            applyRoundedClip(clipped, w, h, cornerRadiusPx, cornerRadii)
+            clipped.drawImage(
+                paddedImage,
+                0, 0, w, h,
+                region.regionX, region.regionY, region.regionX + w, region.regionY + h,
+                null
             )
+        } finally {
+            clipped.dispose()
+        }
+    }
+
+    private fun applyRoundedClip(
+        g2: Graphics2D,
+        w: Int,
+        h: Int,
+        cornerRadiusPx: Float,
+        cornerRadii: CssCornerRadii?
+    ) {
+        val radii = SwingSurfacePaintUtil.resolveClampedCornerRadii(cornerRadii, cornerRadiusPx, w.toFloat(), h.toFloat())
+        if (radii[0] > 0.5f || radii[1] > 0.5f || radii[2] > 0.5f || radii[3] > 0.5f) {
+            g2.clip(SwingSurfacePaintUtil.buildRoundedRectShape(0f, 0f, w.toFloat(), h.toFloat(), radii))
         }
     }
 

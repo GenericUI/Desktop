@@ -253,8 +253,9 @@ object Win32StyledWidgetHelper {
 
         val resolvedClass = entry.actualWin32ClassName
         val spec = resolveEffectiveVisualSpec(entry, owner, resolvedClass, isDark)
-        val hasContentSpec = spec.hasCustomBackground || spec.hasBorder || spec.hasBackdropFilter ||
-            spec.hasFocusRing || (spec.boxShadowColor != null) || (spec.filter?.hasActiveEffects == true)
+        val resolvedSpec = applyAttributeBackdropOverrides(entry, spec)
+        val hasContentSpec = resolvedSpec.hasCustomBackground || resolvedSpec.hasBorder || resolvedSpec.hasBackdropFilter ||
+            resolvedSpec.hasFocusRing || (resolvedSpec.boxShadowColor != null) || (resolvedSpec.filter?.hasActiveEffects == true)
 
         val textLabel: String? = when (owner) {
             is DesktopButtonNativeImpl<*> -> buildButtonLabel(owner)
@@ -288,14 +289,14 @@ object Win32StyledWidgetHelper {
             hdc = hdc,
             width = width,
             height = height,
-            spec = spec,
+            spec = resolvedSpec,
             isDark = isDark,
             focused = owner.isFocusedState(),
             fontHandle = entry.fontHandle,
             text = textLabel,
-            textColorOverride = resolveTextColorForSpec(entry, owner, spec, resolvedClass, isDark),
+            textColorOverride = resolveTextColorForSpec(entry, owner, resolvedSpec, resolvedClass, isDark),
             iconBuffer = iconBuffer,
-            cornerRadii = resolveCornerRadii(entry, owner, spec, width, height),
+            cornerRadii = resolveCornerRadii(entry, owner, resolvedSpec, width, height),
             dirtyLeft = dirtyLeft,
             dirtyTop = dirtyTop,
             dirtyRight = dirtyRight,
@@ -645,11 +646,7 @@ object Win32StyledWidgetHelper {
             ResolvedCornerRadii(u, u, u, u)
         }
 
-        val backdropFilter = spec.backdropFilter ?: if ((spec.backdropBlurPx ?: 0f) > 0f) {
-            CssFilter(blur = com.nexustools.genericui.style.css.CssLength.px(spec.backdropBlurPx!!))
-        } else {
-            null
-        }
+        val backdropFilter = CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
         val hasBackdrop = backdropFilter != null && backdropFilter.hasActiveEffects
 
         if (resolvedRadii.isUniform &&
@@ -711,7 +708,7 @@ object Win32StyledWidgetHelper {
                 val srcOff = (py + pad) * capW + pad
                 val dstOff = py * width
                 for (px in 0 until width) {
-                    surfacePixels[dstOff + px] = capPixels[srcOff + px] or 0xFF000000.toInt()
+                    surfacePixels[dstOff + px] = capPixels[srcOff + px]
                 }
             }
         } else if (isTranslucentBg) {
@@ -2272,18 +2269,21 @@ object Win32StyledWidgetHelper {
         a = c.a
     )
 
-    private fun computeFilterPadPx(filter: CssFilter?): Int {
-        if (filter == null || !filter.hasActiveEffects) return 0
-        val blur = (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
-        val blurPad = if (blur > 0f) ceil(blur * 1.5f).toInt().coerceIn(1, 32) else 0
-        val shadow = filter.dropShadow?.takeIf { filter.hasDropShadow }
-        val shadowPad = if (shadow != null) {
-            val sBlur = (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, 48f)
-            val sOff = max(abs(shadow.offsetX.resolvePx() ?: 0f), abs(shadow.offsetY.resolvePx() ?: 0f))
-            (ceil(sBlur * 1.5f).toInt() + ceil(sOff).toInt()).coerceIn(1, 48)
-        } else 0
-        return max(blurPad, shadowPad)
+    private fun applyAttributeBackdropOverrides(entry: Win32HwndHandle, spec: StyledVisualSpec): StyledVisualSpec {
+        val attrFilterRaw = (entry.attributes["backdrop-filter"] as? String)
+            ?: (entry.attributes["-webkit-backdrop-filter"] as? String)
+            ?: (entry.attributes["backdropFilter"] as? String)
+        val attrFilter = attrFilterRaw?.let { CssFilter.parse(it) }
+        val attrBlurPx = (entry.attributes["backdropBlurPx"] as? String)?.toFloatOrNull()
+        if (attrFilter == null && attrBlurPx == null) return spec
+        return spec.copy(
+            backdropFilter = attrFilter ?: spec.backdropFilter,
+            backdropBlurPx = attrBlurPx ?: spec.backdropBlurPx
+        )
     }
+
+    private fun computeFilterPadPx(filter: CssFilter?): Int =
+        Win32Direct2dBackdropBlurEngine.computeFilterPadPx(filter)
 
     private fun ensureSurfaceDib(refDc: HDC, w: Int, h: Int): CPointer<UIntVar>? {
         if (reusableSurfaceDc != null && reusableSurfacePixels != null &&

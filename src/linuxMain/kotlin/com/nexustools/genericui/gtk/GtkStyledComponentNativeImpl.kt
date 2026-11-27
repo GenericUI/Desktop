@@ -58,29 +58,22 @@ open class GtkStyledComponentNativeImpl(
         val dark = GtkRetainedContainerSupport.resolveDarkTheme()
         val visuals = resolveCurrentVisuals()
         val computed = getComputedStyle()
-        val paintSpec = GtkSurfaceRenderHelper.fromStyledVisualSpec(
-            spec = visuals,
-            cornerRadii = computed?.borderRadius,
-            backdropFilter = nativeWidget.attributes["backdropFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.backdropFilter,
-            foregroundFilter = nativeWidget.attributes["cssFilter"] as? com.nexustools.genericui.style.css.CssFilter ?: visuals.filter,
-            opacity = getOpacity(),
-            darkTheme = dark
-        )
-        val hasBackdrop = GtkSurfaceRenderHelper.effectiveBackdropFilter(paintSpec)?.let {
-            LinuxBackdropFilterController.shared.hasActiveEffects(it)
-        } == true
-        val behindCapture: (() -> IntArray?)? = if (hasBackdrop) {
-            { GtkWidgetLifecycleBridge.captureBehindWidgetPremulBgra(this, width, height) }
-        } else {
-            null
-        }
-        GtkSurfaceRenderHelper.paintSurface(
+        GtkSurfaceRenderHelper.paintStyledWidgetSurface(
+            impl = this,
             cr = cr,
             width = width,
             height = height,
-            spec = paintSpec,
-            behindBgraCapture = behindCapture
+            visuals = visuals,
+            cornerRadii = computed?.borderRadius,
+            opacity = visuals.opacity ?: getOpacity(),
+            focused = isFocusedState(),
+            darkTheme = dark
         )
+    }
+
+    override fun setAttribute(name: String, value: String?) {
+        super.setAttribute(name, value)
+        GtkWidgetLifecycleBridge.handleStyledBackdropAttribute(this, name, value)
     }
 
     override fun onNativeBoundsChanged(rect: Rect) = GtkWidgetLifecycleBridge.onBoundsChanged(this, rect)

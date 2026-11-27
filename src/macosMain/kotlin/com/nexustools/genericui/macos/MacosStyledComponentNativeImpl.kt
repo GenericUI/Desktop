@@ -2,6 +2,7 @@
 
 package com.nexustools.genericui.macos
 
+import com.nexustools.genericui.desktop.core.DesktopBaseContainerNativeImpl
 import com.nexustools.genericui.desktop.widget.DesktopStyledComponentNativeImpl
 import com.nexustools.genericui.enums.bootstrap.OverflowBehavior
 import com.nexustools.genericui.geometry.Rect
@@ -267,6 +268,8 @@ class MacosStyledComponentNativeImpl(
     }
 
     override fun onNativeZIndexChanged(zIndex: Int) {
+        (nativeWidget.parentWidget?.attributes?.get("nativeImpl") as? DesktopBaseContainerNativeImpl<*>)
+            ?.onChildZIndexInvalidated()
         nativeWidget.requestRetainedRelayout()
     }
 

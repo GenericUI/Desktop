@@ -6,6 +6,7 @@
 package com.nexustools.genericui.windows
 
 import com.nexustools.genericui.style.css.CssFilter
+import com.nexustools.genericui.style.css.CssFilterColorMatrix
 import com.nexustools.genericui.style.css.FastBackdropBlurKernel
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CFunction
@@ -203,17 +204,7 @@ object Win32Direct2dBackdropBlurEngine {
         val x1 = (regionX + regionWidth).coerceIn(0, bufferWidth)
         val y1 = (regionY + regionHeight).coerceIn(0, bufferHeight)
         if (x1 <= x0 || y1 <= y0) return false
-        val blurPx = (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
-        val shadow = filter.dropShadow?.takeIf { filter.hasDropShadow }
-        val blurPad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 32) else 0
-        val shadowPad = if (shadow != null) {
-            val sBlur = (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, 48f)
-            val sOff = max(kotlin.math.abs(shadow.offsetX.resolvePx() ?: 0f), kotlin.math.abs(shadow.offsetY.resolvePx() ?: 0f))
-            (ceil(sBlur * 1.5f).toInt() + ceil(sOff).toInt()).coerceIn(1, 64)
-        } else {
-            0
-        }
-        val pad = max(blurPad, shadowPad)
+        val pad = computeFilterPadPx(filter)
         val capX0 = (x0 - pad).coerceAtLeast(0)
         val capY0 = (y0 - pad).coerceAtLeast(0)
         val capX1 = (x1 + pad).coerceAtMost(bufferWidth)
@@ -291,7 +282,7 @@ object Win32Direct2dBackdropBlurEngine {
             for (py in capY0 until capY0 + capH) {
                 val rowOff = py * bufW
                 for (px in capX0 until capX0 + capW) {
-                    captureBuf[dstIdx++] = wordsPtr[rowOff + px].toInt() or 0xFF000000.toInt()
+                    captureBuf[dstIdx++] = toPremulBgraWord(wordsPtr[rowOff + px].toInt())
                 }
             }
         } else {
@@ -304,6 +295,7 @@ object Win32Direct2dBackdropBlurEngine {
                 for (dsX in 0 until uploadW) {
                     val sx0 = capX0 + dsX * downsample
                     val sx1 = min(capXEnd, sx0 + downsample)
+                    var aSum = 0
                     var rSum = 0
                     var gSum = 0
                     var bSum = 0
@@ -311,7 +303,8 @@ object Win32Direct2dBackdropBlurEngine {
                     for (sy in sy0 until sy1) {
                         val rowOff = sy * bufW
                         for (sx in sx0 until sx1) {
-                            val w = wordsPtr[rowOff + sx].toInt()
+                            val w = toPremulBgraWord(wordsPtr[rowOff + sx].toInt())
+                            aSum += (w ushr 24) and 0xFF
                             rSum += (w ushr 16) and 0xFF
                             gSum += (w ushr 8) and 0xFF
                             bSum += w and 0xFF
@@ -320,9 +313,9 @@ object Win32Direct2dBackdropBlurEngine {
                     }
                     if (cnt <= 0) {
                         val w = wordsPtr[(min(capYEnd - 1, sy0)) * bufW + min(capXEnd - 1, sx0)].toInt()
-                        captureBuf[dstIdx++] = w or 0xFF000000.toInt()
+                        captureBuf[dstIdx++] = toPremulBgraWord(w)
                     } else {
-                        captureBuf[dstIdx++] = (0xFF000000.toInt()) or
+                        captureBuf[dstIdx++] = ((aSum / cnt) shl 24) or
                             ((rSum / cnt) shl 16) or
                             ((gSum / cnt) shl 8) or
                             (bSum / cnt)
@@ -476,24 +469,17 @@ object Win32Direct2dBackdropBlurEngine {
                             val word = srcRowPtr[col].toInt()
                             val fa = (word ushr 24) and 0xFF
                             if (fa <= 0) continue
-                            val outA = (fa * effOp255 + 127) / 255
-                            if (outA >= 255) {
-                                wordsPtr[dstRow + px] = word.toUInt()
-                            } else if (outA > 0) {
-                                val pr = (((word ushr 16) and 0xFF) * effOp255 + 127) / 255
-                                val pg = (((word ushr 8) and 0xFF) * effOp255 + 127) / 255
-                                val pb = ((word and 0xFF) * effOp255 + 127) / 255
-                                val orig = wordsPtr[dstRow + px].toInt()
-                                val or = (orig ushr 16) and 0xFF
-                                val og = (orig ushr 8) and 0xFF
-                                val ob = orig and 0xFF
-                                val invA = 255 - outA
-                                val outR = (pr + (or * invA + 127) / 255).coerceIn(0, 255)
-                                val outG = (pg + (og * invA + 127) / 255).coerceIn(0, 255)
-                                val outB = (pb + (ob * invA + 127) / 255).coerceIn(0, 255)
-                                wordsPtr[dstRow + px] =
-                                    0xFF000000u or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
-                            }
+                            val pr = (word ushr 16) and 0xFF
+                            val pg = (word ushr 8) and 0xFF
+                            val pb = word and 0xFF
+                            wordsPtr[dstRow + px] = blendPremulFilteredOverStraightWord(
+                                orig = wordsPtr[dstRow + px].toInt(),
+                                premulR = pr,
+                                premulG = pg,
+                                premulB = pb,
+                                premulA = fa,
+                                effOp255 = effOp255
+                            )
                         }
                     }
                 } else {
@@ -551,25 +537,14 @@ object Win32Direct2dBackdropBlurEngine {
                             val pb = (((c00 and 0xFF) * w00 + (c10 and 0xFF) * w10 +
                                 (c01 and 0xFF) * w01 + (c11 and 0xFF) * w11) shr 16).coerceIn(0, 255)
 
-                            val outA = (fa * effOp255 + 127) / 255
-                            if (outA >= 255) {
-                                wordsPtr[dstRow + px] =
-                                    0xFF000000u or (pr.toUInt() shl 16) or (pg.toUInt() shl 8) or pb.toUInt()
-                            } else if (outA > 0) {
-                                val sPr = (pr * effOp255 + 127) / 255
-                                val sPg = (pg * effOp255 + 127) / 255
-                                val sPb = (pb * effOp255 + 127) / 255
-                                val orig = wordsPtr[dstRow + px].toInt()
-                                val or = (orig ushr 16) and 0xFF
-                                val og = (orig ushr 8) and 0xFF
-                                val ob = orig and 0xFF
-                                val invA = 255 - outA
-                                val outR = (sPr + (or * invA + 127) / 255).coerceIn(0, 255)
-                                val outG = (sPg + (og * invA + 127) / 255).coerceIn(0, 255)
-                                val outB = (sPb + (ob * invA + 127) / 255).coerceIn(0, 255)
-                                wordsPtr[dstRow + px] =
-                                    0xFF000000u or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
-                            }
+                            wordsPtr[dstRow + px] = blendPremulFilteredOverStraightWord(
+                                orig = wordsPtr[dstRow + px].toInt(),
+                                premulR = pr,
+                                premulG = pg,
+                                premulB = pb,
+                                premulA = fa,
+                                effOp255 = effOp255
+                            )
                         }
                     }
                 }
@@ -1129,8 +1104,73 @@ object Win32Direct2dBackdropBlurEngine {
         out.value
     }
 
+    internal fun computeFilterPadPx(filter: CssFilter?): Int {
+        if (filter == null || !filter.hasActiveEffects) return 0
+        val blur = (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
+        val blurPad = if (blur > 0f) ceil(blur * 1.5f).toInt().coerceIn(1, 72) else 0
+        val shadow = filter.dropShadow?.takeIf { filter.hasDropShadow }
+        val shadowPad = if (shadow != null) {
+            val sBlur = (shadow.blurRadius.resolvePx() ?: 0f).coerceIn(0f, 48f)
+            val sBlurPad = if (sBlur > 0f) ceil(sBlur * 1.5f).toInt().coerceIn(1, 72) else 0
+            val sOff = max(abs(shadow.offsetX.resolvePx() ?: 0f), abs(shadow.offsetY.resolvePx() ?: 0f))
+            val sSpread = abs(shadow.spreadRadius.resolvePx() ?: 0f)
+            (sBlurPad + ceil(sOff).toInt() + ceil(sSpread).toInt()).coerceIn(1, 96)
+        } else {
+            0
+        }
+        return max(blurPad, shadowPad)
+    }
+
+    private fun toPremulBgraWord(argb: Int): Int {
+        val a = (argb ushr 24) and 0xFF
+        if (a >= 255) return argb
+        if (a <= 0) return 0
+        val r = (((argb ushr 16) and 0xFF) * a + 127) / 255
+        val g = (((argb ushr 8) and 0xFF) * a + 127) / 255
+        val b = ((argb and 0xFF) * a + 127) / 255
+        return (a shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    private fun blendPremulFilteredOverStraightWord(
+        orig: Int,
+        premulR: Int,
+        premulG: Int,
+        premulB: Int,
+        premulA: Int,
+        effOp255: Int
+    ): UInt {
+        val outA = (premulA * effOp255 + 127) / 255
+        if (outA <= 0) return orig.toUInt()
+        val sPr = (premulR * effOp255 + 127) / 255
+        val sPg = (premulG * effOp255 + 127) / 255
+        val sPb = (premulB * effOp255 + 127) / 255
+        if (outA >= 255) {
+            return 0xFF000000u or
+                (sPr.coerceIn(0, 255).toUInt() shl 16) or
+                (sPg.coerceIn(0, 255).toUInt() shl 8) or
+                sPb.coerceIn(0, 255).toUInt()
+        }
+        val oa = (orig ushr 24) and 0xFF
+        val invA = 255 - outA
+        val finalA = (outA + (oa * invA + 127) / 255).coerceIn(0, 255)
+        if (finalA <= 0) return 0u
+        val or = (orig ushr 16) and 0xFF
+        val og = (orig ushr 8) and 0xFF
+        val ob = orig and 0xFF
+        val origPr = (or * oa + 127) / 255
+        val origPg = (og * oa + 127) / 255
+        val origPb = (ob * oa + 127) / 255
+        val resPr = (sPr + (origPr * invA + 127) / 255).coerceIn(0, finalA)
+        val resPg = (sPg + (origPg * invA + 127) / 255).coerceIn(0, finalA)
+        val resPb = (sPb + (origPb * invA + 127) / 255).coerceIn(0, finalA)
+        val outR = if (finalA >= 255) resPr else ((resPr * 255 + finalA / 2) / finalA).coerceIn(0, 255)
+        val outG = if (finalA >= 255) resPg else ((resPg * 255 + finalA / 2) / finalA).coerceIn(0, 255)
+        val outB = if (finalA >= 255) resPb else ((resPb * 255 + finalA / 2) / finalA).coerceIn(0, 255)
+        return (finalA.toUInt() shl 24) or (outR.toUInt() shl 16) or (outG.toUInt() shl 8) or outB.toUInt()
+    }
+
     private fun applyCssFilterToColorMatrixEffect(effect: COpaquePointer, filter: CssFilter): Boolean {
-        val m = buildRowMajorColorMatrix5x4(filter)
+        val m = CssFilterColorMatrix.buildMatrix4x5(filter)
         val okMat = memScoped {
             val matBuf = allocArray<FloatVar>(20)
             // Transpose 4x4 linear block + keep row 4 offset for Direct2D's row-vector convention: out = in * M.
@@ -1149,156 +1189,6 @@ object Win32Direct2dBackdropBlurEngine {
         val okAlpha = setEffectUIntProperty(effect, D2D1_COLORMATRIX_PROP_ALPHA_MODE, D2D1_COLORMATRIX_ALPHA_MODE_PREMULTIPLIED)
         val okClamp = setEffectUIntProperty(effect, D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT, 1u)
         return okAlpha && okClamp
-    }
-
-    private fun buildRowMajorColorMatrix5x4(filter: CssFilter): FloatArray {
-        val mat = FloatArray(20).also {
-            it[0] = 1f; it[6] = 1f; it[12] = 1f; it[18] = 1f
-        }
-        val gs = filter.grayscale
-        if (gs != null && gs != 0f) {
-            val g = gs.coerceIn(0f, 1f)
-            val ig = 1f - g
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    ig + 0.2126f * g, 0.7152f * g, 0.0722f * g, 0f, 0f,
-                    0.2126f * g, ig + 0.7152f * g, 0.0722f * g, 0f, 0f,
-                    0.2126f * g, 0.7152f * g, ig + 0.0722f * g, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        val sp = filter.sepia
-        if (sp != null && sp != 0f) {
-            val s = sp.coerceIn(0f, 1f)
-            val inv = 1f - s
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    inv + 0.393f * s, 0.769f * s, 0.189f * s, 0f, 0f,
-                    0.349f * s, inv + 0.686f * s, 0.168f * s, 0f, 0f,
-                    0.272f * s, 0.534f * s, inv + 0.131f * s, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        val sat = filter.saturate
-        if (sat != null && sat != 1f) {
-            val st = sat.coerceAtLeast(0f)
-            val ist = 1f - st
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    st + 0.2126f * ist, 0.7152f * ist, 0.0722f * ist, 0f, 0f,
-                    0.2126f * ist, st + 0.7152f * ist, 0.0722f * ist, 0f, 0f,
-                    0.2126f * ist, 0.7152f * ist, st + 0.0722f * ist, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        val hueDeg = filter.hueRotateDeg
-        if (hueDeg != null && hueDeg != 0f) {
-            val rad = hueDeg * (PI.toFloat() / 180f)
-            val c = cos(rad)
-            val s = sin(rad)
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    0.213f + c * 0.787f - s * 0.213f, 0.715f - c * 0.715f - s * 0.715f, 0.072f - c * 0.072f + s * 0.928f, 0f, 0f,
-                    0.213f - c * 0.213f + s * 0.143f, 0.715f + c * 0.285f + s * 0.140f, 0.072f - c * 0.072f - s * 0.283f, 0f, 0f,
-                    0.213f - c * 0.213f - s * 0.787f, 0.715f - c * 0.715f + s * 0.715f, 0.072f + c * 0.928f + s * 0.072f, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        val brVal = filter.brightness
-        val invVal = filter.invert
-        val brBeforeInv = brVal == 0f && invVal != null && invVal != 0f
-        if (brBeforeInv) {
-            val br = brVal!!.coerceAtLeast(0f)
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    br, 0f, 0f, 0f, 0f,
-                    0f, br, 0f, 0f, 0f,
-                    0f, 0f, br, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        if (invVal != null && invVal != 0f) {
-            val iv = invVal.coerceIn(0f, 1f)
-            val scale = 1f - 2f * iv
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    scale, 0f, 0f, 0f, iv,
-                    0f, scale, 0f, 0f, iv,
-                    0f, 0f, scale, 0f, iv,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        if (!brBeforeInv && brVal != null && brVal != 1f) {
-            val br = brVal.coerceAtLeast(0f)
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    br, 0f, 0f, 0f, 0f,
-                    0f, br, 0f, 0f, 0f,
-                    0f, 0f, br, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        val ctVal = filter.contrast
-        if (ctVal != null && ctVal != 1f) {
-            val ct = ctVal.coerceAtLeast(0f)
-            val off = 0.5f * (1f - ct)
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    ct, 0f, 0f, 0f, off,
-                    0f, ct, 0f, 0f, off,
-                    0f, 0f, ct, 0f, off,
-                    0f, 0f, 0f, 1f, 0f
-                )
-            )
-        }
-        val opVal = filter.opacity
-        if (opVal != null && opVal != 1f) {
-            val op = opVal.coerceIn(0f, 1f)
-            multiply5x4(
-                mat,
-                floatArrayOf(
-                    1f, 0f, 0f, 0f, 0f,
-                    0f, 1f, 0f, 0f, 0f,
-                    0f, 0f, 1f, 0f, 0f,
-                    0f, 0f, 0f, op, 0f
-                )
-            )
-        }
-        return mat
-    }
-
-    private fun multiply5x4(acc: FloatArray, next: FloatArray) {
-        val prev = acc.copyOf()
-        for (r in 0 until 4) {
-            for (c in 0 until 4) {
-                acc[r * 5 + c] =
-                    next[r * 5 + 0] * prev[0 * 5 + c] +
-                    next[r * 5 + 1] * prev[1 * 5 + c] +
-                    next[r * 5 + 2] * prev[2 * 5 + c] +
-                    next[r * 5 + 3] * prev[3 * 5 + c]
-            }
-            acc[r * 5 + 4] =
-                next[r * 5 + 0] * prev[0 * 5 + 4] +
-                next[r * 5 + 1] * prev[1 * 5 + 4] +
-                next[r * 5 + 2] * prev[2 * 5 + 4] +
-                next[r * 5 + 3] * prev[3 * 5 + 4] +
-                next[r * 5 + 4]
-        }
     }
 
     private fun ensureScratchSize(needed: Int) {

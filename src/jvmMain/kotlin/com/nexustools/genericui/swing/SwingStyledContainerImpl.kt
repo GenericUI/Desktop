@@ -24,6 +24,10 @@ import java.awt.Graphics2D
 import java.awt.LinearGradientPaint
 import java.awt.RadialGradientPaint
 import java.awt.RenderingHints
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.geom.Point2D
 import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
@@ -58,23 +62,32 @@ class SwingStyledContainerImpl(
                     ?: StyledVisualSpec.EMPTY
                 val rawOpacity = getClientProperty("opacity") as? Float
                 val componentOpacity = (rawOpacity ?: spec.opacity ?: 1f).coerceIn(0f, 1f)
-                val effBackdrop = CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
+                val impl = getClientProperty(SwingBaseNativeImpl.CLIENT_PROPERTY_KEY) as? SwingStyledContainerImpl
+                val effBackdrop = if (impl != null) {
+                    SwingSurfacePaintUtil.resolveEffectiveBackdropFilter(impl, spec)
+                } else {
+                    CssFilter.backdropBlurOrFilter(spec.backdropBlurPx, spec.backdropFilter)
+                }
+                val cornerRadii = impl?.currentComputedStyleForSurface()?.borderRadius
                 if (effBackdrop != null && componentOpacity > SwingSurfacePaintUtil.OPACITY_SKIP_THRESHOLD && width > 0 && height > 0) {
                     SwingSurfacePaintUtil.paintBackdropWithOpacity(
                         g = tg,
                         target = this,
                         filter = effBackdrop,
                         cornerRadiusPx = spec.borderRadiusPx ?: 0f,
-                        componentOpacity = componentOpacity
+                        componentOpacity = componentOpacity,
+                        cornerRadii = cornerRadii
                     )
                 }
+                val focusedState = (getClientProperty("styledContainerFocused") as? Boolean) ?: hasFocus()
                 SwingSurfacePaintUtil.paintStyledSurface(
                     g = tg,
                     width = width,
                     height = height,
                     spec = spec.copy(opacity = null),
-                    isFocused = hasFocus(),
-                    componentOpacity = componentOpacity
+                    isFocused = focusedState,
+                    componentOpacity = componentOpacity,
+                    cornerRadii = cornerRadii
                 )
             }
         }
@@ -114,28 +127,65 @@ class SwingStyledContainerImpl(
 ), StyledContainerNativeImpl<JComponent> {
 
     private var styledVisuals: StyledVisualSpec = StyledVisualSpec()
+    private var hovered: Boolean = false
+    private var focused: Boolean = false
+    private var activePressed: Boolean = false
 
     init {
         nativeWidget.isOpaque = false
         nativeWidget.putClientProperty("antialiasing", true)
         nativeWidget.putClientProperty("tagName", tagName)
-        nativeWidget.putClientProperty("styledVisualsProvider", { getStyledVisuals() })
+        nativeWidget.putClientProperty("styledVisualsProvider", { resolveCurrentVisuals() })
+        nativeWidget.addMouseListener(object : MouseAdapter() {
+            override fun mouseEntered(e: MouseEvent) {
+                if (!isPointerEventsDisabledForHitTest()) setHoveredState(true)
+            }
+
+            override fun mouseExited(e: MouseEvent) {
+                setHoveredState(false)
+                setActivePressedState(false)
+            }
+
+            override fun mousePressed(e: MouseEvent) {
+                if (!isPointerEventsDisabledForHitTest() && e.button == MouseEvent.BUTTON1) {
+                    setActivePressedState(true)
+                }
+            }
+
+            override fun mouseReleased(e: MouseEvent) {
+                setActivePressedState(false)
+            }
+        })
+        nativeWidget.addFocusListener(object : FocusAdapter() {
+            override fun focusGained(e: FocusEvent) {
+                setFocusedState(true)
+            }
+
+            override fun focusLost(e: FocusEvent) {
+                setFocusedState(false)
+            }
+        })
     }
 
     override fun setAttribute(name: String, value: String?) {
         super<SwingContainerImpl>.setAttribute(name, value)
-        nativeWidget.repaint()
+        if (SwingSurfacePaintUtil.isBackdropAttributeName(name)) {
+            syncVisualsToSwing()
+        } else {
+            nativeWidget.repaint()
+        }
     }
 
     protected fun applyStyledVisuals(visuals: StyledVisualSpec) {
+        val effBackdrop = SwingSurfacePaintUtil.resolveEffectiveBackdropFilter(this, visuals)
         nativeWidget.putClientProperty("backdropBlurPx", visuals.backdropBlurPx)
-        nativeWidget.putClientProperty("backdropFilter", visuals.backdropFilter)
+        nativeWidget.putClientProperty("backdropFilter", effBackdrop ?: visuals.backdropFilter)
         nativeWidget.putClientProperty(
             "-webkit-backdrop-filter",
-            visuals.backdropFilter?.toCssString()
-                ?: visuals.backdropBlurPx?.takeIf { it > 0f }?.let { "blur(${it}px)" }
+            effBackdrop?.toCssString()
         )
         nativeWidget.putClientProperty("styledVisuals", visuals)
+        nativeWidget.putClientProperty("styledContainerFocused", focused)
         nativeWidget.putClientProperty("backgroundColor", visuals.backgroundColor)
         nativeWidget.putClientProperty("backgroundGradient", visuals.backgroundGradient)
         nativeWidget.putClientProperty("textColor", visuals.textColor)
@@ -177,7 +227,7 @@ class SwingStyledContainerImpl(
     }
 
     protected fun syncVisualsToSwing() {
-        applyStyledVisuals(getStyledVisuals())
+        applyStyledVisuals(resolveCurrentVisuals())
     }
 
     override fun setStyledVisuals(visuals: StyledVisualSpec) {
@@ -194,6 +244,56 @@ class SwingStyledContainerImpl(
             darkTheme = isDark
         )
         return computedBase.mergeWith(styledVisuals)
+    }
+
+    fun resolveCurrentVisuals(): StyledVisualSpec {
+        val isDark = SwingSurfacePaintUtil.isDarkThemeForComponent(nativeWidget)
+        val computedBase = StyledVisualSpec.fromComponentAndComputed(
+            componentStyle = lastComponentStyle,
+            computedStyle = lastComputedStyle,
+            snapshot = snapshotForStyledVisuals(),
+            darkTheme = isDark
+        )
+        return SwingSurfacePaintUtil.resolveStateVisuals(
+            computedBase = computedBase,
+            baseVisuals = styledVisuals,
+            computedStyle = lastComputedStyle,
+            isEnabled = isEnabled(),
+            hovered = hovered,
+            focused = focused,
+            activePressed = activePressed
+        )
+    }
+
+    override fun setHoveredState(hovered: Boolean) {
+        this.hovered = hovered && isEnabled()
+        syncVisualsToSwing()
+    }
+
+    override fun isHoveredState(): Boolean = hovered
+
+    override fun setFocusedState(focused: Boolean) {
+        this.focused = focused && isEnabled() && isEffectivelyFocusableInSwing()
+        syncVisualsToSwing()
+    }
+
+    override fun isFocusedState(): Boolean = focused
+
+    override fun setActivePressedState(active: Boolean) {
+        this.activePressed = active && isEnabled()
+        syncVisualsToSwing()
+    }
+
+    override fun isActivePressedState(): Boolean = activePressed
+
+    override fun setEnabled(enabled: Boolean) {
+        if (!enabled) {
+            this.hovered = false
+            this.focused = false
+            this.activePressed = false
+        }
+        super<SwingContainerImpl>.setEnabled(enabled)
+        syncVisualsToSwing()
     }
 
     override fun applyComputedStyle(style: ComputedStyle) {
@@ -232,12 +332,11 @@ class SwingStyledContainerImpl(
             val copyH = y1 - y0
             if (copyW <= 0 || copyH <= 0) return false
 
-            val blurPx = (effFilter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
-            val pad = if (blurPx > 0f) ceil(blurPx * 1.5f).toInt().coerceIn(1, 32) else 0
-            val capX0 = (x0 - pad).coerceAtLeast(0)
-            val capY0 = (y0 - pad).coerceAtLeast(0)
-            val capX1 = (x1 + pad).coerceAtMost(bufW)
-            val capY1 = (y1 + pad).coerceAtMost(bufH)
+            val pads = SwingHardwareBackdropBlurRenderer.computeDirectionalHaloPadding(effFilter)
+            val capX0 = (x0 - pads[0]).coerceAtLeast(0)
+            val capY0 = (y0 - pads[1]).coerceAtLeast(0)
+            val capX1 = (x1 + pads[2]).coerceAtMost(bufW)
+            val capY1 = (y1 + pads[3]).coerceAtMost(bufH)
             val capW = capX1 - capX0
             val capH = capY1 - capY0
             if (capW <= 0 || capH <= 0) return false

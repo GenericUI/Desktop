@@ -26,6 +26,8 @@ import platform.Foundation.NSPoint
 import platform.Foundation.NSRect
 import kotlin.math.roundToInt
 
+private const val SLOT_GAP_PX: Int = 6
+
 internal class MacosTitleBarView(
     private val owner: DesktopBaseContainerNativeImpl<*>?,
     frameRect: CValue<NSRect> = NSMakeRect(0.0, 0.0, 0.0, 0.0)
@@ -354,9 +356,5 @@ internal class MacosTitleBarView(
             cur = cur.superview
         }
         return false
-    }
-
-    private companion object {
-        const val SLOT_GAP_PX: Int = 6
     }
 }

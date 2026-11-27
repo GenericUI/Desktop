@@ -88,6 +88,47 @@ class WindowsStyledContainerNativeImpl(
         Win32RetainedControlSupport.onZIndexChanged(nativeWidget, zIndex)
     }
 
+    override fun setAttribute(name: String, value: String?) {
+        super.setAttribute(name, value)
+        Win32RetainedControlSupport.handleStyledAttributeUpdate(nativeWidget, name)
+    }
+
+    override fun setHoveredState(hovered: Boolean) {
+        val prev = isHoveredState()
+        super.setHoveredState(hovered)
+        if (prev != isHoveredState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+        }
+    }
+
+    override fun setFocusedState(focused: Boolean) {
+        val prev = isFocusedState()
+        super.setFocusedState(focused)
+        if (prev != isFocusedState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+        }
+    }
+
+    override fun setActivePressedState(active: Boolean) {
+        val prev = isActivePressedState()
+        super.setActivePressedState(active)
+        if (prev != isActivePressedState()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+        }
+    }
+
+    override fun setEnabled(enabled: Boolean) {
+        val prev = isEnabled()
+        super.setEnabled(enabled)
+        if (prev != isEnabled()) {
+            syncResolvedVisualsToWidget(visualOnly = true)
+            nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }
+        }
+    }
+
     override fun onNativeStyleSynced() {
         Win32RetainedControlSupport.onStyleSynced(this, nativeWidget, defaultTransparentBg = true)
         nativeWidget.hwnd?.let { InvalidateRect(it, null, 0) }

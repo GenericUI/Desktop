@@ -80,9 +80,10 @@ internal object KdePainterSupport {
 
         try {
             // 1. Real CSS backdrop-filter (capture behind widget -> apply 10 ops + blur -> draw clipped)
-            val effectiveBackdrop = backdropFilterOverride ?: spec?.backdropFilter ?: spec?.backdropBlurPx?.let {
-                if (it > 0f) CssFilter(blur = com.nexustools.genericui.style.css.CssLength.px(it)) else null
-            }
+            val effectiveBackdrop = CssFilter.backdropBlurOrFilter(
+                spec?.backdropBlurPx,
+                backdropFilterOverride ?: spec?.backdropFilter
+            )
             if (LinuxBackdropFilterController.shared.hasActiveEffects(effectiveBackdrop)) {
                 renderFilteredBackdrop(
                     widgetPtr = widgetPtr,
@@ -310,15 +311,18 @@ internal object KdePainterSupport {
             offsetY += KdeDynamicBindings.getWidgetY(path[i])
         }
 
-        val blurRadius = (filter.blur?.resolvePx() ?: 0f).coerceIn(0f, 48f)
-        val pad = if (blurRadius > 0.5f) kotlin.math.ceil(blurRadius).toInt() else 0
+        val pads = LinuxBackdropFilterController.computeHaloPadding(filter)
+        val padLeft = pads[0]
+        val padTop = pads[1]
+        val padRight = pads[2]
+        val padBottom = pads[3]
         val rootW = KdeDynamicBindings.getWidgetWidth(path[0]).coerceAtLeast(offsetX + widthPx)
         val rootH = KdeDynamicBindings.getWidgetHeight(path[0]).coerceAtLeast(offsetY + heightPx)
 
-        val capX0 = (offsetX - pad).coerceIn(0, rootW)
-        val capY0 = (offsetY - pad).coerceIn(0, rootH)
-        val capX1 = (offsetX + widthPx + pad).coerceIn(capX0 + 1, max(capX0 + 1, rootW))
-        val capY1 = (offsetY + heightPx + pad).coerceIn(capY0 + 1, max(capY0 + 1, rootH))
+        val capX0 = (offsetX - padLeft).coerceIn(0, rootW)
+        val capY0 = (offsetY - padTop).coerceIn(0, rootH)
+        val capX1 = (offsetX + widthPx + padRight).coerceIn(capX0 + 1, max(capX0 + 1, rootW))
+        val capY1 = (offsetY + heightPx + padBottom).coerceIn(capY0 + 1, max(capY0 + 1, rootH))
         val capW = (capX1 - capX0).coerceAtLeast(1)
         val capH = (capY1 - capY0).coerceAtLeast(1)
 
@@ -433,6 +437,48 @@ internal object KdePainterSupport {
         } finally {
             KdeDynamicBindings.destroyQImage(capImage)
         }
+    }
+
+    fun handleStyledBackdropAttribute(
+        impl: DesktopBaseNativeImpl<KdeWidgetHandle>,
+        name: String,
+        value: String?
+    ) {
+        val attrs = impl.nativeWidget.attributes
+        when {
+            name.equals("backdrop-filter", ignoreCase = true) ||
+                name.equals("-webkit-backdrop-filter", ignoreCase = true) ||
+                name.equals("backdropFilter", ignoreCase = true) -> {
+                val parsed = value?.let { CssFilter.parse(it) }
+                if (parsed != null) {
+                    attrs["attrBackdropFilter"] = parsed
+                } else {
+                    attrs.remove("attrBackdropFilter")
+                }
+                impl.nativeWidget.requestRepaint()
+            }
+            name.equals("backdropBlurPx", ignoreCase = true) -> {
+                val parsed = value?.toFloatOrNull()
+                if (parsed != null) {
+                    attrs["attrBackdropBlurPx"] = parsed
+                } else {
+                    attrs.remove("attrBackdropBlurPx")
+                }
+                impl.nativeWidget.requestRepaint()
+            }
+        }
+    }
+
+    fun resolveWidgetBackdropFilter(
+        handle: KdeWidgetHandle,
+        spec: StyledVisualSpec
+    ): CssFilter? {
+        val attrFilter = (handle.attributes["attrBackdropFilter"] as? CssFilter)
+            ?: (handle.attributes["backdropFilter"] as? CssFilter)
+            ?: spec.backdropFilter
+        val attrBlurPx = (handle.attributes["attrBackdropBlurPx"] as? Float)
+            ?: spec.backdropBlurPx
+        return CssFilter.backdropBlurOrFilter(attrBlurPx, attrFilter)
     }
 
     // --- Input Event Wiring ---

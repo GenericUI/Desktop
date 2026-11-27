@@ -4,6 +4,7 @@ package com.nexustools.genericui.macos
 
 import com.nexustools.genericui.desktop.shell.DesktopApplicationNativeImpl
 import com.nexustools.genericui.enums.ui.ThemeMode
+import com.nexustools.genericui.nativeimpl.shell.MenuNativeImpl
 import com.nexustools.genericui.style.theme.SystemThemeDetector
 import kotlinx.cinterop.toKString
 import platform.Foundation.NSProcessInfo
@@ -42,6 +43,11 @@ class MacosApplicationNativeImpl :
         if (interactiveMacosGuiEnabled) {
             MacosNativeWindowHost.syncThemeAppearance(mode)
         }
+    }
+
+    override fun setMacApplicationMenu(menuImpl: MenuNativeImpl<*>?, appTitle: String?) {
+        nativeWidget.attributes["applicationMenu"] = menuImpl
+        MacosNativeWindowHost.syncMacApplicationMenu(menuImpl, appTitle)
     }
 
     override fun onNativeRun() {

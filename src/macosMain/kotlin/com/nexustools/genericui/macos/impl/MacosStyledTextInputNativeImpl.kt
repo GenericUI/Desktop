@@ -47,7 +47,9 @@ import platform.AppKit.NSTextField
 import platform.AppKit.NSTextFieldCell
 import platform.AppKit.NSTextView
 import platform.AppKit.NSView
+import platform.AppKit.cell
 import platform.AppKit.labelWithString
+import platform.AppKit.setInsertionPointColor
 import platform.CoreGraphics.CGPoint
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSAttributedString

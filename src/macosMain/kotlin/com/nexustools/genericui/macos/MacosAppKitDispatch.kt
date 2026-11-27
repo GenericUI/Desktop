@@ -18,6 +18,7 @@ import platform.Foundation.NSOrderedAscending
 import platform.Foundation.NSOrderedDescending
 import platform.Foundation.NSOrderedSame
 import platform.Foundation.NSThread
+import platform.QuartzCore.CATransaction
 import platform.QuartzCore.CATransform3DIdentity
 import platform.QuartzCore.CATransform3DMakeTranslation
 import platform.QuartzCore.CATransform3DRotate
@@ -168,16 +169,47 @@ internal object MacosAppKitDispatch {
             }
         }
 
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        try {
+            for (i in pinnedBackViews.indices) {
+                val pinned = pinnedBackViews[i]
+                pinned.setWantsLayer(true)
+                pinned.layer?.zPosition = (-1000 + i).toDouble()
+            }
+            for (i in orderedChildViews.indices) {
+                val child = orderedChildViews[i]
+                child.setWantsLayer(true)
+                child.layer?.zPosition = i.toDouble()
+            }
+        } finally {
+            CATransaction.commit()
+        }
+    }
+
+    fun isChildViewHierarchyInSync(
+        parentView: NSView,
+        orderedChildViews: List<NSView>,
+        pinnedBackViews: List<NSView> = emptyList()
+    ): Boolean {
+        val subs = parentView.subviews
+        if (subs.size != pinnedBackViews.size + orderedChildViews.size) return false
         for (i in pinnedBackViews.indices) {
             val pinned = pinnedBackViews[i]
-            pinned.setWantsLayer(true)
-            pinned.layer?.zPosition = (-1000 + i).toDouble()
+            if (subs[i] != pinned) return false
+            if (!pinned.wantsLayer) return false
+            val layer = pinned.layer ?: return false
+            if (layer.zPosition != (-1000 + i).toDouble()) return false
         }
+        val offset = pinnedBackViews.size
         for (i in orderedChildViews.indices) {
             val child = orderedChildViews[i]
-            child.setWantsLayer(true)
-            child.layer?.zPosition = i.toDouble()
+            if (subs[offset + i] != child) return false
+            if (!child.wantsLayer) return false
+            val layer = child.layer ?: return false
+            if (layer.zPosition != i.toDouble()) return false
         }
+        return true
     }
 
     /**

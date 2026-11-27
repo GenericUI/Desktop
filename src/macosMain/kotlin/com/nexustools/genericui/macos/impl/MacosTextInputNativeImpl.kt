@@ -161,7 +161,7 @@ internal class MacosNumberInputView(
     }
 }
 
-private class MacosFocusableTextView private constructor(
+internal class MacosFocusableTextView private constructor(
     private val ownerHandle: MacosViewHandle,
     frameRect: CValue<NSRect>,
     textContainer: NSTextContainer

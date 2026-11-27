@@ -77,4 +77,14 @@ open class DesktopStyledContainerNativeImpl<out W : DesktopNativeWidget>(
     }
 
     override fun getStyledVisuals(): StyledVisualSpec = styledDelegate.resolveBaseVisuals()
+
+    override fun setAttribute(name: String, value: String?) {
+        super<DesktopContainerNativeImpl>.setAttribute(name, value)
+        applyDesktopStyledFilterAttribute(
+            name = name,
+            value = value,
+            getBase = { styledDelegate.getBaseVisuals() },
+            setBase = { setStyledVisuals(it) }
+        )
+    }
 }

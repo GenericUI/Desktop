@@ -89,6 +89,7 @@ class DesktopContainerLayoutController(
     private var isLayingOut: Boolean = false
     private var measureIndefiniteColumnHeight: Boolean = false
     private var lastSortedByZOrder: List<DesktopBaseNativeImpl<*>> = emptyList()
+    private var lastSortedZAttrVer: Long = -1L
     private val measureCache = arrayOfNulls<MeasureCacheEntry>(16)
     private var measureCacheCursor: Int = 0
     private val snapshotCache = HashMap<DesktopBaseNativeImpl<*>, Array<SnapshotCacheEntry?>>()
@@ -167,28 +168,43 @@ class DesktopContainerLayoutController(
 
     fun invalidateZOrder() {
         lastSortedByZOrder = emptyList()
+        lastSortedZAttrVer = -1L
         measureCache.fill(null)
         lastLayoutW = -1
     }
 
     fun resolveChildrenSortedByZIndex(): List<DesktopBaseNativeImpl<*>> {
-        if (lastSortedByZOrder.isNotEmpty() || logicalChildrenList.isEmpty()) {
+        if (logicalChildrenList.isEmpty()) return emptyList()
+        val curZAttrVer = host.nativeWidget.subtreeAttrMutationVersion
+        if (lastSortedByZOrder.isNotEmpty() &&
+            lastSortedZAttrVer == curZAttrVer &&
+            lastSortedByZOrder.size == logicalChildrenList.size
+        ) {
             return lastSortedByZOrder
         }
         val children = logicalChildrenList.filterIsInstance<DesktopBaseNativeImpl<*>>()
-        if (children.size <= 1) return children
-        val firstZ = children[0].nativeWidget.effectiveZIndex()
-        var needsSort = false
-        for (i in 1 until children.size) {
-            if (children[i].nativeWidget.effectiveZIndex() != firstZ) {
-                needsSort = true
-                break
+        val sorted = if (children.size <= 1) {
+            children
+        } else {
+            val firstZ = children[0].nativeWidget.effectiveZIndex()
+            var needsSort = false
+            for (i in 1 until children.size) {
+                if (children[i].nativeWidget.effectiveZIndex() != firstZ) {
+                    needsSort = true
+                    break
+                }
+            }
+            if (!needsSort) {
+                children
+            } else {
+                children.withIndex()
+                    .sortedWith(compareBy({ it.value.nativeWidget.effectiveZIndex() }, { it.index }))
+                    .map { it.value }
             }
         }
-        if (!needsSort) return children
-        return children.withIndex()
-            .sortedWith(compareBy({ it.value.nativeWidget.effectiveZIndex() }, { it.index }))
-            .map { it.value }
+        lastSortedByZOrder = sorted
+        lastSortedZAttrVer = curZAttrVer
+        return sorted
     }
 
     fun measurePreferredSize(maxWidth: Float?, maxHeight: Float?): Size =
@@ -520,6 +536,12 @@ class DesktopContainerLayoutController(
                 val rawBox = childBoxes.getOrNull(i)
                 var targetRect = rawBox?.borderBox
                 var effectiveZ = rawBox?.effectiveZIndex ?: snap.zIndex
+                if (effectiveZ == 0) {
+                    val widgetZ = child.nativeWidget.effectiveZIndex()
+                    if (widgetZ != 0) {
+                        effectiveZ = widgetZ
+                    }
+                }
 
                 if (snap.display != CssDisplay.NONE &&
                     child.isVisible() &&
@@ -588,8 +610,10 @@ class DesktopContainerLayoutController(
                 lastLayoutH = safeH
                 lastLayoutSubtreeVer = subVer
                 lastLayoutSubtreeAttrVer = subAttrVer
+                lastSortedZAttrVer = subAttrVer
             } else {
                 lastLayoutW = -1
+                lastSortedZAttrVer = -1L
             }
             true
         } finally {
